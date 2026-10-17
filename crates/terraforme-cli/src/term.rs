@@ -27,6 +27,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, crossterm};
+use terraforme_core::agent::Adapter;
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Report};
 use terraforme_core::limits::{self, Limit, Source};
@@ -50,11 +51,13 @@ pub struct Options {
     pub agent: String,
     /// Texto à direita do menu (provider e modo).
     pub title: String,
+    /// Integração com o agente (sessão e consumo).
+    pub adapter: &'static dyn Adapter,
     /// Comando de cada instância do agente.
     pub command: Command,
     /// Instâncias abertas ao iniciar.
     pub instances: usize,
-    /// Passa um `--session-id` próprio a cada instância, para o consumo saber
+    /// Passa um id de sessão próprio a cada instância, para o consumo saber
     /// qual é a sessão dela; desligado quando os argumentos já escolhem a sessão.
     pub session_ids: bool,
     /// Aparecem num aviso inicial, já que a tela alternativa esconderia o
@@ -143,13 +146,14 @@ struct Agent {
     /// Linhas roladas para trás no histórico (0 = ao vivo).
     scrollback: usize,
     launched: SystemTime,
-    /// `--session-id` passado ao agente.
+    /// Id de sessão passado ao agente.
     session: Option<String>,
 }
 
 impl Agent {
     fn spawn(
         id: usize,
+        adapter: &dyn Adapter,
         command: &Command,
         cwd: &Path,
         body: Rect,
@@ -161,9 +165,13 @@ impl Agent {
             .map_err(|e| anyhow!("{e}"))
             .context("falha ao abrir o pseudoterminal")?;
         let mut builder = builder(command, cwd);
-        let session = session_ids.then(|| uuid::Uuid::new_v4().to_string());
-        if let Some(session) = &session {
-            builder.args(["--session-id", session]);
+        let mut session = None;
+        if session_ids {
+            let id = uuid::Uuid::new_v4().to_string();
+            if let Some(args) = adapter.session_args(&id) {
+                builder.args(args);
+                session = Some(id);
+            }
         }
         let launched = SystemTime::now();
         let child = pty
@@ -239,6 +247,7 @@ struct App {
     agent: String,
     title: String,
     extensions: Vec<Extension>,
+    adapter: &'static dyn Adapter,
     command: Command,
     cwd: PathBuf,
     session_ids: bool,
@@ -270,6 +279,7 @@ pub fn run(options: Options) -> Result<()> {
         agent: options.agent,
         title: options.title,
         extensions: options.extensions,
+        adapter: options.adapter,
         command: options.command,
         cwd,
         session_ids: options.session_ids,
@@ -317,6 +327,7 @@ impl App {
         let id = self.next_id;
         let agent = Agent::spawn(
             id,
+            self.adapter,
             &self.command,
             &self.cwd,
             self.body,
@@ -618,15 +629,18 @@ impl App {
         let report = reports(&self.extensions).get(index).copied();
         let tx = self.tx.clone();
         let cwd = self.cwd.clone();
+        let adapter = self.adapter;
         thread::spawn(move || {
             let result = match tab {
                 Tab::Agent => return,
                 Tab::Usage => {
-                    usage::collect(&cwd, launched, session.as_deref()).map(|u| match index {
-                        0 => format_limits(&u),
-                        1 => format_usage(&u),
-                        _ => format_agents(&u),
-                    })
+                    adapter
+                        .usage(&cwd, launched, session.as_deref())
+                        .map(|u| match index {
+                            0 => format_limits(adapter, &u),
+                            1 => format_usage(&u),
+                            _ => format_agents(&u),
+                        })
                 }
                 Tab::Extensions => match report {
                     Some((ext, report)) => ext.report(report).map(Text::from),
@@ -806,9 +820,9 @@ impl App {
 }
 
 /// Uma barra por limite, com quanto já foi usado e quanto falta.
-fn format_limits(usage: &usage::Usage) -> Text<'static> {
+fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
     let budget = Config::load().map(|c| c.budget).unwrap_or_default();
-    let limits = limits::collect(usage, &budget);
+    let limits = limits::collect(adapter, usage, &budget);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());

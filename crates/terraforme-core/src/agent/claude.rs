@@ -1,238 +1,126 @@
-//! Agentes de IA (providers) e os modos de execução com as extensões.
+//! Adapter do Claude Code.
 //!
-//! No Claude Code, RTK e AI Memory viram plugins locais do terraforme
+//! RTK e AI Memory viram plugins locais do terraforme
 //! (`~/.config/terraforme/plugins/terraforme-<extensão>`), carregados por
 //! sessão com `--plugin-dir` conforme o modo. Para isso os hooks deles saem de
 //! `~/.claude/settings.json` (com backup) — e voltam a sair sempre que um
 //! `rtk init -g`/`ai-memory setup` os recolocar lá. O servidor MCP global do
 //! AI Memory fica no `~/.claude.json`, que não é alterado: ele é bloqueado por
 //! sessão (`deniedMcpServers`) e o plugin traz uma cópia quando o modo o usa.
-//! O AI Jail não entra nos modos: com `jail`, o comando inteiro roda dentro
-//! dele (ver `jail`).
 
 use std::env;
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::SystemTime;
 
-use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
 
+use super::{Adapter, Mode, Setup};
 use crate::config::Config;
 use crate::extension::Extension;
-use crate::status::{Component, State, find_in_path};
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-#[serde(rename_all = "lowercase")]
-pub enum Provider {
-    #[default]
-    Claude,
-    Cursor,
-}
-
-impl Provider {
-    pub const ALL: [Provider; 2] = [Provider::Claude, Provider::Cursor];
-
-    pub fn id(self) -> &'static str {
-        match self {
-            Provider::Claude => "claude",
-            Provider::Cursor => "cursor",
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Provider::Claude => "Claude Code",
-            Provider::Cursor => "Cursor",
-        }
-    }
-
-    pub fn is_implemented(self) -> bool {
-        self == Provider::Claude
-    }
-
-    fn bin(self) -> &'static str {
-        match self {
-            Provider::Claude => "claude",
-            Provider::Cursor => "cursor-agent",
-        }
-    }
-
-    pub fn check(self) -> Component {
-        Component {
-            name: self.name(),
-            url: "",
-            state: match find_in_path(self.bin()) {
-                Some(path) => State::Installed {
-                    path,
-                    version: None,
-                },
-                None => State::NotInstalled,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// Só RTK: economia de tokens.
-    Eco,
-    /// Só AI Memory: memória entre sessões.
-    High,
-    /// RTK + AI Memory.
-    #[default]
-    Hybrid,
-}
-
-impl Mode {
-    pub fn id(self) -> &'static str {
-        match self {
-            Mode::Eco => "eco",
-            Mode::High => "high",
-            Mode::Hybrid => "hybrid",
-        }
-    }
-
-    pub fn uses(self, ext: Extension) -> bool {
-        match self {
-            Mode::Eco => ext == Extension::Rtk,
-            Mode::High => ext == Extension::AiMemory,
-            Mode::Hybrid => matches!(ext, Extension::Rtk | Extension::AiMemory),
-        }
-    }
-
-    pub fn extensions(self) -> Vec<Extension> {
-        Extension::ALL
-            .into_iter()
-            .filter(|&e| self.uses(e))
-            .collect()
-    }
-}
-
-/// Comando pronto para iniciar o agente, mais mensagens para o usuário.
-#[derive(Debug)]
-pub struct Launch {
-    pub command: Command,
-    /// O que mudou nas configurações globais nesta execução.
-    pub notices: Vec<String>,
-    pub warnings: Vec<String>,
-}
+use crate::limits::Limit;
+use crate::usage::Usage;
 
 /// Nome do servidor MCP que o `ai-memory setup` registra no Claude.
 const AI_MEMORY_MCP: &str = "ai-memory";
 
-/// Monta o comando do agente no modo pedido, dentro do AI Jail se `jail`.
-/// `args` são repassados ao agente.
-pub fn prepare(provider: Provider, mode: Mode, jail: bool, args: &[String]) -> Result<Launch> {
-    if !provider.is_implemented() {
-        bail!("o provider {} ainda não foi implementado", provider.name());
-    }
-    let Some(bin) = find_in_path(provider.bin()) else {
-        bail!("`{}` não encontrado no PATH", provider.bin());
-    };
+/// Claude Code (`claude`).
+pub struct Claude;
 
-    for ext in mode.extensions() {
-        if !ext.check().state.is_installed() {
-            bail!(
-                "o modo {} usa {}, que não está instalado — rode `terraforme extension {} --install`",
-                mode.id(),
-                ext.name(),
-                ext.id()
-            );
-        }
+impl Adapter for Claude {
+    fn bin(&self) -> &'static str {
+        "claude"
     }
 
-    let claude_dir = claude_config_dir()?;
-    let mut notices = Vec::new();
-    let mut warnings = Vec::new();
+    fn setup(&self, mode: Mode) -> Result<Setup> {
+        let claude_dir = claude_config_dir()?;
+        let mut setup = Setup::default();
 
-    let settings_path = claude_dir.join("settings.json");
-    if let Some((exts, backup)) = migrate_global_hooks(&settings_path)? {
-        let names: Vec<_> = exts.iter().map(|e| e.name()).collect();
-        notices.push(format!(
-            "hooks de {} movidos de {} para os plugins do terraforme (backup: {})",
-            names.join(" e "),
-            settings_path.display(),
-            backup.display()
-        ));
-    }
-
-    let mut agent_args: Vec<OsString> = Vec::new();
-    let mut plugins = Vec::new();
-    for ext in mode.extensions() {
-        let dir = plugin_dir(ext)?;
-        ensure_plugin(ext, &dir)?;
-        if ext == Extension::AiMemory {
-            let claude_json = read_json(&claude_json_path(&claude_dir)?)?;
-            match claude_json.pointer(&format!("/mcpServers/{AI_MEMORY_MCP}")) {
-                Some(server) => write_json(
-                    &dir.join(".mcp.json"),
-                    &json!({ "mcpServers": { "memory": server } }),
-                )?,
-                None if !dir.join(".mcp.json").exists() => warnings.push(
-                    "servidor MCP do AI Memory não encontrado — rode `ai-memory setup`".into(),
-                ),
-                None => {}
-            }
-        }
-        if !has_hooks(&dir) {
-            warnings.push(format!(
-                "nenhum hook do {} encontrado — rode `{}`",
-                ext.name(),
-                setup_command(ext)
+        let settings_path = claude_dir.join("settings.json");
+        if let Some((exts, backup)) = migrate_global_hooks(&settings_path)? {
+            let names: Vec<_> = exts.iter().map(|e| e.name()).collect();
+            setup.notices.push(format!(
+                "hooks de {} movidos de {} para os plugins do terraforme (backup: {})",
+                names.join(" e "),
+                settings_path.display(),
+                backup.display()
             ));
         }
-        agent_args.push("--plugin-dir".into());
-        agent_args.push(dir.clone().into());
-        plugins.push((ext, dir));
+
+        for ext in mode.extensions() {
+            let dir = plugin_dir(ext)?;
+            ensure_plugin(ext, &dir)?;
+            if ext == Extension::AiMemory {
+                let claude_json = read_json(&claude_json_path(&claude_dir)?)?;
+                match claude_json.pointer(&format!("/mcpServers/{AI_MEMORY_MCP}")) {
+                    Some(server) => write_json(
+                        &dir.join(".mcp.json"),
+                        &json!({ "mcpServers": { "memory": server } }),
+                    )?,
+                    None if !dir.join(".mcp.json").exists() => setup.warnings.push(
+                        "servidor MCP do AI Memory não encontrado — rode `ai-memory setup`".into(),
+                    ),
+                    None => {}
+                }
+            }
+            if !has_hooks(&dir) {
+                setup.warnings.push(format!(
+                    "nenhum hook do {} encontrado — rode `{}`",
+                    ext.name(),
+                    setup_command(ext)
+                ));
+            }
+            setup.args.push("--plugin-dir".into());
+            setup.args.push(dir.clone().into());
+            setup.plugins.push((ext, dir));
+        }
+
+        // O MCP global do AI Memory valeria em todos os modos; o do plugin o substitui.
+        setup.args.push("--settings".into());
+        setup.args.push(
+            json!({ "deniedMcpServers": [{ "serverName": AI_MEMORY_MCP }] })
+                .to_string()
+                .into(),
+        );
+        Ok(setup)
     }
 
-    // O MCP global do AI Memory valeria em todos os modos; o do plugin o substitui.
-    agent_args.push("--settings".into());
-    agent_args.push(
-        json!({ "deniedMcpServers": [{ "serverName": AI_MEMORY_MCP }] })
-            .to_string()
-            .into(),
-    );
-    agent_args.extend(args.iter().map(OsString::from));
+    fn session_args(&self, session: &str) -> Option<Vec<String>> {
+        Some(vec!["--session-id".into(), session.into()])
+    }
 
-    let command = if jail {
-        let (command, jail_notices) = crate::jail::wrap(provider.bin(), &plugins, &agent_args)?;
-        notices.extend(jail_notices);
-        command
-    } else {
-        let mut command = Command::new(bin);
-        command.args(&agent_args);
-        command
-    };
+    /// `--continue`, `--resume` e `--session-id` já escolhem a sessão.
+    fn picks_session(&self, args: &[String]) -> bool {
+        args.iter().any(|arg| {
+            let flag = arg.split('=').next().unwrap_or_default();
+            matches!(
+                flag,
+                "-c" | "--continue" | "-r" | "--resume" | "--session-id"
+            )
+        })
+    }
 
-    Ok(Launch {
-        command,
-        notices,
-        warnings,
-    })
-}
+    fn usage(&self, cwd: &Path, launched: SystemTime, session: Option<&str>) -> Result<Usage> {
+        crate::usage::collect(cwd, launched, session)
+    }
 
-/// `true` se os argumentos repassados ao agente já escolhem a sessão
-/// (`--continue`, `--resume`, `--session-id`) — aí o terraforme não passa
-/// `--session-id` próprio.
-pub fn picks_session(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        let flag = arg.split('=').next().unwrap_or_default();
-        matches!(
-            flag,
-            "-c" | "--continue" | "-r" | "--resume" | "--session-id"
-        )
-    })
+    fn plan_limits(&self) -> Result<Option<Vec<Limit>>> {
+        crate::limits::fetch_claude_plan()
+    }
+
+    fn forget(&self, ext: Extension) -> Result<()> {
+        let plugin = plugin_dir(ext)?;
+        if plugin.exists() {
+            fs::remove_dir_all(&plugin)
+                .with_context(|| format!("removendo {}", plugin.display()))?;
+        }
+        Ok(())
+    }
 }
 
 /// Pasta do plugin do terraforme para a extensão.
-pub fn plugin_dir(ext: Extension) -> Result<PathBuf> {
+fn plugin_dir(ext: Extension) -> Result<PathBuf> {
     Ok(Config::dir()?
         .join("plugins")
         .join(format!("terraforme-{}", ext.id())))
@@ -445,12 +333,12 @@ mod tests {
     #[test]
     fn picks_session_detects_session_flags() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert!(!picks_session(&args(&[])));
-        assert!(!picks_session(&args(&["-p", "oi", "--model", "opus"])));
-        assert!(picks_session(&args(&["--continue"])));
-        assert!(picks_session(&args(&["-r"])));
-        assert!(picks_session(&args(&["--resume=abc"])));
-        assert!(picks_session(&args(&["--session-id", "x"])));
+        assert!(!Claude.picks_session(&args(&[])));
+        assert!(!Claude.picks_session(&args(&["-p", "oi", "--model", "opus"])));
+        assert!(Claude.picks_session(&args(&["--continue"])));
+        assert!(Claude.picks_session(&args(&["-r"])));
+        assert!(Claude.picks_session(&args(&["--resume=abc"])));
+        assert!(Claude.picks_session(&args(&["--session-id", "x"])));
     }
 
     fn settings() -> Value {
