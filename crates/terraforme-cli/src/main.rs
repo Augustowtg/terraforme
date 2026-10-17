@@ -356,6 +356,7 @@ fn run_term(
     let mode = mode.unwrap_or(config.mode);
     let jail = jail.unwrap_or(config.jail);
     let launch = agent::prepare(config.provider, mode, jail, args)?;
+    let adapter = config.provider.adapter().context("provider sem adapter")?;
 
     let notices = launch
         .notices
@@ -371,9 +372,10 @@ fn run_term(
     term::run(term::Options {
         agent: config.provider.id().to_string(),
         title,
+        adapter,
         command: launch.command,
         instances,
-        session_ids: !agent::picks_session(args),
+        session_ids: !adapter.picks_session(args),
         notices,
         extensions,
     })

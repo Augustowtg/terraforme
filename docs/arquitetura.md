@@ -22,16 +22,39 @@ opcional `clap`, o core deriva `clap::ValueEnum` nos enums públicos (`Extension
 | --- | --- |
 | `status` | `Component`/`State` (instalado, conflito, não instalado), busca no `PATH` e leitura de `--version`. |
 | `extension` | Instala, atualiza e remove RTK e AI Memory pelos scripts oficiais de cada projeto; o AI Jail vem do tarball do release, conferido pelo `.sha256`. Define os relatórios (`rtk gain`, `ai-memory status`…), rodados com `NO_COLOR` e devolvidos sem ANSI. |
-| `agent` | `Provider` e `Mode` (`eco` = RTK, `high` = AI Memory, `hybrid` = os dois). `agent::prepare()` monta o comando do agente. |
+| `agent` | `Provider` e `Mode` (`eco` = RTK, `high` = AI Memory, `hybrid` = os dois), o trait `Adapter` e `agent::prepare()`, que monta o comando do agente igual para todos. Cada agente é um adapter (`agent/claude.rs` para o Claude Code). |
 | `jail` | Integração com o AI Jail: configuração padrão em `~/.ai-jail` e `wrap()`, que envolve o comando do agente. |
 | `usage` | Consumo de tokens lido dos transcripts do Claude Code. |
 | `limits` | Quanto resta dos limites do plano (API OAuth) ou do orçamento configurado. |
 | `config` | `Config { provider, mode, jail, budget }` em `~/.config/terraforme/config.toml` (`%APPDATA%\terraforme` no Windows; respeita `XDG_CONFIG_HOME`). |
 | `space` | Pastas de trabalho com nome, em `<config>/spaces.toml`. |
 
+## Agentes (adapters)
+
+Tudo o que depende do agente de IA fica atrás do trait `agent::Adapter`, e o resto do terraforme
+(o `prepare`, o terminal com abas, os limites, a remoção de extensões) só fala com ele:
+
+| Método | Para quê |
+| --- | --- |
+| `bin` | executável do agente no `PATH` |
+| `setup(mode)` | prepara a configuração do agente para as extensões do modo e devolve os argumentos que as ligam, as pastas que o AI Jail deve montar e avisos |
+| `session_args` / `picks_session` | fixar um id de sessão por instância (para o consumo) e saber quando os argumentos do usuário já escolhem a sessão |
+| `usage` | consumo de tokens (aba Consumo) |
+| `plan_limits` | limites do plano do usuário; sem eles, vale o orçamento do config.toml |
+| `forget(ext)` | desfaz o que o `setup` criou quando a extensão é removida |
+
+Só `bin` e `setup` são obrigatórios; os outros têm um padrão "não suportado". `Provider::adapter()`
+devolve o adapter de cada provider, ou `None` se ele ainda não foi implementado (é o caso do Cursor).
+
+Para trocar ou adicionar um agente:
+
+1. crie `crates/terraforme-core/src/agent/<agente>.rs` com um tipo que implemente `Adapter`;
+2. adicione a variante em `Provider` (com `id` e `name`) e o adapter em `Provider::adapter`;
+3. `terraforme config --provider <agente>` passa a usá-lo.
+
 ## Como os modos funcionam no Claude Code
 
-`agent::prepare()` mexe na configuração global do Claude a cada `terraforme cli`:
+`Claude::setup` (em `agent/claude.rs`) mexe na configuração global do Claude a cada `terraforme cli`:
 
 1. Os hooks do RTK e do AI Memory saem do `~/.claude/settings.json` (backup em
    `settings.json.terraforme-bak`) e viram plugins locais em

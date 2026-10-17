@@ -12,7 +12,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::claude_config_dir;
+use crate::agent::Adapter;
+use crate::agent::claude::claude_config_dir;
 use crate::usage::{Usage, parse_timestamp};
 
 const PLAN_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -72,9 +73,10 @@ pub struct Limits {
     pub note: Option<String>,
 }
 
-/// Limites do plano quando há login OAuth; senão, o orçamento.
-pub fn collect(usage: &Usage, budget: &Budget) -> Limits {
-    let note = match plan() {
+/// Limites do plano do agente quando há (ex.: login OAuth no Claude Code);
+/// senão, o orçamento.
+pub fn collect(adapter: &dyn Adapter, usage: &Usage, budget: &Budget) -> Limits {
+    let note = match plan(adapter) {
         Ok(Some(items)) if !items.is_empty() => {
             return Limits {
                 source: Source::Plan,
@@ -116,20 +118,22 @@ type PlanCache = Option<(Instant, Result<Option<Vec<Limit>>, String>)>;
 
 static PLAN: Mutex<PlanCache> = Mutex::new(None);
 
-/// `None` sem login OAuth. Guarda o resultado por `PLAN_TTL`.
-fn plan() -> Result<Option<Vec<Limit>>> {
+/// [`Adapter::plan_limits`], guardado por `PLAN_TTL` (o terraforme roda um
+/// agente só por vez).
+fn plan(adapter: &dyn Adapter) -> Result<Option<Vec<Limit>>> {
     let mut cache = PLAN.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, result)) = cache.as_ref()
         && at.elapsed() < PLAN_TTL
     {
         return result.clone().map_err(anyhow::Error::msg);
     }
-    let result = fetch_plan().map_err(|e| format!("{e:#}"));
+    let result = adapter.plan_limits().map_err(|e| format!("{e:#}"));
     *cache = Some((Instant::now(), result.clone()));
     result.map_err(anyhow::Error::msg)
 }
 
-fn fetch_plan() -> Result<Option<Vec<Limit>>> {
+/// Limites do plano do Claude Code; `None` sem login OAuth.
+pub(crate) fn fetch_claude_plan() -> Result<Option<Vec<Limit>>> {
     let path = claude_config_dir()?.join(".credentials.json");
     let Ok(text) = fs::read_to_string(&path) else {
         return Ok(None);

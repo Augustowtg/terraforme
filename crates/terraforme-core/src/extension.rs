@@ -13,6 +13,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
+use crate::agent::Provider;
 use crate::status::{Component, State, find_in_path, run_ok, version_of};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,11 +257,9 @@ impl Extension {
             }
         }
 
-        // Plugin do terraforme com os hooks movidos do Claude (ver `agent`).
-        let plugin = crate::agent::plugin_dir(self)?;
-        if plugin.exists() {
-            fs::remove_dir_all(&plugin)
-                .with_context(|| format!("removendo {}", plugin.display()))?;
+        // O que cada agente criou para a extensão (ex.: plugins do Claude).
+        for adapter in Provider::ALL.into_iter().filter_map(Provider::adapter) {
+            adapter.forget(self)?;
         }
 
         Ok(Outcome::Deleted)

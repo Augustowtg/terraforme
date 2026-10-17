@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::agent::claude_config_dir;
+use crate::agent::claude::claude_config_dir;
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 const FIVE_HOURS: Duration = Duration::from_secs(5 * 60 * 60);
