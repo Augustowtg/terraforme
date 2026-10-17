@@ -1,0 +1,22 @@
+[package]
+name = "terraforme-cli"
+description = "CLI do terraforme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "terraforme"
+path = "src/main.rs"
+
+[dependencies]
+terraforme-core = { workspace = true, features = ["clap"] }
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+portable-pty = "0.9"
+ratatui = "0.30"
+tui-term = "0.3"
+uuid = { version = "1", features = ["v4"] }
+vt100 = "0.16"
