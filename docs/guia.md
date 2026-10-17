@@ -78,9 +78,9 @@ O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no t
 ```
 
 - **claude** — o agente. Cada instância é uma sub-aba (`claude 1`, `claude 2`…), todas rodando ao
-  mesmo tempo; `F12` abre outra, `Shift+F12` fecha a aberta e `Alt+1`…`Alt+9` ou `Ctrl+PgUp/PgDn`
-  trocam de instância, como as sub-abas de qualquer aba. A sub-aba some quando a instância termina, e o terraforme sai quando a última
-  termina.
+  mesmo tempo; `F12` abre outra, `Shift+F12` fecha a aberta e `Alt+1`…`Alt+9` ou `Ctrl+←→`
+  trocam de instância, como as sub-abas de qualquer aba. A sub-aba some quando a instância termina,
+  e o terraforme sai quando a última termina.
 - **Consumo** — três sub-abas, atualizadas a cada 5s:
   - **Limites** — quanto já foi usado e quanto falta. Com login OAuth no Claude Code
     (Pro/Max/Team), usa os limites do plano (sessão de 5h e semana, os mesmos do `/usage`); sem
@@ -96,8 +96,8 @@ O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no t
 | --- | --- |
 | `Shift+Tab` | próxima aba |
 | `Shift+F1`…`Shift+F4` | vai direto para a aba |
-| `Alt+1`…`Alt+9` / `Ctrl+PgUp/PgDn` | vai para a sub-aba da aba aberta (instância do agente, visão do consumo ou relatório) |
-| `Shift+1`…`Shift+9` / `←→` | o mesmo, só nas abas de relatório (na aba do agente essas teclas chegam ao Claude) |
+| `Alt+1`…`Alt+9` | vai direto para a sub-aba da aba aberta (instância do agente, visão do consumo ou relatório) |
+| `Ctrl+←→` / `Ctrl+PgUp/PgDn` | vai para a sub-aba vizinha, em volta (o mesmo em todas as abas) |
 | `F12` / `Shift+F12` | abre outra instância do agente / fecha a aberta |
 | `F10` | sai (encerra todas as instâncias) |
 | `Shift+PgUp/PgDn` | rola o histórico do agente |
