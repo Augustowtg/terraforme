@@ -5,6 +5,19 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.6.0 - 2026-10-17
+
+### Alterado
+- Atalhos de sub-abas padronizados no terminal do `terraforme cli`, iguais em todas as abas:
+  `Alt+1`…`Alt+9` vai direto para a sub-aba e `Ctrl+←→` / `Ctrl+PgUp/PgDn` passam para a vizinha
+  (em volta). Valem para as instâncias do agente, as visões do consumo e os relatórios das
+  extensões.
+- Nas abas de relatório, `Shift+1`…`Shift+9`, `←→` e `h`/`l` deixam de trocar a sub-aba.
+
+### Corrigido
+- Troca de instância do agente: `Shift+1`…`Shift+9` não servem para isso, porque na aba do agente
+  chegam ao Claude (digitam `!@#$`…). Use `Alt+1`…`Alt+9` ou `Ctrl+←→`.
+
 ## 0.5.0 - 2026-10-17
 
 ### Alterado
