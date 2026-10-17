@@ -5,6 +5,18 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.5.0 - 2026-10-17
+
+### Alterado
+
+- Sub-abas padronizadas no terminal do `terraforme cli`, no estilo do Consumo: `Alt+1`…`Alt+9` e
+  `Ctrl+PgUp/PgDn` trocam a sub-aba da aba aberta em todas as abas (instâncias do agente, visões do
+  consumo e relatórios das extensões), todas com rótulo `⌥N` e o mesmo destaque. Nas abas de
+  relatório, `Shift+1`…`Shift+9` e `←→` continuam funcionando. Antes, `Alt+1`…`Alt+9` sempre
+  levavam a uma instância do agente, de qualquer aba.
+- Por dentro, cada agente de IA fica atrás de um adapter (`agent::Adapter`), para facilitar a
+  troca ou a inclusão de outros agentes além do Claude Code.
+
 ## 0.4.0 - 2026-10-17
 
 ### Adicionado

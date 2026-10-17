@@ -1,9 +1,10 @@
 //! Terminal do terraforme (`terraforme cli`): o agente roda num pseudoterminal
 //! dentro de uma TUI com abas no topo — o agente (com uma sub-aba por
 //! instância), o consumo de tokens e as extensões do modo (os relatórios
-//! delas). `Shift+Tab` alterna as abas, `Shift+F1`–`F9` pulam para uma aba e
-//! `Shift+1`–`9` para uma sub-aba (`Alt+1`–`9` na aba do agente, já que lá o
-//! Shift chega ao agente); `F12` abre outra instância do agente e `Shift+F12`
+//! delas). `Shift+Tab` alterna as abas e `Shift+F1`–`F9` pulam para uma aba.
+//! As sub-abas trocam do mesmo jeito em todas as abas: `Alt+1`–`9` e
+//! `Ctrl+PgUp/PgDn` (nos relatórios também `Shift+1`–`9` e `←→`, que na aba do
+//! agente chegam a ele); `F12` abre outra instância do agente e `Shift+F12`
 //! fecha a aberta. As instâncias continuam rodando enquanto outra aba ou
 //! sub-aba está aberta.
 
@@ -372,12 +373,42 @@ impl App {
         self.select(Tab::Agent);
     }
 
-    /// Passa para a instância `delta` sub-abas adiante (ou atrás), em volta.
+    /// Sub-abas da aba aberta (instâncias do agente ou visões) e qual está
+    /// aberta.
+    fn sub_tabs(&self) -> (usize, usize) {
+        match &self.view {
+            Some(view) => (view.tab.views(&self.extensions).len(), view.index),
+            None => (
+                self.agents.len(),
+                self.agents
+                    .iter()
+                    .position(|a| a.id == self.focused)
+                    .unwrap_or(0),
+            ),
+        }
+    }
+
+    /// Abre a sub-aba `index` da aba aberta.
+    fn pick(&mut self, index: usize) {
+        let (count, current) = self.sub_tabs();
+        if index >= count || index == current {
+            return;
+        }
+        match &mut self.view {
+            Some(view) => {
+                view.index = index;
+                self.load(true);
+            }
+            None => self.focus(self.agents[index].id),
+        }
+    }
+
+    /// Passa `delta` sub-abas adiante (ou atrás), em volta.
     fn cycle(&mut self, delta: isize) {
-        let count = self.agents.len() as isize;
-        let i = self.agents.iter().position(|a| a.id == self.focused);
-        let i = i.map_or(0, |i| (i as isize + delta).rem_euclid(count) as usize);
-        self.focus(self.agents[i].id);
+        let (count, current) = self.sub_tabs();
+        if count > 1 {
+            self.pick((current as isize + delta).rem_euclid(count as isize) as usize);
+        }
     }
 
     /// Tira da lista a instância que terminou; sem nenhuma, sai. Se era a
@@ -501,11 +532,9 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::F(10) => return Ok(true),
-            // Sub-abas do agente: Alt+1–9 e Ctrl+PgUp/PgDn, em qualquer aba.
+            // Sub-abas da aba aberta, igual em todas: Alt+1–9 e Ctrl+PgUp/PgDn.
             KeyCode::Char(c @ '1'..='9') if key.modifiers.contains(KeyModifiers::ALT) => {
-                if let Some(id) = self.agents.get(c as usize - '1' as usize).map(|a| a.id) {
-                    self.focus(id);
-                }
+                self.pick(c as usize - '1' as usize);
             }
             KeyCode::PageUp if ctrl => self.cycle(-1),
             KeyCode::PageDown if ctrl => self.cycle(1),
@@ -571,23 +600,14 @@ impl App {
             KeyCode::PageDown => view.scroll = view.scroll.saturating_add(10),
             KeyCode::Home | KeyCode::Char('g') => view.scroll = 0,
             KeyCode::Char('r') => self.load(true),
-            _ => {
-                let count = view.tab.views(&self.extensions).len();
-                if count < 2 {
-                    return;
+            KeyCode::Right | KeyCode::Char('l') => self.cycle(1),
+            KeyCode::Left | KeyCode::Char('h') => self.cycle(-1),
+            KeyCode::Char(c) => {
+                if let Some(n) = shifted_digit(c) {
+                    self.pick(n - 1);
                 }
-                let index = match key.code {
-                    KeyCode::Right | KeyCode::Char('l') => (view.index + 1) % count,
-                    KeyCode::Left | KeyCode::Char('h') => (view.index + count - 1) % count,
-                    KeyCode::Char(c) => match shifted_digit(c) {
-                        Some(n) if n <= count => n - 1,
-                        _ => return,
-                    },
-                    _ => return,
-                };
-                view.index = index;
-                self.load(true);
             }
+            _ => {}
         }
     }
 
@@ -733,18 +753,16 @@ impl App {
 
     /// Sub-abas da aba do agente: uma por instância.
     fn instances(&self) -> Line<'_> {
+        let labels: Vec<_> = self
+            .agents
+            .iter()
+            .map(|a| ("", format!("{} {}", self.agent, a.id)))
+            .collect();
+        let (_, current) = self.sub_tabs();
         let mut spans = vec![Span::raw(" ")];
-        for (i, agent) in self.agents.iter().enumerate() {
-            let label = format!(" ⌥{} {} {} ", i + 1, self.agent, agent.id);
-            spans.push(if agent.id == self.focused {
-                Span::styled(label, Style::new().black().on_cyan().bold())
-            } else {
-                Span::raw(label).cyan()
-            });
-            spans.push(Span::raw(" "));
-        }
+        spans.extend(sub_tab_spans(&labels, current));
         let hint = if self.agents.len() > 1 {
-            " ⌥1-9/Ctrl+PgUp/PgDn instância · F12 nova · ⇧F12 fecha"
+            " ⌥1-9/Ctrl+PgUp/PgDn sub-aba · F12 nova · ⇧F12 fecha"
         } else {
             " F12 nova instância · ⇧F12 fecha"
         };
@@ -765,7 +783,7 @@ impl App {
             _ => "Consumo de tokens".to_string(),
         };
         let hint = if views.len() > 1 {
-            " ⇧1-9/←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
+            " ⌥1-9/←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
         } else {
             " ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
         };
@@ -777,23 +795,11 @@ impl App {
         frame.render_widget(block, area);
 
         let inner = if views.len() > 1 {
-            let mut tabs = Vec::new();
-            for (i, &(group, name)) in views.iter().enumerate() {
-                // Nome da extensão antes do primeiro relatório dela.
-                if !group.is_empty() && (i == 0 || views[i - 1].0 != group) {
-                    if i > 0 {
-                        tabs.push(Span::raw("│ ").dark_gray());
-                    }
-                    tabs.push(Span::raw(format!("{group} ")).bold());
-                }
-                let label = format!(" ⇧{} {name} ", i + 1);
-                tabs.push(if i == view.index {
-                    Span::styled(label, Style::new().black().on_cyan().bold())
-                } else {
-                    Span::raw(label).cyan()
-                });
-                tabs.push(Span::raw(" "));
-            }
+            let labels: Vec<_> = views
+                .iter()
+                .map(|&(group, name)| (group, name.to_string()))
+                .collect();
+            let tabs = sub_tab_spans(&labels, view.index);
             let [header, rest] =
                 Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(inner);
             frame.render_widget(
@@ -817,6 +823,28 @@ impl App {
             inner,
         );
     }
+}
+
+/// Barra de sub-abas, igual em todas as abas: `⌥N rótulo`, a aberta em
+/// destaque e o nome do grupo (ex.: a extensão) antes do primeiro item dele.
+fn sub_tab_spans(labels: &[(&str, String)], current: usize) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (i, (group, name)) in labels.iter().enumerate() {
+        if !group.is_empty() && (i == 0 || labels[i - 1].0 != *group) {
+            if i > 0 {
+                spans.push(Span::raw("│ ").dark_gray());
+            }
+            spans.push(Span::raw(format!("{group} ")).bold());
+        }
+        let label = format!(" ⌥{} {name} ", i + 1);
+        spans.push(if i == current {
+            Span::styled(label, Style::new().black().on_cyan().bold())
+        } else {
+            Span::raw(label).cyan()
+        });
+        spans.push(Span::raw(" "));
+    }
+    spans
 }
 
 /// Uma barra por limite, com quanto já foi usado e quanto falta.
@@ -1213,6 +1241,31 @@ mod tests {
         assert_eq!(shifted_digit('$'), Some(4));
         assert_eq!(shifted_digit('¨'), Some(6));
         assert_eq!(shifted_digit('1'), None);
+    }
+
+    #[test]
+    fn sub_tabs_share_one_style() {
+        let text = |spans: Vec<Span>| {
+            spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        let instances = [("", "claude 1".to_string()), ("", "claude 2".to_string())];
+        assert_eq!(
+            text(sub_tab_spans(&instances, 1)),
+            " ⌥1 claude 1   ⌥2 claude 2  "
+        );
+        let reports = [
+            ("RTK", "gain".to_string()),
+            ("AI Memory", "Status".to_string()),
+        ];
+        let spans = sub_tab_spans(&reports, 0);
+        assert_eq!(
+            text(spans.clone()),
+            "RTK  ⌥1 gain  │ AI Memory  ⌥2 Status  "
+        );
+        assert_eq!(spans[1].style.bg, Some(Color::Cyan));
     }
 
     #[test]
