@@ -1,0 +1,110 @@
+//! Configuração do terraforme, em `~/.config/terraforme/config.toml`
+//! (`%APPDATA%\terraforme\config.toml` no Windows).
+
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::agent::{Mode, Provider};
+use crate::limits::Budget;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    /// Agente de IA executado por `terraforme cli`.
+    pub provider: Provider,
+    /// Modo usado quando `terraforme cli` é chamado sem --eco/--high/--hybrid.
+    pub mode: Mode,
+    /// Roda o agente dentro do AI Jail (sandbox) quando `terraforme cli` é
+    /// chamado sem --jail/--no-jail.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub jail: bool,
+    /// Orçamento de tokens da aba de consumo, sem os limites do plano.
+    #[serde(skip_serializing_if = "Budget::is_empty")]
+    pub budget: Budget,
+}
+
+impl Config {
+    /// Lê a configuração; sem arquivo, devolve os valores padrão.
+    pub fn load() -> Result<Self> {
+        let path = Self::path()?;
+        match fs::read_to_string(&path) {
+            Ok(text) => toml::from_str(&text).with_context(|| format!("lendo {}", path.display())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(err).with_context(|| format!("lendo {}", path.display())),
+        }
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = Self::path()?;
+        fs::create_dir_all(Self::dir()?)?;
+        fs::write(&path, toml::to_string(self)?)
+            .with_context(|| format!("gravando {}", path.display()))
+    }
+
+    pub fn path() -> Result<PathBuf> {
+        Ok(Self::dir()?.join("config.toml"))
+    }
+
+    pub fn dir() -> Result<PathBuf> {
+        let base = if cfg!(windows) {
+            env::var_os("APPDATA").map(PathBuf::from)
+        } else {
+            env::var_os("XDG_CONFIG_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        };
+        Ok(base
+            .context("não foi possível descobrir a pasta de configuração do usuário")?
+            .join("terraforme"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toml_round_trip() {
+        let config = Config {
+            provider: Provider::Claude,
+            mode: Mode::Eco,
+            jail: false,
+            budget: Budget::default(),
+        };
+        let text = toml::to_string(&config).unwrap();
+        assert_eq!(text, "provider = \"claude\"\nmode = \"eco\"\n");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
+
+        let jailed = Config {
+            jail: true,
+            ..config
+        };
+        let text = toml::to_string(&jailed).unwrap();
+        assert_eq!(text, "provider = \"claude\"\nmode = \"eco\"\njail = true\n");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), jailed);
+
+        let config = Config {
+            budget: Budget {
+                five_hours: Some(1_000),
+                week: None,
+            },
+            ..config
+        };
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("[budget]\nfive_hours = 1000\n"), "{text}");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
+    }
+
+    #[test]
+    fn missing_fields_use_defaults() {
+        let config: Config = toml::from_str("mode = \"high\"").unwrap();
+        assert_eq!(config.provider, Provider::Claude);
+        assert_eq!(config.mode, Mode::High);
+        assert!(!config.jail);
+    }
+}

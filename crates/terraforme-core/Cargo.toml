@@ -1,0 +1,19 @@
+[package]
+name = "terraforme-core"
+description = "Regras de negócio do terraforme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+toml.workspace = true
+ureq = "3"
+clap = { workspace = true, optional = true }
+
+[features]
+# Deriva `clap::ValueEnum` nos enums públicos, para a CLI usá-los direto.
+clap = ["dep:clap"]

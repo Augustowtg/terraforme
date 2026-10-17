@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.98"
+authors = ["Augusto Wesley"]
+
+[workspace.dependencies]
+terraforme-core = { path = "crates/terraforme-core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+# Sem LTO: o último passo da build (o binário `terraforme`) roda em vários
+# núcleos em vez de ficar parado em 181/182 com fat LTO + 1 codegen unit.
+[profile.release]
+strip = true
+
+# Binário menor e um pouco mais rápido, para distribuir:
+#   cargo build --profile dist -p terraforme-cli   (ou ./install.linux.sh --dist)
+[profile.dist]
+inherits = "release"
+lto = true
+codegen-units = 1
