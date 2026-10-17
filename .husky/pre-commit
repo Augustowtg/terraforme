@@ -1,0 +1,5 @@
+echo "> cargo fmt"
+cargo fmt --all --check || { echo "Run: cargo fmt --all"; exit 1; }
+
+echo "> cargo clippy"
+cargo clippy --workspace --all-targets -- -D warnings

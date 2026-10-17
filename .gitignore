@@ -1,0 +1,16 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Documentação local (não versionada)
+/docs
+
+# Node
+node_modules/
+
+# Editores / SO
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
