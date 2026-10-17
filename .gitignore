@@ -2,8 +2,6 @@
 /target
 **/*.rs.bk
 
-# Documentação local (não versionada)
-/docs
 
 # Node
 node_modules/
