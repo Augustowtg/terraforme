@@ -2,10 +2,10 @@
 //! dentro de uma TUI com abas no topo — o agente (com uma sub-aba por
 //! instância), o consumo de tokens e as extensões do modo (os relatórios
 //! delas). `Shift+Tab` alterna as abas e `Shift+F1`–`F9` pulam para uma aba.
-//! As sub-abas trocam do mesmo jeito em todas as abas: `Alt+1`–`9` e
-//! `Ctrl+PgUp/PgDn` (nos relatórios também `Shift+1`–`9` e `←→`, que na aba do
-//! agente chegam a ele); `F12` abre outra instância do agente e `Shift+F12`
-//! fecha a aberta. As instâncias continuam rodando enquanto outra aba ou
+//! As sub-abas trocam do mesmo jeito em todas as abas: `Alt+1`–`9` vai direto
+//! e `Ctrl+←→` / `Ctrl+PgUp/PgDn` passam para a vizinha (`Shift+dígito` não
+//! serve: na aba do agente chega ao Claude como `!@#$`…). `F12` abre outra
+//! instância do agente e `Shift+F12` fecha a aberta. As instâncias continuam rodando enquanto outra aba ou
 //! sub-aba está aberta.
 
 use std::io::{Read, Write};
@@ -532,12 +532,13 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::F(10) => return Ok(true),
-            // Sub-abas da aba aberta, igual em todas: Alt+1–9 e Ctrl+PgUp/PgDn.
+            // Sub-abas da aba aberta, igual em todas: Alt+1–9 vai direto e
+            // Ctrl+←→ / Ctrl+PgUp/PgDn passam para a vizinha.
             KeyCode::Char(c @ '1'..='9') if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.pick(c as usize - '1' as usize);
             }
-            KeyCode::PageUp if ctrl => self.cycle(-1),
-            KeyCode::PageDown if ctrl => self.cycle(1),
+            KeyCode::Left | KeyCode::PageUp if ctrl => self.cycle(-1),
+            KeyCode::Right | KeyCode::PageDown if ctrl => self.cycle(1),
             // Alguns terminais mandam Shift+F12 como F24.
             KeyCode::F(12) if shift => self.close_active(),
             KeyCode::F(24) => self.close_active(),
@@ -600,13 +601,6 @@ impl App {
             KeyCode::PageDown => view.scroll = view.scroll.saturating_add(10),
             KeyCode::Home | KeyCode::Char('g') => view.scroll = 0,
             KeyCode::Char('r') => self.load(true),
-            KeyCode::Right | KeyCode::Char('l') => self.cycle(1),
-            KeyCode::Left | KeyCode::Char('h') => self.cycle(-1),
-            KeyCode::Char(c) => {
-                if let Some(n) = shifted_digit(c) {
-                    self.pick(n - 1);
-                }
-            }
             _ => {}
         }
     }
@@ -762,7 +756,7 @@ impl App {
         let mut spans = vec![Span::raw(" ")];
         spans.extend(sub_tab_spans(&labels, current));
         let hint = if self.agents.len() > 1 {
-            " ⌥1-9/Ctrl+PgUp/PgDn sub-aba · F12 nova · ⇧F12 fecha"
+            " ⌥1-9/Ctrl+←→ sub-aba · F12 nova · ⇧F12 fecha"
         } else {
             " F12 nova instância · ⇧F12 fecha"
         };
@@ -783,7 +777,7 @@ impl App {
             _ => "Consumo de tokens".to_string(),
         };
         let hint = if views.len() > 1 {
-            " ⌥1-9/←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
+            " ⌥1-9/Ctrl+←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
         } else {
             " ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
         };
@@ -1054,14 +1048,6 @@ fn shift_function(key: KeyEvent) -> Option<usize> {
     }
 }
 
-/// Caractere de Shift+1–9 (teclados US e ABNT2) → 1–9.
-fn shifted_digit(c: char) -> Option<usize> {
-    match c {
-        '¨' => Some(6),
-        _ => "!@#$%^&*(".chars().position(|d| d == c).map(|i| i + 1),
-    }
-}
-
 /// `1234567` → `1.234.567`.
 fn thousands(n: u64) -> String {
     let digits = n.to_string();
@@ -1237,10 +1223,6 @@ mod tests {
         assert_eq!(f(2, KeyModifiers::SHIFT), Some(2));
         assert_eq!(f(2, KeyModifiers::NONE), None);
         assert_eq!(f(13, KeyModifiers::NONE), Some(1));
-        assert_eq!(shifted_digit('!'), Some(1));
-        assert_eq!(shifted_digit('$'), Some(4));
-        assert_eq!(shifted_digit('¨'), Some(6));
-        assert_eq!(shifted_digit('1'), None);
     }
 
     #[test]
