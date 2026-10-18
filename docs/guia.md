@@ -29,6 +29,8 @@ terraforme extension --status              # status e versão de todas
 terraforme extension rtk --status          # de uma só
 terraforme extension --install             # instala todas (pula as já instaladas)
 terraforme extension ai-memory --install   # instala uma só
+terraforme extension --setup                # detecta agentes e configura as extensões escolhidas
+terraforme extension ai-memory --setup      # refaz o setup individual da extensão
 terraforme extension rtk --update          # atualiza (nome obrigatório)
 terraforme extension rtk --delete          # remove (nome obrigatório; -y pula a confirmação)
 ```
@@ -37,6 +39,10 @@ A instalação usa os scripts oficiais de cada projeto (em `~/.local/bin`) e já
 (`rtk init -g` / `ai-memory setup`). A remoção desfaz essa configuração e apaga o binário; os dados
 do AI Memory (wiki, banco) são preservados. O RTK instala por padrão a edição BUSL-1.1 — para a
 Apache-2.0: `RTK_EDITION=oss terraforme extension rtk --install`.
+
+`extension --setup` não instala binários: detecta os agentes no `PATH`, pergunta quais agentes e
+extensões configurar e executa as etapas específicas de cada integração. Consulte a
+[documentação do setup interativo](setup-interativo.md) para os detalhes.
 
 O AI Jail não tem script de instalação: o terraforme baixa o binário do último release (Linux x86_64
 ou macOS arm64), confere o `.sha256` publicado e o instala em `~/.local/bin`; no Linux ele precisa do
