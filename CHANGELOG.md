@@ -5,6 +5,13 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.8.1 - 2026-10-18
+
+### Corrigido
+- O MCP do AI Memory volta a subir no OpenCode: a ponte `ai-memory mcp-bridge` ganhou
+  `--no-session-id`, sem o qual ela procura o `CLAUDE_CODE_SESSION_ID` (inexistente no OpenCode)
+  e recusa iniciar, deixando a sessão sem as ferramentas de memória.
+
 ## 0.8.0 - 2026-10-18
 
 ### Adicionado
@@ -13,13 +20,6 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
   instalar extensões automaticamente; o AI Jail é configurado uma vez para a máquina.
 - A configuração escolhida de AI Memory é aplicada automaticamente ao agente: `ai-memory setup` no
   Claude Code e `ai-memory install-hooks --agent opencode2 --apply` no OpenCode.
-
-## 0.6.1 - 2026-10-18
-
-### Corrigido
-- O atalho direto para as sub-abas do terminal do `terraforme cli` passa de `Alt+1`…`Alt+9` para
-  `Shift+Alt+1`…`Shift+Alt+9`, com rótulo `⇧⌥N` (o `Alt+dígito` fica para o agente). `Ctrl+←→` /
-  `Ctrl+PgUp/PgDn` continuam para a vizinha (em volta).
 
 ## 0.7.0 - 2026-10-18
 
@@ -30,8 +30,7 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
   `~/.config/opencode/plugins` e o MCP do AI Memory no `opencode.json` saem de lá (com backup
   `.terraforme-bak`). O plugin do `rtk init --opencode` não carrega no OpenCode 2, então o RTK usa um
   plugin próprio do terraforme; o do AI Memory é gerado com `ai-memory install-hooks --agent
-  opencode2` quando falta, e o MCP vai pela ponte `ai-memory mcp-bridge`. A aba Consumo ainda não
-  funciona com o OpenCode.
+  opencode2` quando falta, e o MCP vai pela ponte `ai-memory mcp-bridge`.
 - `terraforme config --agent` (ou `--agente`) escolhe o agente padrão: sem valor, lista os agentes
   (com versão) e pergunta qual usar, por número ou nome. `terraforme cli --agent <agente>` troca o
   agente só numa sessão.
@@ -46,6 +45,13 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 - O `~/.ai-jail` padrão ganha a seção `[commands.opencode]`, com `opencode.ai` e `models.dev`
   liberados na rede filtrada.
 - A aba AI Jail mostra a sandbox (`--dry-run`) do agente em uso, não mais sempre a do Claude.
+
+## 0.6.1 - 2026-10-18
+
+### Corrigido
+- O atalho direto para as sub-abas do terminal do `terraforme cli` passa de `Alt+1`…`Alt+9` para
+  `Shift+Alt+1`…`Shift+Alt+9`, com rótulo `⇧⌥N` (o `Alt+dígito` fica para o agente). `Ctrl+←→` /
+  `Ctrl+PgUp/PgDn` continuam para a vizinha (em volta).
 
 ## 0.6.0 - 2026-10-17
 

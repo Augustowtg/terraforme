@@ -16,7 +16,9 @@
 //!   [`RTK_PLUGIN`], que faz o mesmo (`rtk rewrite` em cada comando do shell).
 //! - AI Memory: o plugin é o do próprio AI Memory (`ai-memory-opencode2.ts`,
 //!   gerado na primeira vez se ainda não existir); o MCP vai pela ponte stdio
-//!   (`ai-memory mcp-bridge`), que se autentica sozinha.
+//!   (`ai-memory mcp-bridge`), que se autentica sozinha. A ponte do Claude Code
+//!   lê o id de sessão de `CLAUDE_CODE_SESSION_ID`, que o OpenCode não tem, então
+//!   ela sobe com `--no-session-id` (modo para clientes stdio de fora).
 //!
 //! Sem `--standalone`, o `opencode` conversa com um serviço em segundo plano
 //! que já roda com a configuração dele; com a flag, cada sessão sobe o próprio
@@ -515,15 +517,28 @@ fn ai_memory_bridge(plugin: &Path) -> Result<Value> {
     };
     let text = fs::read_to_string(plugin.join(ENTRY)).unwrap_or_default();
     let server = plugin_server(&text).unwrap_or(AI_MEMORY_SERVER);
-    Ok(json!({
+    Ok(bridge_config(&bin, server))
+}
+
+/// Monta a entrada do servidor MCP `memory`.
+///
+/// O `ai-memory mcp-bridge` sem `--no-session-id` lê o id de sessão de
+/// `CLAUDE_CODE_SESSION_ID` (ou `MUSE_SESSION_ID`, com `--agent muse`); o
+/// OpenCode não define nenhuma das duas, então a ponte recusa subir. Com
+/// `--no-session-id` ela vira uma ponte stdio sem sessão, que é o modo para
+/// clientes que não são o Claude Code — o plugin do OpenCode captura a sessão
+/// por conta própria.
+fn bridge_config(bin: &Path, server: &str) -> Value {
+    json!({
         "type": "local",
         "command": [
             bin.display().to_string(),
             "mcp-bridge",
+            "--no-session-id",
             "--server-url",
             format!("{}/mcp", server.trim_end_matches('/')),
         ],
-    }))
+    })
 }
 
 /// `const SERVER = "http://127.0.0.1:49374"…` no plugin do AI Memory.
@@ -605,6 +620,30 @@ mod tests {
         let text = "const AGENT = \"x\";\nconst SERVER = \"http://127.0.0.1:5000\".replace(/\\/+$/, \"\");";
         assert_eq!(plugin_server(text), Some("http://127.0.0.1:5000"));
         assert_eq!(plugin_server("nada"), None);
+    }
+
+    #[test]
+    fn mcp_bridge_runs_without_a_session_id() {
+        // Sem `--no-session-id` a ponte procura `CLAUDE_CODE_SESSION_ID`, não
+        // acha no OpenCode e recusa subir; o `/mcp` também não pode duplicar.
+        let value = bridge_config(Path::new("/bin/ai-memory"), "http://127.0.0.1:49374/");
+        assert_eq!(value["type"], "local");
+        let command: Vec<_> = value["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            command,
+            [
+                "/bin/ai-memory",
+                "mcp-bridge",
+                "--no-session-id",
+                "--server-url",
+                "http://127.0.0.1:49374/mcp",
+            ]
+        );
     }
 
     #[test]
