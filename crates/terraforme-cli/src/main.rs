@@ -1,6 +1,6 @@
 mod term;
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
@@ -8,6 +8,7 @@ use clap_complete::Shell;
 use terraforme_core::agent::{self, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Outcome};
+use terraforme_core::jail;
 use terraforme_core::space::{self, Spaces};
 use terraforme_core::status::{self, Component, State};
 
@@ -30,14 +31,14 @@ enum Command {
     Version,
     /// Verifica as extensões (RTK, AI Memory, AI Jail)
     Status,
-    /// Instala, atualiza, remove ou mostra as extensões (RTK, AI Memory, AI Jail)
+    /// Instala, atualiza, configura, remove ou mostra as extensões (RTK, AI Memory, AI Jail)
     #[command(group(
         ArgGroup::new("action")
             .required(true)
-            .args(["install", "update", "delete", "status"]),
+            .args(["install", "update", "setup", "project", "default", "delete", "status"]),
     ))]
     Extension {
-        /// Extensão alvo; obrigatória com --update e --delete
+        /// Extensão alvo; obrigatória com --update, --setup e --delete
         #[arg(value_enum)]
         name: Option<Extension>,
         /// Instala a extensão (sem nome: instala todas)
@@ -46,6 +47,15 @@ enum Command {
         /// Atualiza a extensão para a última versão
         #[arg(long, requires = "name")]
         update: bool,
+        /// Refaz a configuração da extensão (no AI Jail: confere a versão e o bwrap e completa o ~/.ai-jail)
+        #[arg(long, requires = "name")]
+        setup: bool,
+        /// AI Jail: cria o .ai-jail na pasta atual, e o `terraforme cli` passa a rodar no AI Jail nela
+        #[arg(long)]
+        project: bool,
+        /// AI Jail: liga (true) ou desliga (false) a sandbox por padrão no `terraforme cli`
+        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set)]
+        default: Option<bool>,
         /// Remove a extensão e a configuração dela nos agentes
         #[arg(long, requires = "name")]
         delete: bool,
@@ -56,11 +66,11 @@ enum Command {
         #[arg(short, long)]
         yes: bool,
     },
-    /// Mostra ou altera a configuração (provider de IA, modo padrão, sandbox e orçamento)
+    /// Mostra ou altera a configuração (agente, modo padrão, sandbox e orçamento)
     Config {
-        /// Sem valor: lista os providers. Com valor: define o provider
-        #[arg(long, value_enum, num_args = 0..=1)]
-        provider: Option<Option<Provider>>,
+        /// Agente padrão do `terraforme cli` (claude, opencode). Sem valor: lista e pergunta
+        #[arg(long, visible_alias = "agente", alias = "provider", value_enum, num_args = 0..=1)]
+        agent: Option<Option<Provider>>,
         /// Define o modo padrão do `terraforme cli`
         #[arg(long, value_enum)]
         mode: Option<Mode>,
@@ -77,6 +87,9 @@ enum Command {
     /// Abre o agente de IA no terminal do terraforme (abas de consumo, RTK e AI Memory)
     #[command(group(ArgGroup::new("modo").args(["eco", "high", "hybrid"])))]
     Cli {
+        /// Agente desta sessão, qualquer que seja o padrão (`terraforme config --agent`)
+        #[arg(long, visible_alias = "agente", value_enum)]
+        agent: Option<Provider>,
         /// Só RTK (economia de tokens)
         #[arg(long)]
         eco: bool,
@@ -173,6 +186,9 @@ fn main() -> Result<()> {
             name,
             install,
             update,
+            setup,
+            project,
+            default,
             delete,
             status: _,
             yes,
@@ -181,10 +197,25 @@ fn main() -> Result<()> {
                 Some(name) => vec![name],
                 None => Extension::ALL.to_vec(),
             };
+            if (project || default.is_some()) && name != Some(Extension::AiJail) {
+                bail!(
+                    "--project e --default são do AI Jail: `terraforme extension ai-jail --project`"
+                );
+            }
             if install {
                 install_all(&targets)?;
             } else if update {
                 report(targets[0], targets[0].update()?);
+            } else if setup {
+                let ext = targets[0];
+                for line in ext.setup()? {
+                    println!("✔ {line}");
+                }
+                println!("✔ {} configurado", ext.name());
+            } else if project {
+                jail_project()?;
+            } else if let Some(on) = default {
+                config(None, None, Some(on), None, None)?;
             } else if delete {
                 let ext = targets[0];
                 if yes || confirm(&format!("Remover {}?", ext.name()))? {
@@ -197,13 +228,14 @@ fn main() -> Result<()> {
             }
         }
         Command::Config {
-            provider,
+            agent,
             mode,
             jail,
             budget_five_hours,
             budget_week,
-        } => config(provider, mode, jail, budget_five_hours, budget_week)?,
+        } => config(agent, mode, jail, budget_five_hours, budget_week)?,
         Command::Cli {
+            agent,
             eco,
             high,
             hybrid,
@@ -213,12 +245,15 @@ fn main() -> Result<()> {
             instances,
             args,
         } => {
-            let mode = pick_mode(eco, high, hybrid);
-            let jail = (jail || no_jail).then_some(jail);
+            let choice = Choice {
+                agent,
+                mode: pick_mode(eco, high, hybrid),
+                jail: (jail || no_jail).then_some(jail),
+            };
             if plain {
-                run_agent(mode, jail, &args)?
+                run_agent(choice, &args)?
             } else {
-                run_term(mode, jail, instances.into(), &args)?
+                run_term(choice, instances.into(), &args)?
             }
         }
         Command::Space {
@@ -246,7 +281,7 @@ fn main() -> Result<()> {
 }
 
 fn config(
-    provider: Option<Option<Provider>>,
+    agent: Option<Option<Provider>>,
     mode: Option<Mode>,
     jail: Option<bool>,
     budget_five_hours: Option<u64>,
@@ -255,15 +290,42 @@ fn config(
     let mut config = Config::load()?;
     let mut changed = false;
 
-    match provider {
+    let agent = match agent {
+        // Sem valor: lista e, num terminal, pergunta qual vira o padrão.
         Some(None) => {
             print_providers(config.provider);
-            return Ok(());
+            if !io::stdin().is_terminal() {
+                return Ok(());
+            }
+            let answer = ask(&format!(
+                "Agente padrão (1-{} ou nome; Enter mantém {}): ",
+                Provider::ALL.len(),
+                config.provider.id()
+            ))?;
+            if answer.is_empty() {
+                return Ok(());
+            }
+            let Some(p) = Provider::pick(&answer) else {
+                bail!("agente {answer} não encontrado");
+            };
+            Some(p)
         }
-        Some(Some(p)) if !p.is_implemented() => {
-            bail!("o provider {} ainda não foi implementado", p.name())
+        Some(Some(p)) => Some(p),
+        None => None,
+    };
+    match agent {
+        Some(p) if !p.is_implemented() => {
+            bail!("o agente {} ainda não foi implementado", p.name())
         }
-        Some(Some(p)) => {
+        Some(p) => {
+            if !p.check().state.is_installed() {
+                eprintln!(
+                    "⚠ `{}` não está no PATH — instale o {}: {}",
+                    p.id(),
+                    p.name(),
+                    p.url()
+                );
+            }
             config.provider = p;
             changed = true;
         }
@@ -292,13 +354,22 @@ fn config(
         println!("✔ Configuração salva");
     }
     println!("{}", Config::path()?.display());
-    println!("  provider  {}", config.provider.id());
+    println!(
+        "  agente    {} ({})",
+        config.provider.id(),
+        config.provider.name()
+    );
     println!(
         "  modo      {} ({})",
         config.mode.id(),
         mode_label(config.mode)
     );
     println!("  sandbox   {}", if config.jail { "AI Jail" } else { "—" });
+    if let Ok(dir) = std::env::current_dir()
+        && let Some(path) = jail::project_config(&dir)
+    {
+        println!("            AI Jail nesta pasta ({})", path.display());
+    }
     let budget = |value: Option<u64>| value.map_or("—".to_string(), |v| format!("{v} tokens"));
     println!("  orçamento 5h {}", budget(config.budget.five_hours));
     println!("  orçamento 7d {}", budget(config.budget.week));
@@ -306,19 +377,41 @@ fn config(
 }
 
 fn print_providers(current: Provider) {
-    println!("Providers");
-    for p in Provider::ALL {
+    println!("Agentes");
+    for (i, p) in Provider::ALL.into_iter().enumerate() {
         let marker = if p == current { "●" } else { "○" };
         let state = if !p.is_implemented() {
             "não implementado".to_string()
         } else {
             match p.check().state {
-                State::Installed { path, .. } => format!("✔ instalado ({})", path.display()),
-                _ => "✘ não instalado".to_string(),
+                State::Installed { path, version } => {
+                    let version = version.map(|v| format!(" v{v}")).unwrap_or_default();
+                    format!("✔ instalado{version} ({})", path.display())
+                }
+                _ => format!("✘ não instalado — {}", p.url()),
             }
         };
-        println!("  {marker} {:<8} {:<12} {state}", p.id(), p.name());
+        println!(
+            "  {} {marker} {:<8} {:<12} {state}",
+            i + 1,
+            p.id(),
+            p.name()
+        );
     }
+}
+
+/// `terraforme extension ai-jail --project`.
+fn jail_project() -> Result<()> {
+    let dir = std::env::current_dir().context("pasta atual")?;
+    let agent = Config::load()?.provider;
+    let bin = agent.adapter().context("agente sem adapter")?.bin();
+    let path = jail::init_project(&dir, bin)?;
+    println!("✔ {} criado", path.display());
+    println!(
+        "  o `terraforme cli` aberto nesta pasta roda no AI Jail (--no-jail desliga numa sessão);"
+    );
+    println!("  regras do projeto (pastas, hosts liberados) vão nesse arquivo");
+    Ok(())
 }
 
 fn mode_label(mode: Mode) -> String {
@@ -346,17 +439,59 @@ fn pick_mode(eco: bool, high: bool, hybrid: bool) -> Option<Mode> {
     }
 }
 
-fn run_term(
+/// Agente, modo e sandbox pedidos na linha de comando (`None` = o padrão).
+struct Choice {
+    agent: Option<Provider>,
     mode: Option<Mode>,
     jail: Option<bool>,
-    instances: usize,
-    args: &[String],
-) -> Result<()> {
-    let config = Config::load()?;
-    let mode = mode.unwrap_or(config.mode);
-    let jail = jail.unwrap_or(config.jail);
-    let launch = agent::prepare(config.provider, mode, jail, args)?;
-    let adapter = config.provider.adapter().context("provider sem adapter")?;
+}
+
+/// Sessão resolvida: a linha de comando vence o `.ai-jail` do projeto, que
+/// vence o config.toml.
+struct Resolved {
+    provider: Provider,
+    mode: Mode,
+    jail: bool,
+    launch: agent::Launch,
+}
+
+impl Choice {
+    fn resolve(self, args: &[String]) -> Result<Resolved> {
+        let config = Config::load()?;
+        let provider = self.agent.unwrap_or(config.provider);
+        let mode = self.mode.unwrap_or(config.mode);
+        let project = std::env::current_dir()
+            .ok()
+            .and_then(|dir| jail::project_config(&dir));
+        let jail = self.jail.unwrap_or(config.jail || project.is_some());
+        let mut launch = agent::prepare(provider, mode, jail, args)?;
+        if let Some(path) = project
+            && jail
+            && self.jail.is_none()
+            && !config.jail
+        {
+            launch.notices.push(format!(
+                "AI Jail ligado pelo {} desta pasta",
+                path.display()
+            ));
+        }
+        Ok(Resolved {
+            provider,
+            mode,
+            jail,
+            launch,
+        })
+    }
+}
+
+fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
+    let Resolved {
+        provider,
+        mode,
+        jail,
+        launch,
+    } = choice.resolve(args)?;
+    let adapter = provider.adapter().context("agente sem adapter")?;
 
     let notices = launch
         .notices
@@ -364,13 +499,13 @@ fn run_term(
         .map(|n| format!("ℹ {n}"))
         .chain(launch.warnings.iter().map(|w| format!("⚠ {w}")))
         .collect();
-    let title = launch_title(config.provider, mode, jail);
+    let title = launch_title(provider, mode, jail);
     let mut extensions = mode.extensions();
     if jail {
         extensions.push(Extension::AiJail);
     }
     term::run(term::Options {
-        agent: config.provider.id().to_string(),
+        agent: provider.id().to_string(),
         title,
         adapter,
         command: launch.command,
@@ -381,11 +516,13 @@ fn run_term(
     })
 }
 
-fn run_agent(mode: Option<Mode>, jail: Option<bool>, args: &[String]) -> Result<()> {
-    let config = Config::load()?;
-    let mode = mode.unwrap_or(config.mode);
-    let jail = jail.unwrap_or(config.jail);
-    let launch = agent::prepare(config.provider, mode, jail, args)?;
+fn run_agent(choice: Choice, args: &[String]) -> Result<()> {
+    let Resolved {
+        provider,
+        mode,
+        jail,
+        launch,
+    } = choice.resolve(args)?;
 
     for notice in &launch.notices {
         eprintln!("ℹ {notice}");
@@ -393,7 +530,7 @@ fn run_agent(mode: Option<Mode>, jail: Option<bool>, args: &[String]) -> Result<
     for warning in &launch.warnings {
         eprintln!("⚠ {warning}");
     }
-    eprintln!("==> {}", launch_title(config.provider, mode, jail));
+    eprintln!("==> {}", launch_title(provider, mode, jail));
 
     exec(launch.command)
 }
@@ -691,23 +828,28 @@ mod tests {
     }
 
     #[test]
-    fn config_provider_value_is_optional() {
-        let cli = parse(&["config", "--provider"]).unwrap();
+    fn config_agent_value_is_optional() {
+        let cli = parse(&["config", "--agent"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Config {
-                provider: Some(None),
+                agent: Some(None),
                 ..
             })
         ));
-        let cli = parse(&["config", "--provider", "claude"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Config {
-                provider: Some(Some(Provider::Claude)),
-                ..
-            })
-        ));
+        // --agente e o antigo --provider continuam valendo.
+        for flag in ["--agent", "--agente", "--provider"] {
+            let cli = parse(&["config", flag, "opencode"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Config {
+                    agent: Some(Some(Provider::OpenCode)),
+                    ..
+                })
+            ));
+        }
+        assert!(parse(&["config", "--agent", "claude"]).is_ok());
+        assert!(parse(&["config", "--agent", "gemini"]).is_err());
         assert!(parse(&["config", "--mode", "eco"]).is_ok());
         assert!(parse(&["config", "--mode", "turbo"]).is_err());
         assert!(parse(&["config", "--budget-5h", "1000", "--budget-week", "0"]).is_ok());
@@ -747,6 +889,42 @@ mod tests {
         ));
         assert!(parse(&["config", "--jail"]).is_err());
         assert!(parse(&["extension", "ai-jail", "--update"]).is_ok());
+    }
+
+    #[test]
+    fn extension_setup_project_and_default() {
+        assert!(parse(&["extension", "ai-jail", "--setup"]).is_ok());
+        assert!(parse(&["extension", "rtk", "--setup"]).is_ok());
+        assert!(parse(&["extension", "--setup"]).is_err());
+        assert!(parse(&["extension", "ai-jail", "--project"]).is_ok());
+        assert!(matches!(
+            parse(&["extension", "ai-jail", "--default", "true"])
+                .unwrap()
+                .command,
+            Some(Command::Extension {
+                default: Some(true),
+                ..
+            })
+        ));
+        assert!(parse(&["extension", "ai-jail", "--default"]).is_err());
+        assert!(parse(&["extension", "ai-jail", "--project", "--setup"]).is_err());
+    }
+
+    #[test]
+    fn cli_agent_overrides_the_default() {
+        let cli = parse(&["cli", "--agent", "opencode", "--eco"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Cli {
+                agent: Some(Provider::OpenCode),
+                eco: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&["cli"]).unwrap().command,
+            Some(Command::Cli { agent: None, .. })
+        ));
     }
 
     #[test]

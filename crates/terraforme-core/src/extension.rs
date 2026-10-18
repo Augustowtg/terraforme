@@ -92,9 +92,12 @@ const AI_JAIL_REPORTS: [Report; 2] = [
     },
     Report {
         label: "Sandbox",
-        args: &["--dry-run", "claude"],
+        args: &["--dry-run", AGENT],
     },
 ];
+
+/// Nos argumentos de um [`Report`], vira o executável do agente em uso.
+const AGENT: &str = "{agent}";
 
 const RTK_INSTALL_SH: &str =
     "https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh";
@@ -192,18 +195,26 @@ impl Extension {
 
         self.run_installer()?;
         let path = self.installed_path()?;
-
-        match self {
-            Extension::Rtk => run(Command::new(&path).args(["init", "-g"]))?,
-            Extension::AiMemory => run(Command::new(&path).arg("setup"))?,
-            Extension::AiJail => {
-                crate::jail::ensure_default_config()?;
-            }
-        }
+        self.setup()?;
 
         Ok(Outcome::Installed {
             version: version_of(&path),
         })
+    }
+
+    /// (Re)faz a configuração da extensão para os agentes, como na instalação:
+    /// `rtk init -g`, `ai-memory setup` e, no AI Jail, o
+    /// [`crate::jail::setup`] (versão, `bwrap` e `~/.ai-jail`). Os plugins de
+    /// cada agente são montados pelo terraforme a cada execução. Devolve o
+    /// que foi feito além da saída dos próprios comandos.
+    pub fn setup(self) -> Result<Vec<String>> {
+        let (path, _) = self.require_installed()?;
+        match self {
+            Extension::Rtk => run(Command::new(&path).args(["init", "-g"]))?,
+            Extension::AiMemory => run(Command::new(&path).arg("setup"))?,
+            Extension::AiJail => return crate::jail::setup(),
+        }
+        Ok(Vec::new())
     }
 
     pub fn update(self) -> Result<Outcome> {
@@ -274,11 +285,16 @@ impl Extension {
         }
     }
 
-    /// Executa o relatório e devolve a saída como texto puro (sem cores).
-    pub fn report(self, report: Report) -> Result<String> {
+    /// Executa o relatório e devolve a saída como texto puro (sem cores);
+    /// `agent` é o executável do agente em uso (ex.: o que o AI Jail simula).
+    pub fn report(self, report: Report, agent: &str) -> Result<String> {
         let (path, _) = self.require_installed()?;
+        let args = report
+            .args
+            .iter()
+            .map(|&arg| if arg == AGENT { agent } else { arg });
         let output = Command::new(&path)
-            .args(report.args)
+            .args(args)
             .env("NO_COLOR", "1")
             .stdin(Stdio::null())
             .output()

@@ -16,7 +16,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
 
-use super::{Adapter, Mode, Setup};
+use super::{Adapter, Mode, Setup, home, read_json, write_json};
 use crate::config::Config;
 use crate::extension::Extension;
 use crate::limits::Limit;
@@ -287,43 +287,6 @@ fn claude_json_path(claude_dir: &Path) -> Result<PathBuf> {
         return Ok(claude_dir.join(".claude.json"));
     }
     Ok(home()?.join(".claude.json"))
-}
-
-fn home() -> Result<PathBuf> {
-    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .map(PathBuf::from)
-        .context("pasta do usuário não encontrada")
-}
-
-fn read_json(path: &Path) -> Result<Value> {
-    match fs::read_to_string(path) {
-        Ok(text) => {
-            serde_json::from_str(&text).with_context(|| format!("lendo {}", path.display()))
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Value::Object(Map::new())),
-        Err(err) => Err(err).with_context(|| format!("lendo {}", path.display())),
-    }
-}
-
-/// Grava num arquivo temporário e renomeia, para nunca deixar um JSON pela
-/// metade. Os arquivos podem ter segredos (o `.mcp.json` copia o servidor do
-/// AI Memory), então só o próprio usuário os lê.
-fn write_json(path: &Path, value: &Value) -> Result<()> {
-    let dir = path.parent().context("caminho sem pasta")?;
-    fs::create_dir_all(dir)?;
-    let tmp = path.with_extension("json.tmp");
-
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let file = options
-        .open(&tmp)
-        .with_context(|| format!("gravando {}", tmp.display()))?;
-    serde_json::to_writer_pretty(&file, value)?;
-    file.sync_all()?;
-
-    fs::rename(&tmp, path).with_context(|| format!("gravando {}", path.display()))
 }
 
 #[cfg(test)]

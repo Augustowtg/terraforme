@@ -658,7 +658,7 @@ impl App {
                         })
                 }
                 Tab::Extensions => match report {
-                    Some((ext, report)) => ext.report(report).map(Text::from),
+                    Some((ext, report)) => ext.report(report, adapter.bin()).map(Text::from),
                     None => return,
                 },
             };

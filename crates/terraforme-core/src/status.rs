@@ -55,8 +55,8 @@ pub fn check() -> Status {
     }
 }
 
-/// Roda `<bin> --version` e devolve o último termo da primeira linha
-/// (`rtk 0.45.0` → `0.45.0`).
+/// Roda `<bin> --version` e devolve o último termo da primeira linha que
+/// parece uma versão (`rtk 0.45.0` → `0.45.0`, `2.1.3 (Claude Code)` → `2.1.3`).
 pub(crate) fn version_of(bin: &Path) -> Option<String> {
     let out = Command::new(bin).arg("--version").output().ok()?;
     if !out.status.success() {
@@ -66,12 +66,18 @@ pub(crate) fn version_of(bin: &Path) -> Option<String> {
 }
 
 fn parse_version(output: &str) -> Option<String> {
-    output
+    let words: Vec<_> = output
         .lines()
         .next()?
         .split_whitespace()
-        .last()
-        .map(|v| v.trim_start_matches('v').to_string())
+        .map(|v| v.trim_start_matches('v'))
+        .collect();
+    words
+        .iter()
+        .rev()
+        .find(|w| w.starts_with(|c: char| c.is_ascii_digit()))
+        .or(words.last())
+        .map(|v| v.to_string())
 }
 
 pub(crate) fn run_ok(bin: &Path, args: &[&str]) -> bool {
@@ -100,6 +106,11 @@ mod tests {
     fn parse_version_takes_last_word_of_first_line() {
         assert_eq!(parse_version("rtk 0.45.0\n"), Some("0.45.0".into()));
         assert_eq!(parse_version("ai-memory v3.1.0"), Some("3.1.0".into()));
+        assert_eq!(
+            parse_version("2.1.302 (Claude Code)"),
+            Some("2.1.302".into())
+        );
+        assert_eq!(parse_version("opencode v2.0.32"), Some("2.0.32".into()));
         assert_eq!(parse_version(""), None);
     }
 

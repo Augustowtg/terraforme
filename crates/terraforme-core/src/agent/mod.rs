@@ -14,21 +14,26 @@
 //! dele (ver `jail`), qualquer que seja o agente.
 
 pub(crate) mod claude;
+pub(crate) mod opencode;
 
+use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::extension::Extension;
 use crate::limits::Limit;
-use crate::status::{Component, State, find_in_path};
+use crate::status::{Component, State, find_in_path, version_of};
 use crate::usage::Usage;
 
 pub use claude::Claude;
+pub use opencode::OpenCode;
 
 /// Integração do terraforme com um agente de IA.
 pub trait Adapter: Sync {
@@ -75,9 +80,21 @@ pub trait Adapter: Sync {
 pub struct Setup {
     /// Argumentos do agente que ligam as extensões do modo.
     pub args: Vec<OsString>,
+    /// Argumentos que vão depois dos repassados pelo usuário (ex.: flags que
+    /// o agente só aceita depois do subcomando).
+    pub trailing_args: Vec<OsString>,
+    /// Variáveis de ambiente do agente (repassadas para dentro do AI Jail).
+    pub env: Vec<(&'static str, OsString)>,
     /// Pastas que o agente precisa enxergar para cada extensão (montadas no
     /// AI Jail).
     pub plugins: Vec<(Extension, PathBuf)>,
+    /// Pasta posta na frente do `PATH` no AI Jail, com um executável de mesmo
+    /// nome do agente que roda no lugar dele. O comando continua sendo só o
+    /// nome (`-- opencode`), porque é por ele que o ai-jail escolhe o preset
+    /// e a seção `[commands.<nome>]` da configuração.
+    pub jail_path: Option<PathBuf>,
+    /// Outros caminhos que o AI Jail monta (somente leitura).
+    pub jail_maps: Vec<PathBuf>,
     /// O que mudou nas configurações globais nesta execução.
     pub notices: Vec<String>,
     pub warnings: Vec<String>,
@@ -89,15 +106,18 @@ pub struct Setup {
 pub enum Provider {
     #[default]
     Claude,
+    #[cfg_attr(feature = "clap", value(name = "opencode"))]
+    OpenCode,
     Cursor,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 2] = [Provider::Claude, Provider::Cursor];
+    pub const ALL: [Provider; 3] = [Provider::Claude, Provider::OpenCode, Provider::Cursor];
 
     pub fn id(self) -> &'static str {
         match self {
             Provider::Claude => "claude",
+            Provider::OpenCode => "opencode",
             Provider::Cursor => "cursor",
         }
     }
@@ -105,7 +125,16 @@ impl Provider {
     pub fn name(self) -> &'static str {
         match self {
             Provider::Claude => "Claude Code",
+            Provider::OpenCode => "OpenCode",
             Provider::Cursor => "Cursor",
+        }
+    }
+
+    pub fn url(self) -> &'static str {
+        match self {
+            Provider::Claude => "https://claude.com/claude-code",
+            Provider::OpenCode => "https://opencode.ai",
+            Provider::Cursor => "https://cursor.com/cli",
         }
     }
 
@@ -113,6 +142,7 @@ impl Provider {
     pub fn adapter(self) -> Option<&'static dyn Adapter> {
         match self {
             Provider::Claude => Some(&Claude),
+            Provider::OpenCode => Some(&OpenCode),
             Provider::Cursor => None,
         }
     }
@@ -121,15 +151,27 @@ impl Provider {
         self.adapter().is_some()
     }
 
+    /// `claude`, `opencode`… — o id, como no config.toml; o número da lista
+    /// também vale (1 = o primeiro de [`Provider::ALL`]).
+    pub fn pick(choice: &str) -> Option<Provider> {
+        let choice = choice.trim().to_lowercase();
+        if let Ok(n) = choice.parse::<usize>() {
+            return n.checked_sub(1).and_then(|i| Provider::ALL.get(i).copied());
+        }
+        Provider::ALL
+            .into_iter()
+            .find(|p| p.id() == choice || p.name().to_lowercase() == choice)
+    }
+
     pub fn check(self) -> Component {
         let path = self.adapter().and_then(|a| find_in_path(a.bin()));
         Component {
             name: self.name(),
-            url: "",
+            url: self.url(),
             state: match path {
                 Some(path) => State::Installed {
+                    version: version_of(&path),
                     path,
-                    version: None,
                 },
                 None => State::NotInstalled,
             },
@@ -207,27 +249,90 @@ pub fn prepare(provider: Provider, mode: Mode, jail: bool, args: &[String]) -> R
 
     let Setup {
         args: mut agent_args,
+        trailing_args,
+        env,
         plugins,
+        jail_path,
+        jail_maps,
         mut notices,
         warnings,
     } = adapter.setup(mode)?;
     agent_args.extend(args.iter().map(OsString::from));
+    agent_args.extend(trailing_args);
 
-    let command = if jail {
-        let (command, jail_notices) = crate::jail::wrap(adapter.bin(), &plugins, &agent_args)?;
+    let mut command = if jail {
+        let names: Vec<_> = env.iter().map(|(name, _)| *name).collect();
+        let (mut command, jail_notices) =
+            crate::jail::wrap(adapter.bin(), &plugins, &jail_maps, &names, &agent_args)?;
         notices.extend(jail_notices);
+        // O ai-jail leva o PATH do host para dentro da sandbox.
+        if let Some(dir) = jail_path {
+            let rest = env::var_os("PATH").unwrap_or_default();
+            let path = env::join_paths(std::iter::once(dir).chain(env::split_paths(&rest)))
+                .context("PATH inválido")?;
+            command.env("PATH", path);
+        }
         command
     } else {
         let mut command = Command::new(bin);
         command.args(&agent_args);
         command
     };
+    // Com o AI Jail, o `--env NOME` de `jail::wrap` copia o valor daqui.
+    command.envs(env);
 
     Ok(Launch {
         command,
         notices,
         warnings,
     })
+}
+
+pub(crate) fn home() -> Result<PathBuf> {
+    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .context("pasta do usuário não encontrada")
+}
+
+/// Lê um JSON; arquivo ausente vale como objeto vazio.
+pub(crate) fn read_json(path: &Path) -> Result<Value> {
+    match fs::read_to_string(path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("lendo {}", path.display()))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Value::Object(Map::new())),
+        Err(err) => Err(err).with_context(|| format!("lendo {}", path.display())),
+    }
+}
+
+/// Grava num arquivo temporário e renomeia, para nunca deixar um JSON pela
+/// metade. Os arquivos podem ter segredos (o `.mcp.json` copia o servidor do
+/// AI Memory), então só o próprio usuário os lê.
+pub(crate) fn write_json(path: &Path, value: &Value) -> Result<()> {
+    write_private(path, serde_json::to_string_pretty(value)?.as_bytes())
+}
+
+/// Grava `content` em `path` (atômico, só o usuário lê), criando a pasta.
+pub(crate) fn write_private(path: &Path, content: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let dir = path.parent().context("caminho sem pasta")?;
+    fs::create_dir_all(dir)?;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options
+        .open(&tmp)
+        .with_context(|| format!("gravando {}", tmp.display()))?;
+    file.write_all(content)?;
+    file.sync_all()?;
+
+    fs::rename(&tmp, path).with_context(|| format!("gravando {}", path.display()))
 }
 
 #[cfg(test)]
@@ -237,8 +342,34 @@ mod tests {
     #[test]
     fn unimplemented_provider_has_no_adapter() {
         assert!(Provider::Claude.is_implemented());
+        assert!(Provider::OpenCode.is_implemented());
         assert!(!Provider::Cursor.is_implemented());
         let err = prepare(Provider::Cursor, Mode::Eco, false, &[]).unwrap_err();
         assert!(err.to_string().contains("não foi implementado"));
+    }
+
+    #[test]
+    fn picks_provider_by_id_name_or_number() {
+        assert_eq!(Provider::pick("opencode"), Some(Provider::OpenCode));
+        assert_eq!(Provider::pick(" Claude Code "), Some(Provider::Claude));
+        assert_eq!(Provider::pick("2"), Some(Provider::OpenCode));
+        assert_eq!(Provider::pick("0"), None);
+        assert_eq!(Provider::pick("9"), None);
+        assert_eq!(Provider::pick("gemini"), None);
+    }
+
+    #[test]
+    fn provider_ids_round_trip_in_toml() {
+        for p in Provider::ALL {
+            let text = toml::to_string(&crate::config::Config {
+                provider: p,
+                ..Default::default()
+            })
+            .unwrap();
+            assert!(
+                text.contains(&format!("provider = \"{}\"", p.id())),
+                "{text}"
+            );
+        }
     }
 }
