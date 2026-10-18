@@ -308,6 +308,9 @@ fn write_jail_launcher(root: &Path, bin: &Path) -> Result<(PathBuf, Vec<PathBuf>
         real.display().to_string().replace('\'', r"'\''")
     );
     let launcher = root.join("bin").join("opencode");
+    // Só regrava quando o script mudou: além de evitar o rename a cada sessão,
+    // um rename logo antes de o shell executar o lançador ainda pode devolver
+    // ETXTBSY no Linux, enquanto o arquivo já gravado executa sem problema.
     if fs::read_to_string(&launcher).ok().as_deref() != Some(script.as_str()) {
         write_private(&launcher, script.as_bytes())?;
     }

@@ -90,10 +90,14 @@ O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no t
 - **Consumo** — três sub-abas, atualizadas a cada 5s:
   - **Limites** — quanto já foi usado e quanto falta. Com login OAuth no Claude Code
     (Pro/Max/Team), usa os limites do plano (sessão de 5h e semana, os mesmos do `/usage`); sem
-    login, compara os transcripts com o orçamento configurado.
-  - **Tokens** — entrada, saída e cache da sessão atual (a da instância aberta), do projeto nas
-    últimas 24h e de todos os projetos em 5h/24h/7 dias.
-  - **Subagentes** — a sessão atual dividida entre o agente principal e cada subagente.
+    login, compara os transcripts com o orçamento configurado. Com o OpenCode, não há limites de
+    plano nem janela de 5h (o `opencode stats` não os expõe): valem o orçamento semanal e a
+    contagem de tokens/5h da sessão local.
+  - **Tokens** — entrada, saída, raciocínio e cache da sessão atual (a da instância aberta), do
+    projeto nas últimas 24h e de todos os projetos em 5h/24h/7 dias; com o OpenCode, o total do
+    projeto hoje e de todos hoje/7 dias, com custo e tokens por modelo.
+  - **Subagentes** — a sessão atual dividida entre o agente principal e cada subagente; com o
+    OpenCode, a contagem de sessões, prompts e subagentes.
 - **RTK · gain** — só nos modos com RTK: `rtk gain` (geral, neste projeto, por dia, histórico).
 - **AI Memory** — só nos modos com AI Memory: status, projetos e handoffs.
 - **AI Jail** — só com o AI Jail ligado: `ai-jail status` e a sandbox montada (`--dry-run`).

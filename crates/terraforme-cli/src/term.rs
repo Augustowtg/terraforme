@@ -887,12 +887,9 @@ fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
             }
             UsageSource::OpenCode => {
                 lines.push(Line::raw(
-                    "O OpenCode não informa limites de plano; defina um orçamento semanal:",
+                    "Sem limites de plano, a janela de 5h vale só os tokens desta máquina (sem orçamento):",
                 ));
                 lines.push(Line::raw("  terraforme config --budget-week 300000000").cyan());
-                lines.push(Line::raw(
-                    "A estatística do OpenCode não oferece janela de 5h.",
-                ));
             }
         }
         lines.push(Line::default());

@@ -1,9 +1,16 @@
-//! Consumo de tokens do Claude Code, lido dos transcripts que ele grava em
+//! Consumo de tokens do agente em uso, com uma origem por agente
+//! ([`UsageSource`]).
+//!
+//! Para o Claude Code, lido dos transcripts que ele grava em
 //! `~/.claude/projects/<projeto>/<sessão>.jsonl`. Cada resposta do modelo traz
 //! um `message.usage`; como uma mesma resposta aparece em várias linhas (uma
 //! por bloco de conteúdo), as linhas são agrupadas por `message.id` + `requestId`.
 //! Subagentes gravam em `<sessão>/subagents/agent-<id>.jsonl`, com o mesmo
 //! `sessionId` da sessão que os chamou e o próprio `agentId`.
+//!
+//! Para o OpenCode, a agregação vem de `opencode stats --json` (em
+//! `agent/opencode.rs`): não há janela de 5h, total da sessão atual nem
+//! detalhe por subagente.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;

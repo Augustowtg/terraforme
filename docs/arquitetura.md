@@ -24,7 +24,7 @@ opcional `clap`, o core deriva `clap::ValueEnum` nos enums públicos (`Extension
 | `extension` | Instala, atualiza e remove RTK e AI Memory pelos scripts oficiais de cada projeto; o AI Jail vem do tarball do release, conferido pelo `.sha256`. Define os relatórios (`rtk gain`, `ai-memory status`…), rodados com `NO_COLOR` e devolvidos sem ANSI. |
 | `agent` | `Provider` e `Mode` (`eco` = RTK, `high` = AI Memory, `hybrid` = os dois), o trait `Adapter` e `agent::prepare()`, que monta o comando do agente igual para todos. Cada agente é um adapter (`agent/claude.rs` para o Claude Code). |
 | `jail` | Integração com o AI Jail: configuração padrão em `~/.ai-jail` e `wrap()`, que envolve o comando do agente. |
-| `usage` | Consumo de tokens lido dos transcripts do Claude Code. |
+| `usage` | Consumo de tokens por agente: transcripts do Claude Code, ou `opencode stats --json` no OpenCode. |
 | `limits` | Quanto resta dos limites do plano (API OAuth) ou do orçamento configurado. |
 | `config` | `Config { provider, mode, jail, budget }` em `~/.config/terraforme/config.toml` (`%APPDATA%\terraforme` no Windows; respeita `XDG_CONFIG_HOME`). |
 | `space` | Pastas de trabalho com nome, em `<config>/spaces.toml`. |
@@ -99,13 +99,18 @@ Exige ai-jail 2.9+ (`--forward-port`) e, no Linux, o `bwrap` (pacote bubblewrap)
 
 ## Consumo e limites
 
-- **`usage`** lê `~/.claude/projects/<cwd com não alfanuméricos → '-'>/<sessão>.jsonl` (respeita
+- **`usage`** lê o consumo pelo agente em uso. No Claude Code, `~/.claude/projects/<cwd com não
+  alfanuméricos → '-'>/<sessão>.jsonl` (respeita
   `CLAUDE_CONFIG_DIR`). Uma resposta ocupa várias linhas, então as entradas são deduplicadas por
   `message.id` + `requestId`. Os transcripts dos subagentes ficam em
-  `<sessão>/subagents/agent-<id>.jsonl`, com tipo e descrição no `.meta.json` ao lado.
+  `<sessão>/subagents/agent-<id>.jsonl`, com tipo e descrição no `.meta.json` ao lado. No OpenCode,
+  `opencode stats --json` (`agent/opencode.rs`): totais do projeto hoje e de todos hoje/7 dias, com
+  custo e tokens por modelo, mais contagem de sessões/prompts/subagentes — sem janela de 5h, total
+  da sessão atual nem detalhe por subagente.
 - **`limits`** consulta `api.anthropic.com/api/oauth/usage` com o token OAuth de
   `<claude>/.credentials.json` (nunca renovado pelo terraforme; cache de 60s). Sem login, compara os
-  totais dos transcripts com o `[budget]` da configuração.
+  totais dos transcripts com o `[budget]` da configuração. No OpenCode não há limites de plano nem
+  janela de 5h: valem o orçamento semanal e a contagem de tokens da sessão local.
 
 ## Terminal do `terraforme cli` (`term.rs`)
 
