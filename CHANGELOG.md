@@ -5,6 +5,15 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.8.0 - 2026-10-18
+
+### Adicionado
+- `terraforme extension --setup` detecta Claude Code e OpenCode no `PATH`, permite selecionar os
+  agentes e, em seguida, RTK, AI Memory e/ou AI Jail. Configura cada integração escolhida sem
+  instalar extensões automaticamente; o AI Jail é configurado uma vez para a máquina.
+- A configuração escolhida de AI Memory é aplicada automaticamente ao agente: `ai-memory setup` no
+  Claude Code e `ai-memory install-hooks --agent opencode2 --apply` no OpenCode.
+
 ## 0.6.1 - 2026-10-18
 
 ### Corrigido
@@ -119,4 +128,3 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
   agente direto.
 - `terraforme space`: diretórios de trabalho nomeados.
 - `terraforme status` e `terraforme version`.
-

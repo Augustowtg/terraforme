@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
-use crate::agent::Provider;
+use crate::agent::{Mode, Provider};
 use crate::status::{Component, State, find_in_path, run_ok, version_of};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +42,13 @@ pub enum Outcome {
         version: Option<String>,
     },
     Deleted,
+}
+
+/// Mensagens adicionais produzidas ao configurar uma extensão para um agente.
+#[derive(Debug, Default)]
+pub struct SetupMessages {
+    pub notices: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 /// Relatório que a extensão imprime sobre si mesma (economia, status...).
@@ -215,6 +222,43 @@ impl Extension {
             Extension::AiJail => return crate::jail::setup(),
         }
         Ok(Vec::new())
+    }
+
+    /// Configura uma extensão para um agente específico, sem tocar nos demais.
+    /// O AI Jail é uma configuração global e deve usar [`Extension::setup`].
+    pub fn setup_for(self, provider: Provider) -> Result<SetupMessages> {
+        if self == Extension::AiJail {
+            bail!("o AI Jail é configurado uma vez para a máquina, não por agente");
+        }
+        let (path, _) = self.require_installed()?;
+
+        match (self, provider) {
+            (Extension::Rtk, Provider::Claude) => run(Command::new(path).args(["init", "-g"]))?,
+            (Extension::Rtk, Provider::OpenCode) => {}
+            (Extension::AiMemory, Provider::Claude) => run(Command::new(path).arg("setup"))?,
+            (Extension::AiMemory, Provider::OpenCode) => {
+                run(Command::new(path).args(["install-hooks", "--agent", "opencode2", "--apply"]))?
+            }
+            (Extension::AiJail, _) => unreachable!("AI Jail tratado acima"),
+            (_, Provider::Cursor) => bail!("a integração com Cursor ainda não foi implementada"),
+        }
+
+        let mode = match self {
+            Extension::Rtk => Mode::Eco,
+            Extension::AiMemory => Mode::High,
+            Extension::AiJail => unreachable!("AI Jail tratado acima"),
+        };
+        let adapter = provider.adapter().with_context(|| {
+            format!(
+                "a integração com {} ainda não foi implementada",
+                provider.name()
+            )
+        })?;
+        let setup = adapter.setup(mode)?;
+        Ok(SetupMessages {
+            notices: setup.notices,
+            warnings: setup.warnings,
+        })
     }
 
     pub fn update(self) -> Result<Outcome> {

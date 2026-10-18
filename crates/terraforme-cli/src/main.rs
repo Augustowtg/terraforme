@@ -38,7 +38,7 @@ enum Command {
             .args(["install", "update", "setup", "project", "default", "delete", "status"]),
     ))]
     Extension {
-        /// Extensão alvo; obrigatória com --update, --setup e --delete
+        /// Extensão alvo; obrigatória com --update e --delete
         #[arg(value_enum)]
         name: Option<Extension>,
         /// Instala a extensão (sem nome: instala todas)
@@ -48,7 +48,7 @@ enum Command {
         #[arg(long, requires = "name")]
         update: bool,
         /// Refaz a configuração da extensão (no AI Jail: confere a versão e o bwrap e completa o ~/.ai-jail)
-        #[arg(long, requires = "name")]
+        #[arg(long)]
         setup: bool,
         /// AI Jail: cria o .ai-jail na pasta atual, e o `terraforme cli` passa a rodar no AI Jail nela
         #[arg(long)]
@@ -207,11 +207,14 @@ fn main() -> Result<()> {
             } else if update {
                 report(targets[0], targets[0].update()?);
             } else if setup {
-                let ext = targets[0];
-                for line in ext.setup()? {
-                    println!("✔ {line}");
+                if let Some(ext) = name {
+                    for line in ext.setup()? {
+                        println!("✔ {line}");
+                    }
+                    println!("✔ {} configurado", ext.name());
+                } else {
+                    setup_interactive()?;
                 }
-                println!("✔ {} configurado", ext.name());
             } else if project {
                 jail_project()?;
             } else if let Some(on) = default {
@@ -706,6 +709,155 @@ fn ask(question: &str) -> Result<String> {
     Ok(answer.trim().to_string())
 }
 
+/// Seleciona agentes e extensões e só então executa as configurações escolhidas.
+fn setup_interactive() -> Result<()> {
+    if !io::stdin().is_terminal() {
+        bail!("`terraforme extension --setup` precisa de um terminal interativo");
+    }
+
+    let agents: Vec<_> = Provider::ALL
+        .into_iter()
+        .filter(|provider| provider.adapter().is_some() && provider.check().state.is_installed())
+        .collect();
+    let selected_agents = if agents.is_empty() {
+        eprintln!("Nenhum agente suportado encontrado no PATH.");
+        Vec::new()
+    } else {
+        let labels: Vec<_> = agents.iter().map(|provider| provider.name()).collect();
+        let Some(indices) = ask_selection(
+            "Agentes encontrados (selecione um ou mais):",
+            &labels,
+            "Enter: nenhum; q: cancelar",
+        )?
+        else {
+            println!("Configuração cancelada; nada foi alterado.");
+            return Ok(());
+        };
+        indices.into_iter().map(|index| agents[index]).collect()
+    };
+
+    let available_extensions: Vec<_> = if selected_agents.is_empty() {
+        vec![Extension::AiJail]
+    } else {
+        Extension::ALL.to_vec()
+    };
+    let labels: Vec<_> = available_extensions
+        .iter()
+        .map(|extension| extension.name())
+        .collect();
+    let Some(indices) = ask_selection(
+        "Extensões para configurar:",
+        &labels,
+        "Enter: nenhuma; q: cancelar",
+    )?
+    else {
+        println!("Configuração cancelada; nada foi alterado.");
+        return Ok(());
+    };
+    let extensions: Vec<_> = indices
+        .into_iter()
+        .map(|index| available_extensions[index])
+        .collect();
+
+    if extensions.is_empty() {
+        println!("Nenhuma extensão selecionada; nada foi alterado.");
+        return Ok(());
+    }
+    setup_selected(&selected_agents, &extensions)
+}
+
+fn ask_selection(title: &str, choices: &[&str], hint: &str) -> Result<Option<Vec<usize>>> {
+    eprintln!("{title}");
+    for (index, choice) in choices.iter().enumerate() {
+        eprintln!("  {}) {choice}", index + 1);
+    }
+    eprintln!("{hint}");
+    let answer = ask("Seleção: ")?;
+    select_indices(&answer, choices.len())
+}
+
+/// Aplica uma configuração selecionada uma extensão/agente por vez para que
+/// uma falha não esconda o resultado das outras.
+fn setup_selected(agents: &[Provider], extensions: &[Extension]) -> Result<()> {
+    let mut failures = 0;
+    for &extension in extensions {
+        if extension == Extension::AiJail {
+            eprintln!("==> {} (configuração da máquina)", extension.name());
+            match extension.setup() {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("  {line}");
+                    }
+                    println!("✔ {} configurado", extension.name());
+                }
+                Err(error) => {
+                    eprintln!("✘ {}: {error:#}", extension.name());
+                    failures += 1;
+                }
+            }
+            continue;
+        }
+
+        for &provider in agents {
+            eprintln!("==> {} · {}", extension.name(), provider.name());
+            match extension.setup_for(provider) {
+                Ok(messages) => {
+                    println!(
+                        "✔ {} configurado para {}",
+                        extension.name(),
+                        provider.name()
+                    );
+                    for notice in messages.notices {
+                        eprintln!("  ℹ {notice}");
+                    }
+                    for warning in messages.warnings {
+                        eprintln!("  ⚠ {warning}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("✘ {} para {}: {error:#}", extension.name(), provider.name());
+                    failures += 1;
+                }
+            }
+        }
+    }
+    if failures > 0 {
+        bail!("{failures} etapa(s) de configuração falharam; veja os erros acima");
+    }
+    Ok(())
+}
+
+fn select_indices(answer: &str, count: usize) -> Result<Option<Vec<usize>>> {
+    let answer = answer.trim();
+    if answer.eq_ignore_ascii_case("q") || answer.eq_ignore_ascii_case("cancelar") {
+        return Ok(None);
+    }
+    if answer.is_empty()
+        || answer.eq_ignore_ascii_case("nenhum")
+        || answer.eq_ignore_ascii_case("nenhuma")
+    {
+        return Ok(Some(Vec::new()));
+    }
+
+    let mut indices = Vec::new();
+    for item in answer.split(|c: char| c == ',' || c.is_whitespace()) {
+        if item.is_empty() {
+            continue;
+        }
+        let number: usize = item
+            .parse()
+            .with_context(|| format!("seleção inválida: {item}"))?;
+        if number == 0 || number > count {
+            bail!("selecione um número entre 1 e {count}: {number}");
+        }
+        let index = number - 1;
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+    Ok(Some(indices))
+}
+
 /// Tenta instalar todas antes de falhar, para uma não bloquear a outra.
 fn install_all(targets: &[Extension]) -> Result<()> {
     let mut failed = Vec::new();
@@ -895,7 +1047,7 @@ mod tests {
     fn extension_setup_project_and_default() {
         assert!(parse(&["extension", "ai-jail", "--setup"]).is_ok());
         assert!(parse(&["extension", "rtk", "--setup"]).is_ok());
-        assert!(parse(&["extension", "--setup"]).is_err());
+        assert!(parse(&["extension", "--setup"]).is_ok());
         assert!(parse(&["extension", "ai-jail", "--project"]).is_ok());
         assert!(matches!(
             parse(&["extension", "ai-jail", "--default", "true"])
@@ -908,6 +1060,18 @@ mod tests {
         ));
         assert!(parse(&["extension", "ai-jail", "--default"]).is_err());
         assert!(parse(&["extension", "ai-jail", "--project", "--setup"]).is_err());
+    }
+
+    #[test]
+    fn setup_selection_accepts_multiple_choices_and_cancel() {
+        assert_eq!(select_indices("1, 3", 3).unwrap(), Some(vec![0, 2]));
+        assert_eq!(select_indices("2 2", 3).unwrap(), Some(vec![1]));
+        assert_eq!(select_indices("", 3).unwrap(), Some(vec![]));
+        assert_eq!(select_indices("nenhum", 3).unwrap(), Some(vec![]));
+        assert_eq!(select_indices("q", 3).unwrap(), None);
+        assert!(select_indices("0", 3).is_err());
+        assert!(select_indices("4", 3).is_err());
+        assert!(select_indices("claude", 3).is_err());
     }
 
     #[test]
