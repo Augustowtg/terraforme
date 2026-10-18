@@ -12,6 +12,32 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
   `Shift+Alt+1`…`Shift+Alt+9`, com rótulo `⇧⌥N` (o `Alt+dígito` fica para o agente). `Ctrl+←→` /
   `Ctrl+PgUp/PgDn` continuam para a vizinha (em volta).
 
+## 0.7.0 - 2026-10-18
+
+### Adicionado
+- Agente **OpenCode** (2 ou mais novo): `terraforme config --agent opencode` e o `terraforme cli` o
+  abre com os mesmos modos e o AI Jail. RTK e AI Memory viram plugins do terraforme ligados por
+  sessão (`OPENCODE_CONFIG_CONTENT`, com `--standalone`); os plugins do RTK e do AI Memory em
+  `~/.config/opencode/plugins` e o MCP do AI Memory no `opencode.json` saem de lá (com backup
+  `.terraforme-bak`). O plugin do `rtk init --opencode` não carrega no OpenCode 2, então o RTK usa um
+  plugin próprio do terraforme; o do AI Memory é gerado com `ai-memory install-hooks --agent
+  opencode2` quando falta, e o MCP vai pela ponte `ai-memory mcp-bridge`. A aba Consumo ainda não
+  funciona com o OpenCode.
+- `terraforme config --agent` (ou `--agente`) escolhe o agente padrão: sem valor, lista os agentes
+  (com versão) e pergunta qual usar, por número ou nome. `terraforme cli --agent <agente>` troca o
+  agente só numa sessão.
+- `terraforme extension <nome> --setup` refaz a configuração da extensão; no AI Jail, confere a
+  versão e o `bwrap` e cria o `~/.ai-jail` ou acrescenta nele a seção dos agentes que faltam.
+- `terraforme extension ai-jail --project` cria o `.ai-jail` da pasta (`ai-jail --init`): o
+  `terraforme cli` aberto nela roda no AI Jail mesmo com a sandbox desligada por padrão.
+  `terraforme extension ai-jail --default true|false` liga ou desliga a sandbox por padrão.
+
+### Alterado
+- `terraforme config --provider` virou `--agent` (o nome antigo continua aceito).
+- O `~/.ai-jail` padrão ganha a seção `[commands.opencode]`, com `opencode.ai` e `models.dev`
+  liberados na rede filtrada.
+- A aba AI Jail mostra a sandbox (`--dry-run`) do agente em uso, não mais sempre a do Claude.
+
 ## 0.6.0 - 2026-10-17
 
 ### Alterado
