@@ -5,6 +5,13 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.6.1 - 2026-10-18
+
+### Corrigido
+- O atalho direto para as sub-abas do terminal do `terraforme cli` passa de `Alt+1`…`Alt+9` para
+  `Shift+Alt+1`…`Shift+Alt+9`, com rótulo `⇧⌥N` (o `Alt+dígito` fica para o agente). `Ctrl+←→` /
+  `Ctrl+PgUp/PgDn` continuam para a vizinha (em volta).
+
 ## 0.6.0 - 2026-10-17
 
 ### Alterado
