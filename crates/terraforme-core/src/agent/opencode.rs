@@ -35,6 +35,7 @@ use super::{Adapter, Mode, Setup, home, read_json, write_json, write_private};
 use crate::config::Config;
 use crate::extension::{Extension, strip_ansi};
 use crate::status::{State, find_in_path, version_of};
+use crate::usage::{OpenCodeStats, Summary, Tokens, Usage, UsageSource};
 
 /// Variável com a configuração extra da sessão (JSON).
 const CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
@@ -138,6 +139,15 @@ impl Adapter for OpenCode {
         })
     }
 
+    fn usage(
+        &self,
+        cwd: &Path,
+        _launched: std::time::SystemTime,
+        _session: Option<&str>,
+    ) -> Result<Usage> {
+        collect_usage(cwd)
+    }
+
     fn forget(&self, ext: Extension) -> Result<()> {
         let plugin = plugin_dir(&plugins_root()?, ext);
         if plugin.exists() {
@@ -146,6 +156,118 @@ impl Adapter for OpenCode {
         }
         Ok(())
     }
+}
+
+/// Consulta as estatísticas oficiais do OpenCode. `stats` não oferece uma
+/// janela de cinco horas nem o detalhamento por sessão/subagente do Claude.
+fn collect_usage(cwd: &Path) -> Result<Usage> {
+    let (project_day, project_stats) = fetch_stats(cwd, "0", true)?;
+    let (all_day, day_stats) = fetch_stats(cwd, "0", false)?;
+    let (all_week, week_stats) = fetch_stats(cwd, "7", false)?;
+
+    Ok(Usage {
+        source: UsageSource::OpenCode,
+        project_day,
+        all_day,
+        all_week,
+        opencode: Some(OpenCodeStats {
+            sessions: week_stats.sessions,
+            prompts: week_stats.prompts,
+            subagents: week_stats.subagents,
+            project_today_cost: project_stats.cost,
+            today_cost: day_stats.cost,
+            week_cost: week_stats.cost,
+        }),
+        ..Usage::default()
+    })
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct StatsMeta {
+    sessions: u64,
+    prompts: u64,
+    subagents: u64,
+    cost: f64,
+}
+
+fn fetch_stats(cwd: &Path, days: &str, project_only: bool) -> Result<(Summary, StatsMeta)> {
+    let mut command = Command::new("opencode");
+    command
+        .args(["stats", "--json", "--days", days, "--models", "--cost"])
+        .current_dir(cwd);
+    if project_only {
+        command.args(["--project", "."]);
+    }
+    let output = command.output().context("executando `opencode stats`")?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "`opencode stats` terminou com erro{}",
+            if message.is_empty() {
+                String::new()
+            } else {
+                format!(": {message}")
+            }
+        );
+    }
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .context("a saída de `opencode stats --json` não é um JSON válido")?;
+    parse_stats(&value)
+}
+
+fn parse_stats(value: &Value) -> Result<(Summary, StatsMeta)> {
+    let token_value = value
+        .get("tokens")
+        .context("a saída de `opencode stats` não contém tokens")?;
+    let token_count =
+        |parent: &Value, key: &str| parent.get(key).and_then(Value::as_u64).unwrap_or_default();
+    let tokens = |value: &Value| Tokens {
+        input: token_count(value, "input"),
+        output: token_count(value, "output"),
+        reasoning: token_count(value, "reasoning"),
+        cache_write: value
+            .pointer("/cache/write")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        cache_read: value
+            .pointer("/cache/read")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+    };
+    let mut summary = Summary {
+        tokens: tokens(token_value),
+        responses: token_count(value, "steps") as usize,
+        ..Summary::default()
+    };
+    if let Some(models) = value.get("models").and_then(Value::as_array) {
+        for model in models {
+            let Some(model_id) = model.pointer("/model/id").and_then(Value::as_str) else {
+                continue;
+            };
+            let provider = model
+                .pointer("/model/providerID")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let name = if provider.is_empty() {
+                model_id.to_string()
+            } else {
+                format!("{provider}/{model_id}")
+            };
+            summary
+                .by_model
+                .insert(name, tokens(model.get("tokens").unwrap_or(&Value::Null)));
+        }
+    }
+    let stats = StatsMeta {
+        sessions: token_count(value, "sessions"),
+        prompts: token_count(value, "prompts"),
+        subagents: token_count(value, "subagents"),
+        cost: value
+            .get("cost")
+            .and_then(Value::as_f64)
+            .unwrap_or_default(),
+    };
+    Ok((summary, stats))
 }
 
 /// Os plugins do OpenCode 1 têm outro formato, e o terraforme não os gera.
@@ -442,6 +564,33 @@ mod tests {
         assert!(!OpenCode.picks_session(&args(&["--prompt", "oi"])));
         assert!(OpenCode.picks_session(&args(&["-c"])));
         assert!(OpenCode.picks_session(&args(&["--session=ses_1"])));
+    }
+
+    #[test]
+    fn opencode_stats_json_maps_tokens_models_and_cost() {
+        let value: Value = serde_json::from_str(
+            r#"{
+                "sessions": 3,
+                "subagents": 2,
+                "prompts": 4,
+                "steps": 9,
+                "cost": 0.125,
+                "tokens": {"input": 10, "output": 20, "reasoning": 30,
+                    "cache": {"read": 40, "write": 50}},
+                "models": [{"model": {"id": "model-x", "providerID": "provider-y"},
+                    "tokens": {"input": 10, "output": 20, "reasoning": 30,
+                        "cache": {"read": 40, "write": 50}}}]
+            }"#,
+        )
+        .unwrap();
+        let (summary, stats) = parse_stats(&value).unwrap();
+        assert_eq!(summary.tokens.total(), 150);
+        assert_eq!(summary.responses, 9);
+        assert_eq!(summary.by_model["provider-y/model-x"].total(), 150);
+        assert_eq!(stats.sessions, 3);
+        assert_eq!(stats.prompts, 4);
+        assert_eq!(stats.subagents, 2);
+        assert_eq!(stats.cost, 0.125);
     }
 
     #[test]

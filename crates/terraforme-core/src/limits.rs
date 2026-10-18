@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::agent::Adapter;
 use crate::agent::claude::claude_config_dir;
-use crate::usage::{Usage, parse_timestamp};
+use crate::usage::{Usage, UsageSource, parse_timestamp};
 
 const PLAN_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// A aba de consumo atualiza a cada poucos segundos; a API não precisa.
@@ -96,7 +96,13 @@ pub fn collect(adapter: &dyn Adapter, usage: &Usage, budget: &Budget) -> Limits 
 
 fn budget_limits(usage: &Usage, budget: &Budget) -> Vec<Limit> {
     [
-        ("Últimas 5h", budget.five_hours, &usage.all_five_hours),
+        (
+            "Últimas 5h",
+            (usage.source != UsageSource::OpenCode)
+                .then_some(budget.five_hours)
+                .flatten(),
+            &usage.all_five_hours,
+        ),
         ("Últimos 7 dias", budget.week, &usage.all_week),
     ]
     .into_iter()
@@ -256,5 +262,36 @@ mod tests {
         );
         assert_eq!(over[0].used, 150.0);
         assert_eq!(over[0].remaining(), 0.0);
+    }
+
+    #[test]
+    fn opencode_budget_omits_the_unavailable_five_hour_window() {
+        let usage = Usage {
+            source: UsageSource::OpenCode,
+            all_five_hours: Summary {
+                tokens: Tokens {
+                    input: 500,
+                    ..Tokens::default()
+                },
+                ..Summary::default()
+            },
+            all_week: Summary {
+                tokens: Tokens {
+                    input: 2_000,
+                    ..Tokens::default()
+                },
+                ..Summary::default()
+            },
+            ..Usage::default()
+        };
+        let budget = Budget {
+            five_hours: Some(1_000),
+            week: Some(10_000),
+        };
+
+        let limits = budget_limits(&usage, &budget);
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].label, "Últimos 7 dias");
+        assert_eq!(limits[0].tokens, Some((2_000, 10_000)));
     }
 }

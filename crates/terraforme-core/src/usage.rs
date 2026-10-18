@@ -23,18 +23,21 @@ const FIVE_HOURS: Duration = Duration::from_secs(5 * 60 * 60);
 pub struct Tokens {
     pub input: u64,
     pub output: u64,
+    /// Tokens de raciocínio, informados separadamente pelo OpenCode.
+    pub reasoning: u64,
     pub cache_write: u64,
     pub cache_read: u64,
 }
 
 impl Tokens {
     pub fn total(&self) -> u64 {
-        self.input + self.output + self.cache_write + self.cache_read
+        self.input + self.output + self.reasoning + self.cache_write + self.cache_read
     }
 
     fn add(&mut self, other: &Tokens) {
         self.input += other.input;
         self.output += other.output;
+        self.reasoning += other.reasoning;
         self.cache_write += other.cache_write;
         self.cache_read += other.cache_read;
     }
@@ -62,6 +65,8 @@ impl Summary {
 
 #[derive(Debug, Clone, Default)]
 pub struct Usage {
+    /// Origem e granularidade dos dados de consumo.
+    pub source: UsageSource,
     /// Sessão aberta por esta execução; `None` enquanto ela não tem respostas.
     pub session: Option<Summary>,
     /// A sessão dividida entre o agente principal (primeiro) e os subagentes,
@@ -71,6 +76,25 @@ pub struct Usage {
     pub all_five_hours: Summary,
     pub all_day: Summary,
     pub all_week: Summary,
+    /// Contagens adicionais que a interface nativa do OpenCode informa.
+    pub opencode: Option<OpenCodeStats>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UsageSource {
+    #[default]
+    Claude,
+    OpenCode,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OpenCodeStats {
+    pub sessions: u64,
+    pub prompts: u64,
+    pub subagents: u64,
+    pub project_today_cost: f64,
+    pub today_cost: f64,
+    pub week_cost: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -276,6 +300,7 @@ fn parse_line(line: &str) -> Option<(String, Entry)> {
             tokens: Tokens {
                 input: field("input_tokens"),
                 output: field("output_tokens"),
+                reasoning: 0,
                 cache_write: field("cache_creation_input_tokens"),
                 cache_read: field("cache_read_input_tokens"),
             },

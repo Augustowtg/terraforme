@@ -32,7 +32,7 @@ use terraforme_core::agent::Adapter;
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Report};
 use terraforme_core::limits::{self, Limit, Source};
-use terraforme_core::usage::{self, Summary, Tokens};
+use terraforme_core::usage::{self, Summary, Tokens, UsageSource};
 use tui_term::widget::PseudoTerminal;
 
 /// Linhas de histórico guardadas da saída do agente.
@@ -875,12 +875,26 @@ fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
 
     if limits.items.is_empty() {
         lines.push(Line::raw("Nenhum limite disponível.").yellow());
-        lines.push(Line::raw(
-            "Sem login OAuth no Claude Code (assinatura Pro/Max/Team), defina um orçamento de tokens:",
-        ));
-        lines.push(
-            Line::raw("  terraforme config --budget-5h 20000000 --budget-week 300000000").cyan(),
-        );
+        match usage.source {
+            UsageSource::Claude => {
+                lines.push(Line::raw(
+                    "Sem login OAuth no Claude Code (assinatura Pro/Max/Team), defina um orçamento de tokens:",
+                ));
+                lines.push(
+                    Line::raw("  terraforme config --budget-5h 20000000 --budget-week 300000000")
+                        .cyan(),
+                );
+            }
+            UsageSource::OpenCode => {
+                lines.push(Line::raw(
+                    "O OpenCode não informa limites de plano; defina um orçamento semanal:",
+                ));
+                lines.push(Line::raw("  terraforme config --budget-week 300000000").cyan());
+                lines.push(Line::raw(
+                    "A estatística do OpenCode não oferece janela de 5h.",
+                ));
+            }
+        }
         lines.push(Line::default());
     }
     if let Some(note) = limits.note {
@@ -891,9 +905,14 @@ fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
             Source::Plan => {
                 "Fonte: limites do plano (api.anthropic.com, como o /usage) · atualiza a cada 60s"
             }
-            Source::Budget => {
-                "Fonte: orçamento [budget] do config.toml × transcripts do Claude Code"
-            }
+            Source::Budget => match usage.source {
+                UsageSource::Claude => {
+                    "Fonte: orçamento [budget] do config.toml × transcripts do Claude Code"
+                }
+                UsageSource::OpenCode => {
+                    "Fonte: orçamento semanal [budget] × opencode stats --json · sem janela de 5h"
+                }
+            },
         })
         .dark_gray(),
     );
@@ -932,9 +951,10 @@ fn duration(secs: u64) -> String {
     }
 }
 
-const USAGE_HEADER: [&str; 6] = [
+const USAGE_HEADER: [&str; 7] = [
     "Entrada",
     "Saída",
+    "Raciocínio",
     "Cache (grava)",
     "Cache (lê)",
     "Total",
@@ -942,16 +962,20 @@ const USAGE_HEADER: [&str; 6] = [
 ];
 
 fn usage_header() -> String {
-    let [a, b, c, d, e, f] = USAGE_HEADER;
-    format!("{:<22} {a:>12} {b:>12} {c:>14} {d:>14} {e:>14} {f:>9}", "")
+    let [a, b, c, d, e, f, g] = USAGE_HEADER;
+    format!(
+        "{:<22} {a:>12} {b:>12} {c:>12} {d:>14} {e:>14} {f:>14} {g:>9}",
+        ""
+    )
 }
 
 fn usage_row(label: &str, tokens: &Tokens, responses: Option<usize>) -> String {
     format!(
-        "{:<22} {:>12} {:>12} {:>14} {:>14} {:>14} {:>9}",
+        "{:<22} {:>12} {:>12} {:>12} {:>14} {:>14} {:>14} {:>9}",
         truncate(label, 22),
         thousands(tokens.input),
         thousands(tokens.output),
+        thousands(tokens.reasoning),
         thousands(tokens.cache_write),
         thousands(tokens.cache_read),
         thousands(tokens.total()),
@@ -961,6 +985,9 @@ fn usage_row(label: &str, tokens: &Tokens, responses: Option<usize>) -> String {
 
 /// Tabela do consumo: uma linha por período e, embaixo, a sessão por modelo.
 fn format_usage(usage: &usage::Usage) -> Text<'static> {
+    if usage.source == UsageSource::OpenCode {
+        return format_opencode_usage(usage);
+    }
     let header = usage_header();
     let summary = |label: &str, s: &Summary| usage_row(label, &s.tokens, Some(s.responses));
 
@@ -992,8 +1019,60 @@ fn format_usage(usage: &usage::Usage) -> Text<'static> {
     Text::from(lines.join("\n"))
 }
 
+fn format_opencode_usage(usage: &usage::Usage) -> Text<'static> {
+    let header = usage_header();
+    let summary = |label: &str, s: &Summary| usage_row(label, &s.tokens, Some(s.responses));
+    let mut lines = vec![
+        header.clone(),
+        summary("Projeto · hoje", &usage.project_day),
+        summary("Todos · hoje", &usage.all_day),
+        summary("Todos · 7 dias", &usage.all_week),
+        String::new(),
+        "Projeto · hoje por modelo".into(),
+        header,
+    ];
+    if usage.project_day.by_model.is_empty() {
+        lines.push("Sem consumo registrado hoje neste projeto.".into());
+    } else {
+        for (model, tokens) in &usage.project_day.by_model {
+            lines.push(usage_row(model, tokens, None));
+        }
+    }
+    if let Some(stats) = &usage.opencode {
+        lines.push(String::new());
+        lines.push(format!(
+            "Custo · projeto hoje: ${:.4}",
+            stats.project_today_cost
+        ));
+        lines.push(format!("Custo · todos hoje: ${:.4}", stats.today_cost));
+        lines.push(format!("Custo · todos 7 dias: ${:.4}", stats.week_cost));
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "Fonte: opencode stats --json · atualiza a cada {}s",
+        USAGE_REFRESH.as_secs()
+    ));
+    lines.push(
+        "O OpenCode não oferece consumo da sessão atual nem janela móvel de 5h; raciocínio é informado separadamente."
+            .into(),
+    );
+    Text::from(lines.join("\n"))
+}
+
 /// A sessão atual dividida entre o agente principal e cada subagente.
 fn format_agents(usage: &usage::Usage) -> Text<'static> {
+    if usage.source == UsageSource::OpenCode {
+        let Some(stats) = &usage.opencode else {
+            return Text::from("Estatísticas de subagentes indisponíveis.");
+        };
+        return Text::from(format!(
+            "O OpenCode não detalha tokens por subagente.\n\nSubagentes contabilizados nos últimos 7 dias: {}\nSessões: {} · prompts: {}\n\nFonte: opencode stats --json · atualiza a cada {}s",
+            thousands(stats.subagents),
+            thousands(stats.sessions),
+            thousands(stats.prompts),
+            USAGE_REFRESH.as_secs()
+        ));
+    }
     if usage.session_agents.is_empty() {
         return Text::from("A sessão atual ainda não tem respostas do modelo.");
     }
