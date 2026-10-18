@@ -2,11 +2,11 @@
 //! dentro de uma TUI com abas no topo — o agente (com uma sub-aba por
 //! instância), o consumo de tokens e as extensões do modo (os relatórios
 //! delas). `Shift+Tab` alterna as abas e `Shift+F1`–`F9` pulam para uma aba.
-//! As sub-abas trocam do mesmo jeito em todas as abas: `Alt+1`–`9` vai direto
-//! e `Ctrl+←→` / `Ctrl+PgUp/PgDn` passam para a vizinha (`Shift+dígito` não
-//! serve: na aba do agente chega ao Claude como `!@#$`…). `F12` abre outra
-//! instância do agente e `Shift+F12` fecha a aberta. As instâncias continuam rodando enquanto outra aba ou
-//! sub-aba está aberta.
+//! As sub-abas trocam do mesmo jeito em todas as abas: `Shift+Alt+1`–`9` vai
+//! direto e `Ctrl+←→` / `Ctrl+PgUp/PgDn` passam para a vizinha (`Shift+dígito`
+//! sem Alt não serve: na aba do agente chega ao Claude como `!@#$`…). `F12` abre
+//! outra instância do agente e `Shift+F12` fecha a aberta. As instâncias continuam
+//! rodando enquanto outra aba ou sub-aba está aberta.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -528,15 +528,16 @@ impl App {
             self.select(tabs[n - 1]);
             return Ok(false);
         }
+        if let Some(n) = shift_alt_digit(key) {
+            self.pick(n - 1);
+            return Ok(false);
+        }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::F(10) => return Ok(true),
-            // Sub-abas da aba aberta, igual em todas: Alt+1–9 vai direto e
-            // Ctrl+←→ / Ctrl+PgUp/PgDn passam para a vizinha.
-            KeyCode::Char(c @ '1'..='9') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.pick(c as usize - '1' as usize);
-            }
+            // Sub-abas da aba aberta, igual em todas: Ctrl+←→ / Ctrl+PgUp/PgDn
+            // passam para a vizinha (Shift+Alt+1–9 vai direto, acima).
             KeyCode::Left | KeyCode::PageUp if ctrl => self.cycle(-1),
             KeyCode::Right | KeyCode::PageDown if ctrl => self.cycle(1),
             // Alguns terminais mandam Shift+F12 como F24.
@@ -756,7 +757,7 @@ impl App {
         let mut spans = vec![Span::raw(" ")];
         spans.extend(sub_tab_spans(&labels, current));
         let hint = if self.agents.len() > 1 {
-            " ⌥1-9/Ctrl+←→ sub-aba · F12 nova · ⇧F12 fecha"
+            " ⇧⌥1-9/Ctrl+←→ sub-aba · F12 nova · ⇧F12 fecha"
         } else {
             " F12 nova instância · ⇧F12 fecha"
         };
@@ -777,7 +778,7 @@ impl App {
             _ => "Consumo de tokens".to_string(),
         };
         let hint = if views.len() > 1 {
-            " ⌥1-9/Ctrl+←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
+            " ⇧⌥1-9/Ctrl+←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
         } else {
             " ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
         };
@@ -819,7 +820,7 @@ impl App {
     }
 }
 
-/// Barra de sub-abas, igual em todas as abas: `⌥N rótulo`, a aberta em
+/// Barra de sub-abas, igual em todas as abas: `⇧⌥N rótulo`, a aberta em
 /// destaque e o nome do grupo (ex.: a extensão) antes do primeiro item dele.
 fn sub_tab_spans(labels: &[(&str, String)], current: usize) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
@@ -830,7 +831,7 @@ fn sub_tab_spans(labels: &[(&str, String)], current: usize) -> Vec<Span<'static>
             }
             spans.push(Span::raw(format!("{group} ")).bold());
         }
-        let label = format!(" ⌥{} {name} ", i + 1);
+        let label = format!(" ⇧⌥{} {name} ", i + 1);
         spans.push(if i == current {
             Span::styled(label, Style::new().black().on_cyan().bold())
         } else {
@@ -1048,6 +1049,30 @@ fn shift_function(key: KeyEvent) -> Option<usize> {
     }
 }
 
+/// Shift+Alt+1–9 → 1–9. O teclado manda o dígito com Shift (`Alt+Shift+1`), mas
+/// muitos terminais mandam o símbolo sem o Shift (`!`, `@`…, no ABNT2 também `¨`).
+fn shift_alt_digit(key: KeyEvent) -> Option<usize> {
+    if !key.modifiers.contains(KeyModifiers::ALT) {
+        return None;
+    }
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    match c {
+        '1'..='9' if key.modifiers.contains(KeyModifiers::SHIFT) => Some(c as usize - '0' as usize),
+        '!' => Some(1),
+        '@' => Some(2),
+        '#' => Some(3),
+        '$' => Some(4),
+        '%' => Some(5),
+        '^' | '¨' => Some(6),
+        '&' => Some(7),
+        '*' => Some(8),
+        '(' => Some(9),
+        _ => None,
+    }
+}
+
 /// `1234567` → `1.234.567`.
 fn thousands(n: u64) -> String {
     let digits = n.to_string();
@@ -1226,6 +1251,18 @@ mod tests {
     }
 
     #[test]
+    fn shift_alt_digits_pick_sub_tabs() {
+        let k = |c, m| shift_alt_digit(KeyEvent::new(KeyCode::Char(c), m));
+        let both = KeyModifiers::SHIFT | KeyModifiers::ALT;
+        assert_eq!(k('1', both), Some(1));
+        assert_eq!(k('4', both), Some(4));
+        assert_eq!(k('!', KeyModifiers::ALT), Some(1));
+        assert_eq!(k('¨', KeyModifiers::ALT), Some(6));
+        assert_eq!(k('1', KeyModifiers::ALT), None);
+        assert_eq!(k('!', KeyModifiers::NONE), None);
+    }
+
+    #[test]
     fn sub_tabs_share_one_style() {
         let text = |spans: Vec<Span>| {
             spans
@@ -1236,7 +1273,7 @@ mod tests {
         let instances = [("", "claude 1".to_string()), ("", "claude 2".to_string())];
         assert_eq!(
             text(sub_tab_spans(&instances, 1)),
-            " ⌥1 claude 1   ⌥2 claude 2  "
+            " ⇧⌥1 claude 1   ⇧⌥2 claude 2  "
         );
         let reports = [
             ("RTK", "gain".to_string()),
@@ -1245,7 +1282,7 @@ mod tests {
         let spans = sub_tab_spans(&reports, 0);
         assert_eq!(
             text(spans.clone()),
-            "RTK  ⌥1 gain  │ AI Memory  ⌥2 Status  "
+            "RTK  ⇧⌥1 gain  │ AI Memory  ⇧⌥2 Status  "
         );
         assert_eq!(spans[1].style.bg, Some(Color::Cyan));
     }
