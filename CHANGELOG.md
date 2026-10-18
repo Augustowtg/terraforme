@@ -5,13 +5,6 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
-## 0.8.1 - 2026-10-18
-
-### Corrigido
-- O MCP do AI Memory volta a subir no OpenCode: a ponte `ai-memory mcp-bridge` ganhou
-  `--no-session-id`, sem o qual ela procura o `CLAUDE_CODE_SESSION_ID` (inexistente no OpenCode)
-  e recusa iniciar, deixando a sessão sem as ferramentas de memória.
-
 ## 0.8.0 - 2026-10-18
 
 ### Adicionado
