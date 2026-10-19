@@ -5,6 +5,16 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.10.1 - 2026-10-19
+
+### Alterado
+
+- **Ajuda nos erros da linha de comando:** um argumento inválido, faltando ou
+  desconhecido mostra o erro seguido da ajuda completa do subcomando digitado
+  (por exemplo, `terraforme space --x` mostra a ajuda do `terraforme space`);
+  erros na execução de um comando terminam com a dica
+  `Para ver como usar: terraforme <comando> --help`.
+
 ## 0.10.0 - 2026-10-19
 
 ### Adicionado

@@ -186,9 +186,57 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn main() {
+    let cli = Cli::try_parse().unwrap_or_else(|err| usage_error(&err));
+    if let Err(err) = run(cli) {
+        eprintln!("Error: {err:?}");
+        let help = help_for(std::env::args().skip(1));
+        eprintln!(
+            "\nPara ver como usar: {} --help",
+            help.get_bin_name().unwrap_or("terraforme")
+        );
+        std::process::exit(1);
+    }
+}
 
+/// Erro de uso (argumento inválido, faltando ou desconhecido): mostra o erro e, logo abaixo, a
+/// ajuda do subcomando digitado. Pedidos de `--help`/`--version` seguem o fluxo normal do clap.
+fn usage_error(err: &clap::Error) -> ! {
+    use clap::error::ErrorKind;
+    if matches!(
+        err.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        err.exit();
+    }
+    // A mensagem do clap termina com `Usage:` e a dica do `--help`; a ajuda completa vem depois.
+    let message = err.render().to_string();
+    let message = message.split("\n\nUsage:").next().unwrap_or(&message);
+    let mut stderr = io::stderr();
+    let _ = writeln!(stderr, "{}\n", message.trim_end());
+    let _ = help_for(std::env::args().skip(1)).write_help(&mut stderr);
+    std::process::exit(err.exit_code());
+}
+
+/// O subcomando mais interno citado nos argumentos (ou o comando raiz), já com o nome completo
+/// (`terraforme space`) para o `Usage:` da ajuda.
+fn help_for(args: impl IntoIterator<Item = String>) -> clap::Command {
+    let mut cmd = Cli::command();
+    cmd.build();
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if let Some(sub) = cmd.find_subcommand(&arg).cloned() {
+            cmd = sub;
+        }
+    }
+    cmd
+}
+
+fn run(cli: Cli) -> Result<()> {
     if cli.verbose {
         eprintln!("[debug] {cli:?}");
     }
@@ -1240,6 +1288,15 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from([&["terraforme"], args].concat())
+    }
+
+    #[test]
+    fn help_for_picks_the_typed_subcommand() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(help_for(args(&[])).get_name(), "terraforme");
+        let space = help_for(args(&["space", "--bogus"]));
+        assert_eq!(space.get_bin_name(), Some("terraforme space"));
+        assert_eq!(help_for(args(&["cli", "--", "space"])).get_name(), "cli");
     }
 
     #[test]
