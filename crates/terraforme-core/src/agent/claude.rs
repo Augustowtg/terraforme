@@ -117,6 +117,11 @@ impl Adapter for Claude {
         }
         Ok(())
     }
+
+    /// `~/.claude/skills` (ou `$CLAUDE_CONFIG_DIR/skills`).
+    fn skills_dir(&self) -> Option<PathBuf> {
+        claude_config_dir().ok().map(|dir| dir.join("skills"))
+    }
 }
 
 /// Pasta do plugin do terraforme para a extensão.

@@ -3,9 +3,11 @@
 
 pub mod agent;
 pub mod config;
+pub mod doc;
 pub mod extension;
 pub mod jail;
 pub mod limits;
+pub mod skill;
 pub mod space;
 pub mod status;
 pub mod usage;

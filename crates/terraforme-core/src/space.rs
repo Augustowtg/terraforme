@@ -1,5 +1,10 @@
 //! Spaces: pastas de trabalho salvas com um nome, em
 //! `~/.config/terraforme/spaces.toml`, para voltar a elas depois.
+//!
+//! Cada space pode ter preferências ([`Preferences`]: agente, modo, sandbox)
+//! em `<pasta do space>/.terraforme/preferences.toml`; o `terraforme cli`
+//! aberto nela (ou numa subpasta) usa essas preferências no lugar do
+//! `config.toml`.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -10,6 +15,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{Mode, Provider};
 use crate::config::Config;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +86,74 @@ impl Spaces {
     }
 }
 
+/// Pasta do terraforme dentro da pasta do space.
+pub const DIR: &str = ".terraforme";
+const PREFERENCES_FILE: &str = "preferences.toml";
+
+/// Preferências do space: o que não estiver definido vem do `config.toml`
+/// (e, na sandbox, do `.ai-jail` da pasta).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Preferences {
+    /// Agente aberto pelo `terraforme cli` no space.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<Provider>,
+    /// Modo usado sem --eco/--high/--hybrid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
+    /// Roda o agente no AI Jail sem --jail/--no-jail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jail: Option<bool>,
+}
+
+impl Preferences {
+    /// Lê as preferências da pasta do space; sem arquivo, devolve as vazias.
+    pub fn load(dir: &Path) -> Result<Self> {
+        let path = Self::path(dir);
+        match fs::read_to_string(&path) {
+            Ok(text) => toml::from_str(&text).with_context(|| format!("lendo {}", path.display())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(err).with_context(|| format!("lendo {}", path.display())),
+        }
+    }
+
+    /// Grava as preferências; vazias, apaga o arquivo.
+    pub fn save(&self, dir: &Path) -> Result<()> {
+        let path = Self::path(dir);
+        if self.is_empty() {
+            return match fs::remove_file(&path) {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                    Err(err).with_context(|| format!("removendo {}", path.display()))
+                }
+                _ => Ok(()),
+            };
+        }
+        fs::create_dir_all(dir.join(DIR))?;
+        fs::write(&path, toml::to_string(self)?)
+            .with_context(|| format!("gravando {}", path.display()))
+    }
+
+    pub fn path(dir: &Path) -> PathBuf {
+        dir.join(DIR).join(PREFERENCES_FILE)
+    }
+
+    /// Preferências da pasta ou da mais próxima acima dela que tenha o
+    /// arquivo, com o caminho dele.
+    pub fn find(start: &Path) -> Result<Option<(PathBuf, Self)>> {
+        for dir in start.ancestors() {
+            let path = Self::path(dir);
+            if path.is_file() {
+                return Ok(Some((path, Self::load(dir)?)));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// O nome não pode ser vazio, nem só número (que escolhe pela posição na lista).
 fn validate_name(name: &str) -> Result<&str> {
     let name = name.trim();
@@ -147,5 +221,34 @@ mod tests {
         assert_eq!(spaces.get("web"), Some(Path::new("/novo")));
         assert_eq!(spaces.remove("web"), Some(PathBuf::from("/novo")));
         assert_eq!(spaces.len(), 1);
+    }
+
+    #[test]
+    fn preferences_round_trip_and_find() {
+        let prefs = Preferences {
+            agent: Some(Provider::Claude),
+            mode: Some(Mode::Eco),
+            jail: None,
+        };
+        let text = toml::to_string(&prefs).unwrap();
+        assert_eq!(text, "agent = \"claude\"\nmode = \"eco\"\n");
+        assert_eq!(toml::from_str::<Preferences>(&text).unwrap(), prefs);
+        assert!(toml::from_str::<Preferences>("").unwrap().is_empty());
+
+        let dir = env::temp_dir().join(format!("terraforme-space-{}", std::process::id()));
+        let sub = dir.join("a/b");
+        fs::create_dir_all(&sub).unwrap();
+        assert!(
+            Preferences::find(&sub)
+                .unwrap()
+                .is_none_or(|(p, _)| !p.starts_with(&dir))
+        );
+        prefs.save(&dir).unwrap();
+        let (path, found) = Preferences::find(&sub).unwrap().unwrap();
+        assert_eq!(path, dir.join(".terraforme/preferences.toml"));
+        assert_eq!(found, prefs);
+        Preferences::default().save(&dir).unwrap();
+        assert!(!path.exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

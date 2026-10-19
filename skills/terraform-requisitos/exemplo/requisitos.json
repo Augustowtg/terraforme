@@ -1,0 +1,262 @@
+{
+  "esquema": "terraforme-requisitos/1",
+  "projeto": "loja-online",
+  "atualizado_em": "2026-10-16T15:00:00",
+  "documento": {
+    "titulo": "Loja Online",
+    "nota": "Exemplo preenchido a partir de uma aplicação fictícia de comércio eletrônico. Mostra o tom, o nível de detalhe e o único jeito em que o código aparece: como correspondência de tipo (\"Pedido é `Order`\")."
+  },
+  "versoes": [
+    {
+      "versao": "1.0.0",
+      "data": "2026-09-02",
+      "autor": "Equipe de Vendas",
+      "mudancas": "Versão inicial com o contexto Vendas (RF-001 a RF-004, RN-001 a RN-005)"
+    },
+    {
+      "versao": "1.1.0",
+      "data": "2026-10-16",
+      "autor": "Equipe de Vendas",
+      "mudancas": "Inclusão do contexto Pagamentos (RF-005, RN-006) e do requisito de auditoria (RNF-003)"
+    }
+  ],
+  "visao_geral": {
+    "proposito": "permite que clientes montem pedidos de produtos do catálogo, paguem com cartão e acompanhem a entrega.",
+    "escopo": "contextos de Vendas e Pagamentos.",
+    "versao_aplicacao": "2.3.0",
+    "documentos_relacionados": "Política de cancelamento e reembolso (`docs/politicas/cancelamento-e-reembolso.md`)"
+  },
+  "contextos": [
+    {
+      "id": "CTX-001",
+      "nome": "Vendas",
+      "responsabilidade": "Montagem, confirmação e cancelamento de pedidos",
+      "relacoes": "Pede a cobrança a Pagamentos; reage à aprovação do pagamento"
+    },
+    {
+      "id": "CTX-002",
+      "nome": "Pagamentos",
+      "responsabilidade": "Cobrança e reembolso junto ao meio de pagamento",
+      "relacoes": "Recebe pedidos de cobrança de Vendas; avisa quando o pagamento é aprovado ou recusado"
+    }
+  ],
+  "glossario": [
+    {"id": "GLO-001", "termo": "Cliente", "definicao": "Pessoa que compra na loja; pode estar ativa ou bloqueada", "tipo_codigo": "Customer", "contexto": "Vendas"},
+    {"id": "GLO-002", "termo": "Pedido", "definicao": "Conjunto de produtos que um cliente quer comprar, com valor total e situação", "tipo_codigo": "Order", "contexto": "Vendas"},
+    {"id": "GLO-003", "termo": "Item do pedido", "definicao": "Um produto do pedido com quantidade e preço unitário", "tipo_codigo": "OrderItem", "contexto": "Vendas"},
+    {"id": "GLO-004", "termo": "Situação do pedido", "definicao": "Etapa em que o pedido está: rascunho, confirmado, pago, enviado ou cancelado", "tipo_codigo": "OrderStatus", "contexto": "Vendas"},
+    {"id": "GLO-005", "termo": "Confirmar pedido", "definicao": "Encerrar a montagem do pedido e enviá-lo para cobrança", "tipo_codigo": null, "contexto": "Vendas"},
+    {"id": "GLO-006", "termo": "Valor", "definicao": "Quantia em dinheiro com moeda, sempre com duas casas decimais", "tipo_codigo": "Money", "contexto": "Compartilhado"},
+    {"id": "GLO-007", "termo": "Cobrança", "definicao": "Tentativa de receber o valor do pedido no cartão do cliente", "tipo_codigo": "Payment", "contexto": "Pagamentos"},
+    {"id": "GLO-008", "termo": "Pagamento aprovado", "definicao": "Fato de a cobrança ter sido aceita pelo meio de pagamento", "tipo_codigo": "PaymentApproved", "contexto": "Pagamentos"},
+    {"id": "GLO-009", "termo": "Pagamento recusado", "definicao": "Fato de a cobrança ter sido recusada pelo meio de pagamento", "tipo_codigo": "PaymentDeclined", "contexto": "Pagamentos"},
+    {"id": "GLO-010", "termo": "Reembolso", "definicao": "Devolução do valor pago ao cliente", "tipo_codigo": "Refund", "contexto": "Pagamentos"}
+  ],
+  "modelo_dominio": [
+    {
+      "id": "DOM-001",
+      "contexto": "Vendas",
+      "agregados": [
+        {"nome": "Pedido", "descricao": "concentra os itens, o valor total e a situação. Toda alteração em itens passa pelo pedido."}
+      ],
+      "entidades": [
+        {"nome": "Item do pedido", "descricao": "pertence a um pedido; guarda o produto, a quantidade e o preço unitário no momento em que foi adicionado."},
+        {"nome": "Cliente", "descricao": "quem faz o pedido; pode estar ativo ou bloqueado."}
+      ],
+      "objetos_valor": [
+        {"nome": "Valor", "descricao": "quantia e moeda; não aceita valores negativos; dois valores só podem ser somados se tiverem a mesma moeda."}
+      ],
+      "ciclo_vida": [
+        "Rascunho → Confirmado → Pago → Enviado. Rascunho, Confirmado e Pago podem ir para Cancelado. Enviado e Cancelado são finais."
+      ],
+      "eventos": [
+        {"nome": "Pedido confirmado", "descricao": "acontece quando o cliente confirma o pedido; Pagamentos reage iniciando a cobrança."},
+        {"nome": "Pedido cancelado", "descricao": "acontece quando o pedido é cancelado; Pagamentos reage reembolsando, se já houve pagamento."}
+      ]
+    },
+    {
+      "id": "DOM-002",
+      "contexto": "Pagamentos",
+      "agregados": [
+        {"nome": "Cobrança", "descricao": "representa uma tentativa de receber o valor de um pedido; guarda o valor, o resultado e o código da transação no meio de pagamento."}
+      ],
+      "entidades": [
+        {"nome": "Reembolso", "descricao": "pertence a uma cobrança aprovada; registra o valor devolvido e a data."}
+      ],
+      "objetos_valor": [
+        {"nome": "Valor", "descricao": "o mesmo conceito usado em Vendas."}
+      ],
+      "ciclo_vida": [
+        "Pendente → Aprovada ou Recusada. Uma cobrança aprovada pode ser reembolsada."
+      ],
+      "eventos": [
+        {"nome": "Pagamento aprovado", "descricao": "acontece quando o meio de pagamento aceita a cobrança; Vendas reage marcando o pedido como pago."},
+        {"nome": "Pagamento recusado", "descricao": "acontece quando o meio de pagamento recusa a cobrança; Vendas reage devolvendo o pedido para rascunho."}
+      ]
+    }
+  ],
+  "requisitos_funcionais": [
+    {
+      "id": "RF-001",
+      "titulo": "Montar pedido",
+      "descricao": "O cliente pode adicionar produtos do catálogo a um pedido em rascunho, informando a quantidade de cada um.",
+      "ator": "Cliente",
+      "contexto": "Vendas",
+      "regras": ["RN-001", "RN-002"],
+      "criterios": [
+        "Dado um pedido em rascunho, quando o cliente adiciona um produto com quantidade 2, então o item aparece no pedido e o valor total é recalculado.",
+        "Dado um pedido com 50 itens, quando o cliente tenta adicionar mais um, então o sistema recusa e informa o limite."
+      ],
+      "referencias": null,
+      "rastreabilidade": ["Pedido", "Item do pedido"],
+      "removido_em": null
+    },
+    {
+      "id": "RF-002",
+      "titulo": "Confirmar pedido",
+      "descricao": "O cliente pode confirmar um pedido em rascunho, que passa a confirmado e segue para cobrança.",
+      "ator": "Cliente",
+      "contexto": "Vendas",
+      "regras": ["RN-003", "RN-004"],
+      "criterios": [
+        "Dado um pedido em rascunho com pelo menos um item, quando o cliente confirma, então o pedido fica confirmado e a cobrança é iniciada.",
+        "Dado um pedido sem itens, quando o cliente tenta confirmar, então o sistema recusa e informa que o pedido está vazio.",
+        "Dado um cliente bloqueado, quando ele tenta confirmar um pedido, então o sistema recusa a confirmação."
+      ],
+      "referencias": null,
+      "rastreabilidade": ["Pedido", "Cliente", "Situação do pedido"],
+      "removido_em": null
+    },
+    {
+      "id": "RF-003",
+      "titulo": "Cancelar pedido",
+      "descricao": "O cliente pode cancelar um pedido que ainda não foi enviado. Se o pedido já estiver pago, o valor é reembolsado.",
+      "ator": "Cliente",
+      "contexto": "Vendas",
+      "regras": ["RN-005", "RN-006"],
+      "criterios": [
+        "Dado um pedido pago, quando o cliente cancela, então o pedido fica cancelado e o reembolso é solicitado.",
+        "Dado um pedido enviado, quando o cliente tenta cancelar, então o sistema recusa e informa que o pedido já foi enviado."
+      ],
+      "referencias": "Política de cancelamento e reembolso (`docs/politicas/cancelamento-e-reembolso.md`)",
+      "rastreabilidade": ["Pedido", "Situação do pedido", "Reembolso"],
+      "removido_em": null
+    },
+    {
+      "id": "RF-004",
+      "titulo": "Registrar resultado da cobrança",
+      "descricao": "O sistema deve marcar o pedido como pago quando o pagamento é aprovado e devolvê-lo para rascunho quando é recusado.",
+      "ator": "Sistema",
+      "contexto": "Vendas",
+      "regras": [],
+      "criterios": [
+        "Dado um pedido confirmado, quando o pagamento é aprovado, então o pedido passa a pago e o cliente recebe o comprovante por e-mail.",
+        "Dado um pedido confirmado, quando o pagamento é recusado, então o pedido volta para rascunho e o cliente é avisado."
+      ],
+      "referencias": null,
+      "rastreabilidade": ["Pagamento aprovado", "Pagamento recusado", "Pedido"],
+      "removido_em": null
+    },
+    {
+      "id": "RF-005",
+      "titulo": "Reembolsar cobrança",
+      "descricao": "O sistema deve devolver ao cliente o valor de uma cobrança aprovada quando o pedido correspondente é cancelado.",
+      "ator": "Sistema",
+      "contexto": "Pagamentos",
+      "regras": ["RN-006"],
+      "criterios": [
+        "Dado uma cobrança aprovada há 3 dias, quando o pedido é cancelado, então o reembolso é feito no meio de pagamento e registrado.",
+        "Dado uma cobrança aprovada há 10 dias, quando o pedido é cancelado, então o reembolso não é feito automaticamente e o caso vai para análise."
+      ],
+      "referencias": "Política de cancelamento e reembolso (`docs/politicas/cancelamento-e-reembolso.md`)",
+      "rastreabilidade": ["Cobrança", "Reembolso"],
+      "removido_em": null
+    }
+  ],
+  "regras_negocio": [
+    {
+      "id": "RN-001",
+      "titulo": "Quantidade mínima por item",
+      "regra": "A quantidade de cada item do pedido deve ser de pelo menos 1.",
+      "contexto": "Vendas",
+      "consequencia": "o item não é adicionado e o cliente é informado.",
+      "referencias": null,
+      "rastreabilidade": ["Item do pedido"],
+      "removido_em": null
+    },
+    {
+      "id": "RN-002",
+      "titulo": "Limite de itens por pedido",
+      "regra": "Um pedido pode ter no máximo 50 itens.",
+      "contexto": "Vendas",
+      "consequencia": "o item não é adicionado e o cliente é informado do limite.",
+      "referencias": null,
+      "rastreabilidade": ["Pedido"],
+      "removido_em": null
+    },
+    {
+      "id": "RN-003",
+      "titulo": "Pedido vazio não pode ser confirmado",
+      "regra": "Somente pedidos com pelo menos um item podem ser confirmados.",
+      "contexto": "Vendas",
+      "consequencia": "a confirmação é recusada.",
+      "referencias": null,
+      "rastreabilidade": ["Pedido"],
+      "removido_em": null
+    },
+    {
+      "id": "RN-004",
+      "titulo": "Cliente bloqueado não confirma pedidos",
+      "regra": "Um cliente bloqueado não pode confirmar pedidos.",
+      "contexto": "Vendas",
+      "consequencia": "a confirmação é recusada sem informar o motivo do bloqueio (inferido).",
+      "referencias": null,
+      "rastreabilidade": ["Cliente"],
+      "removido_em": null
+    },
+    {
+      "id": "RN-005",
+      "titulo": "Pedido enviado não pode ser cancelado",
+      "regra": "Um pedido enviado não pode mais ser cancelado.",
+      "contexto": "Vendas",
+      "consequencia": "o cancelamento é recusado.",
+      "referencias": null,
+      "rastreabilidade": ["Situação do pedido"],
+      "removido_em": null
+    },
+    {
+      "id": "RN-006",
+      "titulo": "Prazo para reembolso automático",
+      "regra": "O reembolso automático só é feito em até 7 dias após a aprovação do pagamento.",
+      "contexto": "Pagamentos",
+      "consequencia": "o pedido é cancelado, mas o reembolso fica pendente de análise manual.",
+      "referencias": "Política de cancelamento e reembolso (`docs/politicas/cancelamento-e-reembolso.md`)",
+      "rastreabilidade": ["Reembolso", "Cobrança"],
+      "removido_em": null
+    }
+  ],
+  "requisitos_nao_funcionais": [
+    {"id": "RNF-001", "categoria": "Segurança", "descricao": "somente clientes autenticados podem montar, confirmar ou cancelar os próprios pedidos.", "removido_em": null},
+    {"id": "RNF-002", "categoria": "Disponibilidade", "descricao": "falhas temporárias na comunicação com o meio de pagamento são tentadas de novo até 3 vezes antes de a cobrança ser considerada recusada.", "removido_em": null},
+    {"id": "RNF-003", "categoria": "Auditoria", "descricao": "toda mudança de situação do pedido é registrada com data, hora e responsável.", "removido_em": null}
+  ],
+  "integracoes": [
+    {"id": "INT-001", "sistema": "Meio de pagamento", "finalidade": "Cobrar e reembolsar no cartão do cliente", "direcao": "Ambos", "contexto": "Pagamentos"},
+    {"id": "INT-002", "sistema": "Serviço de e-mail", "finalidade": "Enviar comprovantes e avisos ao cliente", "direcao": "Envia", "contexto": "Vendas"}
+  ],
+  "lacunas": [
+    {"id": "LAC-001", "descricao": "A regra RN-004 não mostra se o cliente deve saber por que foi bloqueado. O sistema só recusa a confirmação. Pergunta: o cliente deve ser informado do motivo?"},
+    {"id": "LAC-002", "descricao": "O prazo de 7 dias da RN-006 é fixo e a política não diz se vale para todos os produtos. Pergunta: o prazo depende da categoria do produto?"},
+    {"id": "LAC-003", "descricao": "Não há tratamento para pedido pago que nunca é enviado. Pergunta: existe prazo máximo para o envio?"}
+  ],
+  "contadores": {
+    "CTX": 2,
+    "GLO": 10,
+    "DOM": 2,
+    "RF": 5,
+    "RN": 6,
+    "RNF": 3,
+    "INT": 2,
+    "LAC": 3
+  }
+}

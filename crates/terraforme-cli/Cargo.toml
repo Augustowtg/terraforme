@@ -15,6 +15,7 @@ terraforme-core = { workspace = true, features = ["clap"] }
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
+serde_json.workspace = true
 portable-pty = "0.9"
 ratatui = "0.30"
 tui-term = "0.3"

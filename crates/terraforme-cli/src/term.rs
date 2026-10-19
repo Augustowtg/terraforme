@@ -1,7 +1,7 @@
 //! Terminal do terraforme (`terraforme cli`): o agente roda num pseudoterminal
 //! dentro de uma TUI com abas no topo — o agente (com uma sub-aba por
-//! instância), o consumo de tokens e as extensões do modo (os relatórios
-//! delas). `Shift+Tab` alterna as abas e `Shift+F1`–`F9` pulam para uma aba.
+//! instância) e o consumo de tokens. `Shift+Tab` alterna as abas e
+//! `Shift+F1`–`F9` pulam para uma aba.
 //! As sub-abas trocam do mesmo jeito em todas as abas: `Shift+Alt+1`–`9` vai
 //! direto e `Ctrl+←→` / `Ctrl+PgUp/PgDn` passam para a vizinha (`Shift+dígito`
 //! sem Alt não serve: na aba do agente chega ao Claude como `!@#$`…). `F12` abre
@@ -30,7 +30,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, crossterm};
 use terraforme_core::agent::Adapter;
 use terraforme_core::config::Config;
-use terraforme_core::extension::{Extension, Report};
+use terraforme_core::doc;
 use terraforme_core::limits::{self, Limit, Source};
 use terraforme_core::usage::{self, Summary, Tokens, UsageSource};
 use tui_term::widget::PseudoTerminal;
@@ -45,6 +45,11 @@ const USAGE_VIEWS: [&str; 3] = ["Limites", "Tokens", "Subagentes"];
 const BAR_WIDTH: usize = 40;
 /// Máximo de instâncias do agente abertas ao mesmo tempo.
 pub const MAX_INSTANCES: usize = 9;
+/// Espera até entregar as instruções à instância de documentação: a TUI do
+/// agente precisa estar pronta para receber o prompt.
+const PROMPT_DELAY: Duration = Duration::from_secs(2);
+/// Intervalo de verificação do pedido de documentação.
+const DOC_POLL: Duration = Duration::from_millis(500);
 
 /// O que `run` precisa para montar o terminal.
 pub struct Options {
@@ -64,17 +69,14 @@ pub struct Options {
     /// Aparecem num aviso inicial, já que a tela alternativa esconderia o
     /// que fosse impresso antes.
     pub notices: Vec<String>,
-    /// Extensões do modo; os relatórios delas ficam na aba Extensões.
-    pub extensions: Vec<Extension>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     /// O agente, com uma sub-aba por instância.
     Agent,
+    /// Consumo de tokens do agente.
     Usage,
-    /// Relatórios de todas as extensões do modo, um por sub-aba.
-    Extensions,
 }
 
 impl Tab {
@@ -82,36 +84,24 @@ impl Tab {
         match self {
             Tab::Agent => agent.to_string(),
             Tab::Usage => "Consumo".into(),
-            Tab::Extensions => "Extensões".into(),
         }
     }
 
-    /// Sub-abas como (grupo, rótulo): os relatórios, agrupados pela extensão,
-    /// ou as visões do consumo (sem grupo). As instâncias do agente ficam à
-    /// parte, porque não carregam conteúdo.
-    fn views(self, extensions: &[Extension]) -> Vec<(&'static str, &'static str)> {
+    /// Sub-abas como (grupo, rótulo). As instâncias do agente ficam à parte,
+    /// porque não carregam conteúdo.
+    fn views(self) -> Vec<(&'static str, &'static str)> {
         match self {
             Tab::Agent => Vec::new(),
             Tab::Usage => USAGE_VIEWS.iter().map(|&v| ("", v)).collect(),
-            Tab::Extensions => reports(extensions)
-                .into_iter()
-                .map(|(ext, report)| (ext.name(), report.label))
-                .collect(),
         }
     }
-}
-
-/// Relatórios de todas as extensões, na ordem das sub-abas da aba Extensões.
-fn reports(extensions: &[Extension]) -> Vec<(Extension, Report)> {
-    extensions
-        .iter()
-        .flat_map(|&ext| ext.reports().iter().map(move |&report| (ext, report)))
-        .collect()
 }
 
 enum Msg {
     Output(usize, Vec<u8>),
     Exited(usize),
+    /// Pedido de instância de documentação consumido (instruções ou erro).
+    Doc(Result<String, String>),
     Loaded {
         tab: Tab,
         index: usize,
@@ -128,7 +118,7 @@ enum Content {
 /// Estado da aba aberta quando não é a do agente.
 struct View {
     tab: Tab,
-    /// Sub-aba escolhida (relatório da extensão ou visão do consumo).
+    /// Sub-aba escolhida (visão do consumo).
     index: usize,
     content: Content,
     scroll: u16,
@@ -149,6 +139,12 @@ struct Agent {
     launched: SystemTime,
     /// Id de sessão passado ao agente.
     session: Option<String>,
+    /// Instância de documentação: marcada na sub-aba e com prompt próprio.
+    doc: bool,
+    /// Instruções a entregar ao agente logo que ele inicializar.
+    pending: Option<String>,
+    /// Momento da abertura, para o atraso de entregar o prompt.
+    booted: Instant,
 }
 
 impl Agent {
@@ -208,6 +204,9 @@ impl Agent {
             scrollback: 0,
             launched,
             session,
+            doc: false,
+            pending: None,
+            booted: Instant::now(),
         })
     }
 
@@ -215,6 +214,22 @@ impl Agent {
         self.writer.write_all(bytes)?;
         self.writer.flush()?;
         Ok(())
+    }
+
+    /// Entrega as instruções de documentação ao agente quando ele já
+    /// inicializou (primeira saída recebida e ao menos [`PROMPT_DELAY`]).
+    fn deliver_pending(&mut self) {
+        let Some(prompt) = self.pending.clone() else {
+            return;
+        };
+        if self.booted.elapsed() < PROMPT_DELAY {
+            return;
+        }
+        self.pending = None;
+        if self.send(&prompt_bytes(&prompt)).is_err() {
+            // Tenta de novo na próxima saída do agente.
+            self.pending = Some(prompt);
+        }
     }
 
     /// `isize::MIN` volta ao vivo.
@@ -247,7 +262,6 @@ impl Drop for Agent {
 struct App {
     agent: String,
     title: String,
-    extensions: Vec<Extension>,
     adapter: &'static dyn Adapter,
     command: Command,
     cwd: PathBuf,
@@ -279,7 +293,6 @@ pub fn run(options: Options) -> Result<()> {
     let mut app = App {
         agent: options.agent,
         title: options.title,
-        extensions: options.extensions,
         adapter: options.adapter,
         command: options.command,
         cwd,
@@ -291,12 +304,26 @@ pub fn run(options: Options) -> Result<()> {
         view: None,
         notices: (!options.notices.is_empty()).then(|| (options.notices.join("\n"), 0)),
         body: body_size(Rect::new(0, 0, cols, rows)),
-        tx,
+        tx: tx.clone(),
         quit: false,
     };
     for _ in 0..options.instances.clamp(1, MAX_INSTANCES) {
         app.spawn()?;
     }
+
+    // Assiste o pedido de documentação: o agente grava o arquivo, o
+    // terminal abre a instância.
+    let doc_tx = tx;
+    thread::spawn(move || {
+        loop {
+            if let Some(result) = poll_doc()
+                && doc_tx.send(Msg::Doc(result)).is_err()
+            {
+                return;
+            }
+            thread::sleep(DOC_POLL);
+        }
+    });
 
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
@@ -309,18 +336,14 @@ pub fn run(options: Options) -> Result<()> {
     result
 }
 
-/// Abas na ordem do menu: o agente, o consumo e, se o modo usa alguma, as
-/// extensões.
-fn tabs(extensions: &[Extension]) -> Vec<Tab> {
+/// Abas na ordem do menu: o agente e o consumo.
+fn tabs() -> [Tab; 2] {
     [Tab::Agent, Tab::Usage]
-        .into_iter()
-        .chain((!extensions.is_empty()).then_some(Tab::Extensions))
-        .collect()
 }
 
 impl App {
-    fn tabs(&self) -> Vec<Tab> {
-        tabs(&self.extensions)
+    fn tabs(&self) -> [Tab; 2] {
+        tabs()
     }
 
     /// Abre mais uma instância do agente e devolve o número dela.
@@ -351,6 +374,29 @@ impl App {
         }
     }
 
+    /// Abre a instância de documentação com as instruções pedidas pelo
+    /// agente; fica aberta até o usuário fechá-la (`Shift+F12`).
+    fn spawn_doc(&mut self, instructions: String) {
+        if self.agents.len() >= MAX_INSTANCES {
+            self.notices = Some((format!("⚠ no máximo {MAX_INSTANCES} instâncias"), 0));
+            return;
+        }
+        match self.spawn() {
+            Ok(id) => {
+                if let Some(agent) = self.agent_mut(id) {
+                    agent.doc = true;
+                    agent.pending = Some(instructions);
+                }
+                self.focus(id);
+                self.notices = Some((
+                    "ℹ instância de documentação aberta · ⇧F12 fecha quando terminar".to_string(),
+                    0,
+                ));
+            }
+            Err(err) => self.notices = Some((format!("⚠ {err:#}"), 0)),
+        }
+    }
+
     fn agent(&self, id: usize) -> Option<&Agent> {
         self.agents.iter().find(|a| a.id == id)
     }
@@ -377,7 +423,7 @@ impl App {
     /// aberta.
     fn sub_tabs(&self) -> (usize, usize) {
         match &self.view {
-            Some(view) => (view.tab.views(&self.extensions).len(), view.index),
+            Some(view) => (view.tab.views().len(), view.index),
             None => (
                 self.agents.len(),
                 self.agents
@@ -435,8 +481,8 @@ impl App {
                 dirty = true;
             }
             if let Some(view) = &self.view
-                && view.tab == Tab::Usage
                 && !view.loading
+                && view.tab == Tab::Usage
                 && view.loaded_at.elapsed() >= USAGE_REFRESH
             {
                 self.load(false);
@@ -482,9 +528,14 @@ impl App {
             Msg::Output(id, bytes) => {
                 if let Some(agent) = self.agent_mut(id) {
                     agent.parser.process(&bytes);
+                    agent.deliver_pending();
                 }
             }
             Msg::Exited(id) => self.closed(id),
+            Msg::Doc(result) => match result {
+                Ok(instructions) => self.spawn_doc(instructions),
+                Err(err) => self.notices = Some((format!("⚠ {err}"), 0)),
+            },
             Msg::Loaded { tab, index, result } => {
                 if let Some(view) = &mut self.view
                     && view.tab == tab
@@ -596,6 +647,8 @@ impl App {
         };
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.select(Tab::Agent),
+
+            // Rolagem e recarregar.
             KeyCode::Up | KeyCode::Char('k') => view.scroll = view.scroll.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => view.scroll = view.scroll.saturating_add(1),
             KeyCode::PageUp => view.scroll = view.scroll.saturating_sub(10),
@@ -641,7 +694,6 @@ impl App {
         }
         view.loading = true;
         let (tab, index) = (view.tab, view.index);
-        let report = reports(&self.extensions).get(index).copied();
         let tx = self.tx.clone();
         let cwd = self.cwd.clone();
         let adapter = self.adapter;
@@ -657,10 +709,6 @@ impl App {
                             _ => format_agents(&u),
                         })
                 }
-                Tab::Extensions => match report {
-                    Some((ext, report)) => ext.report(report, adapter.bin()).map(Text::from),
-                    None => return,
-                },
             };
             let result = result.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::Loaded { tab, index, result });
@@ -751,7 +799,7 @@ impl App {
         let labels: Vec<_> = self
             .agents
             .iter()
-            .map(|a| ("", format!("{} {}", self.agent, a.id)))
+            .map(|a| ("", instance_label(&self.agent, a.id, a.doc)))
             .collect();
         let (_, current) = self.sub_tabs();
         let mut spans = vec![Span::raw(" ")];
@@ -766,21 +814,17 @@ impl App {
     }
 
     fn draw_view(&self, frame: &mut Frame, view: &View, area: Rect) {
-        let views = view.tab.views(&self.extensions);
-        let title = match view.tab {
-            Tab::Extensions => match views.get(view.index) {
-                Some((ext, _)) => format!("Extensões · {ext}"),
-                None => "Extensões".to_string(),
-            },
-            _ if self.agents.len() > 1 => {
-                format!("Consumo de tokens · {} {}", self.agent, self.focused)
-            }
-            _ => "Consumo de tokens".to_string(),
-        };
-        let hint = if views.len() > 1 {
-            " ⇧⌥1-9/Ctrl+←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
+        let views = view.tab.views();
+        let (title, hint) = if self.agents.len() > 1 {
+            (
+                format!("Consumo de tokens · {} {}", self.agent, self.focused),
+                " ⇧⌥1-9/Ctrl+←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente ",
+            )
         } else {
-            " ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente "
+            (
+                "Consumo de tokens".to_string(),
+                " ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente ",
+            )
         };
         let block = Block::bordered()
             .title(Line::from(format!(" {title} ")).bold().cyan())
@@ -1162,6 +1206,40 @@ fn thousands(n: u64) -> String {
     out
 }
 
+/// Rótulo da sub-aba de uma instância; a de documentação é marcada com `📄`.
+fn instance_label(agent: &str, id: usize, doc: bool) -> String {
+    if doc {
+        format!("{agent} {id} 📄 doc")
+    } else {
+        format!("{agent} {id}")
+    }
+}
+
+/// Instruções como teclas: quebra de linha vira `Alt+Enter` (não envia o
+/// prompt no meio das instruções) e termina com Enter, que envia.
+fn prompt_bytes(instructions: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (i, line) in instructions.split('\n').enumerate() {
+        if i > 0 {
+            bytes.extend(b"\x1b\r");
+        }
+        bytes.extend(line.as_bytes());
+    }
+    bytes.push(b'\r');
+    bytes
+}
+
+/// Vê se há pedido de documentação pendente (arquivo gravado pelo agente):
+/// as instruções a instanciar ou o erro do pedido.
+fn poll_doc() -> Option<Result<String, String>> {
+    let outcome = doc::take_request().ok()?;
+    match (outcome.instructions, outcome.error) {
+        (Some(instructions), _) => Some(Ok(instructions)),
+        (None, Some(err)) => Some(Err(err)),
+        (None, None) => None,
+    }
+}
+
 /// Área do agente: a tela menos a linha do menu e a das sub-abas.
 fn body_size(area: Rect) -> Rect {
     Rect::new(
@@ -1305,16 +1383,9 @@ mod tests {
     }
 
     #[test]
-    fn tabs_list_agent_then_usage_and_extensions() {
-        assert_eq!(tabs(&[]), [Tab::Agent, Tab::Usage]);
-        assert_eq!(
-            tabs(&[Extension::Rtk]),
-            [Tab::Agent, Tab::Usage, Tab::Extensions]
-        );
-        assert_eq!(
-            Tab::Extensions.views(&[Extension::Rtk, Extension::AiMemory])[0],
-            ("RTK", "Economia")
-        );
+    fn tabs_list_agent_and_usage() {
+        assert_eq!(tabs(), [Tab::Agent, Tab::Usage]);
+        assert_eq!(Tab::Usage.views().len(), USAGE_VIEWS.len());
         assert_eq!(Tab::Agent.label("claude"), "claude");
     }
 
@@ -1384,5 +1455,20 @@ mod tests {
     fn body_leaves_room_for_the_menu_and_instances() {
         assert_eq!(body_size(Rect::new(0, 0, 80, 24)), Rect::new(0, 0, 80, 22));
         assert_eq!(body_size(Rect::new(0, 0, 0, 0)), Rect::new(0, 0, 1, 1));
+    }
+
+    #[test]
+    fn doc_prompt_ends_with_enter_and_does_not_submit_midway() {
+        // Quebra de linha → Alt+Enter (não envia); só o final envia.
+        assert_eq!(prompt_bytes("doc do módulo"), "doc do módulo\r".as_bytes());
+        assert_eq!(prompt_bytes("l1\nl2"), b"l1\x1b\rl2\r");
+        assert_eq!(prompt_bytes("l1\n\nl3"), b"l1\x1b\r\x1b\rl3\r");
+    }
+
+    #[test]
+    fn doc_instances_are_marked_in_the_sub_tab() {
+        assert_eq!(instance_label("claude", 1, false), "claude 1");
+        assert_eq!(instance_label("claude", 2, true), "claude 2 📄 doc");
+        assert_eq!(instance_label("opencode", 3, true), "opencode 3 📄 doc");
     }
 }

@@ -5,11 +5,12 @@ use std::io::{self, IsTerminal, Write};
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use terraforme_core::agent::{self, Mode, Provider};
+use terraforme_core::agent::{self, CliMode, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Outcome};
 use terraforme_core::jail;
-use terraforme_core::space::{self, Spaces};
+use terraforme_core::skill;
+use terraforme_core::space::{self, Preferences, Spaces};
 use terraforme_core::status::{self, Component, State};
 
 /// terraforme — CLI
@@ -31,6 +32,9 @@ enum Command {
     Version,
     /// Verifica as extensões (RTK, AI Memory, AI Jail)
     Status,
+    /// Configura a máquina do zero, em três passos: identifica os agentes, instala e
+    /// configura as extensões neles e instala as skills embutidas
+    Setup,
     /// Instala, atualiza, configura, remove ou mostra as extensões (RTK, AI Memory, AI Jail)
     #[command(group(
         ArgGroup::new("action")
@@ -66,11 +70,14 @@ enum Command {
         #[arg(short, long)]
         yes: bool,
     },
-    /// Mostra ou altera a configuração (agente, modo padrão, sandbox e orçamento)
+    /// Mostra ou altera a configuração (agente, modo de início, sandbox e orçamento)
     Config {
         /// Agente padrão do `terraforme cli` (claude, opencode). Sem valor: lista e pergunta
         #[arg(long, visible_alias = "agente", alias = "provider", value_enum, num_args = 0..=1)]
         agent: Option<Option<Provider>>,
+        /// Modo de início do `terraforme cli` (eco, custom, security, high, doc). Sem valor: lista e pergunta
+        #[arg(long, value_enum, num_args = 0..=1, conflicts_with_all = ["mode", "jail"])]
+        cli: Option<Option<CliMode>>,
         /// Define o modo padrão do `terraforme cli`
         #[arg(long, value_enum)]
         mode: Option<Mode>,
@@ -84,7 +91,7 @@ enum Command {
         #[arg(long = "budget-week", value_name = "TOKENS")]
         budget_week: Option<u64>,
     },
-    /// Abre o agente de IA no terminal do terraforme (abas de consumo, RTK e AI Memory)
+    /// Abre o agente de IA no terminal do terraforme (aba de consumo de tokens)
     #[command(group(ArgGroup::new("modo").args(["eco", "high", "hybrid"])))]
     Cli {
         /// Agente desta sessão, qualquer que seja o padrão (`terraforme config --agent`)
@@ -138,6 +145,18 @@ enum Command {
         /// Imprime a pasta em vez de abrir um shell (ex.: cd "$(terraforme space --path)")
         #[arg(long)]
         path: bool,
+        /// Preferência do space: agente do `terraforme cli` aberto nele
+        #[arg(long, visible_alias = "agente", value_enum, conflicts_with_all = ["delete", "list", "path"])]
+        agent: Option<Provider>,
+        /// Preferência do space: modo do `terraforme cli` aberto nele
+        #[arg(long, value_enum, conflicts_with_all = ["delete", "list", "path"])]
+        mode: Option<Mode>,
+        /// Preferência do space: roda (true) ou não (false) o agente no AI Jail
+        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, conflicts_with_all = ["delete", "list", "path"])]
+        jail: Option<bool>,
+        /// Apaga as preferências do space (volta ao `terraforme config`)
+        #[arg(long, conflicts_with_all = ["delete", "list", "path"])]
+        reset: bool,
         /// Não pede confirmação ao substituir ou remover
         #[arg(short, long)]
         yes: bool,
@@ -182,6 +201,7 @@ fn main() -> Result<()> {
     match command {
         Command::Version => println!("terraforme {}", terraforme_core::VERSION),
         Command::Status => print_status(),
+        Command::Setup => setup_flow()?,
         Command::Extension {
             name,
             install,
@@ -218,7 +238,7 @@ fn main() -> Result<()> {
             } else if project {
                 jail_project()?;
             } else if let Some(on) = default {
-                config(None, None, Some(on), None, None)?;
+                config(None, None, Some(on), None, None, None)?;
             } else if delete {
                 let ext = targets[0];
                 if yes || confirm(&format!("Remover {}?", ext.name()))? {
@@ -232,11 +252,12 @@ fn main() -> Result<()> {
         }
         Command::Config {
             agent,
+            cli,
             mode,
             jail,
             budget_five_hours,
             budget_week,
-        } => config(agent, mode, jail, budget_five_hours, budget_week)?,
+        } => config(agent, mode, jail, cli, budget_five_hours, budget_week)?,
         Command::Cli {
             agent,
             eco,
@@ -265,8 +286,16 @@ fn main() -> Result<()> {
             delete,
             list,
             path,
+            agent,
+            mode,
+            jail,
+            reset,
             yes,
-        } => space(name.as_deref(), save, delete, list, path, yes)?,
+        } => {
+            let prefs = (agent.is_some() || mode.is_some() || jail.is_some() || reset)
+                .then_some(Preferences { agent, mode, jail });
+            space(name.as_deref(), save, delete, list, path, prefs, reset, yes)?
+        }
         Command::Upgrade {
             repo,
             dist,
@@ -287,6 +316,7 @@ fn config(
     agent: Option<Option<Provider>>,
     mode: Option<Mode>,
     jail: Option<bool>,
+    cli: Option<Option<CliMode>>,
     budget_five_hours: Option<u64>,
     budget_week: Option<u64>,
 ) -> Result<()> {
@@ -334,12 +364,49 @@ fn config(
         }
         None => {}
     }
+    let cli = match cli {
+        // Sem valor: lista os modos de início e, num terminal, pergunta qual
+        // vira o padrão.
+        Some(None) => {
+            print_cli_modes(config.mode, config.jail, config.doc);
+            if !io::stdin().is_terminal() {
+                return Ok(());
+            }
+            let current = CliMode::of(config.mode, config.jail);
+            let answer = ask(&format!(
+                "Modo de início (1-{} ou nome; Enter mantém {}): ",
+                CliMode::ALL.len(),
+                current.id()
+            ))?;
+            if answer.is_empty() {
+                return Ok(());
+            }
+            let Some(cli) = CliMode::pick(&answer) else {
+                bail!("modo de início {answer} não encontrado");
+            };
+            Some(cli)
+        }
+        Some(Some(cli)) => Some(cli),
+        None => None,
+    };
+    if let Some(cli) = cli {
+        let (mode, jail) = match cli.preset() {
+            Some(preset) => preset,
+            None => custom_cli_preset()?,
+        };
+        config.mode = mode;
+        config.jail = jail;
+        config.doc = cli == CliMode::Doc;
+        changed = true;
+    }
     if let Some(mode) = mode {
         config.mode = mode;
+        config.doc = false;
         changed = true;
     }
     if let Some(jail) = jail {
         config.jail = jail;
+        config.doc = false;
         changed = true;
     }
     for (value, field) in [
@@ -362,6 +429,12 @@ fn config(
         config.provider.id(),
         config.provider.name()
     );
+    let inicio = if config.doc {
+        CliMode::Doc
+    } else {
+        CliMode::of(config.mode, config.jail)
+    };
+    println!("  início    {} ({})", inicio.id(), mode_label(config.mode));
     println!(
         "  modo      {} ({})",
         config.mode.id(),
@@ -419,7 +492,56 @@ fn jail_project() -> Result<()> {
 
 fn mode_label(mode: Mode) -> String {
     let names: Vec<_> = mode.extensions().iter().map(|e| e.name()).collect();
+    if names.is_empty() {
+        return "sem extensões".into();
+    }
     names.join(" + ")
+}
+
+fn print_cli_modes(mode: Mode, jail: bool, doc: bool) {
+    let current = if doc {
+        CliMode::Doc
+    } else {
+        CliMode::of(mode, jail)
+    };
+    println!("Modos de início do `terraforme cli`");
+    for (i, cli) in CliMode::ALL.into_iter().enumerate() {
+        let marker = if cli == current { "●" } else { "○" };
+        println!("  {} {marker} {:<9} {}", i + 1, cli.id(), cli.label());
+    }
+}
+
+/// `--cli custom`: pergunta quais extensões o modo usa e deriva `(modo, jail)`.
+fn custom_cli_preset() -> Result<(Mode, bool)> {
+    if !io::stdin().is_terminal() {
+        bail!("`terraforme config --cli custom` precisa de um terminal interativo");
+    }
+    let extensions = [Extension::Rtk, Extension::AiMemory, Extension::AiJail];
+    let labels: Vec<_> = extensions.iter().map(|ext| ext.name()).collect();
+    let Some(indices) = ask_selection(
+        "Extensões do modo customizado:",
+        &labels,
+        "ex.: 1 2; Enter: nenhuma; q: cancelar",
+    )?
+    else {
+        bail!("seleção cancelada; nada foi alterado");
+    };
+    let (mode, jail) = custom_preset(
+        indices.contains(&0),
+        indices.contains(&1),
+        indices.contains(&2),
+    );
+    Ok((mode, jail))
+}
+
+fn custom_preset(rtk: bool, ai_memory: bool, ai_jail: bool) -> (Mode, bool) {
+    let mode = match (rtk, ai_memory) {
+        (true, true) => Mode::Hybrid,
+        (true, false) => Mode::Eco,
+        (false, true) => Mode::High,
+        (false, false) => Mode::None,
+    };
+    (mode, ai_jail)
 }
 
 /// Título da sessão: agente, modo e, se for o caso, a sandbox.
@@ -449,8 +571,8 @@ struct Choice {
     jail: Option<bool>,
 }
 
-/// Sessão resolvida: a linha de comando vence o `.ai-jail` do projeto, que
-/// vence o config.toml.
+/// Sessão resolvida: a linha de comando vence as preferências do space, que
+/// vencem o `.ai-jail` do projeto, que vence o config.toml.
 struct Resolved {
     provider: Provider,
     mode: Mode,
@@ -461,16 +583,29 @@ struct Resolved {
 impl Choice {
     fn resolve(self, args: &[String]) -> Result<Resolved> {
         let config = Config::load()?;
-        let provider = self.agent.unwrap_or(config.provider);
-        let mode = self.mode.unwrap_or(config.mode);
-        let project = std::env::current_dir()
-            .ok()
-            .and_then(|dir| jail::project_config(&dir));
-        let jail = self.jail.unwrap_or(config.jail || project.is_some());
+        let cwd = std::env::current_dir().ok();
+        let space = match &cwd {
+            Some(dir) => Preferences::find(dir)?,
+            None => None,
+        };
+        let prefs = space.as_ref().map(|(_, p)| *p).unwrap_or_default();
+        let provider = self.agent.or(prefs.agent).unwrap_or(config.provider);
+        let mode = self.mode.or(prefs.mode).unwrap_or(config.mode);
+        let project = cwd.as_deref().and_then(jail::project_config);
+        let jail = self
+            .jail
+            .or(prefs.jail)
+            .unwrap_or(config.jail || project.is_some());
         let mut launch = agent::prepare(provider, mode, jail, args)?;
+        if let Some((path, _)) = &space {
+            launch
+                .notices
+                .push(format!("preferências do space em {}", path.display()));
+        }
         if let Some(path) = project
             && jail
             && self.jail.is_none()
+            && prefs.jail.is_none()
             && !config.jail
         {
             launch.notices.push(format!(
@@ -503,10 +638,6 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
         .chain(launch.warnings.iter().map(|w| format!("⚠ {w}")))
         .collect();
     let title = launch_title(provider, mode, jail);
-    let mut extensions = mode.extensions();
-    if jail {
-        extensions.push(Extension::AiJail);
-    }
     term::run(term::Options {
         agent: provider.id().to_string(),
         title,
@@ -515,7 +646,6 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
         instances,
         session_ids: !adapter.picks_session(args),
         notices,
-        extensions,
     })
 }
 
@@ -591,12 +721,15 @@ fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Resul
     exec(command)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn space(
     name: Option<&str>,
     save: bool,
     delete: bool,
     list: bool,
     path: bool,
+    prefs: Option<Preferences>,
+    reset: bool,
     yes: bool,
 ) -> Result<()> {
     let mut spaces = Spaces::load()?;
@@ -628,6 +761,9 @@ fn space(
         spaces.insert(name, &dir)?;
         spaces.save()?;
         println!("✔ space {name} salvo: {}", dir.display());
+        if let Some(prefs) = prefs {
+            space_preferences(name, &dir, prefs, reset)?;
+        }
         return Ok(());
     }
 
@@ -669,12 +805,68 @@ fn space(
             dir.display()
         );
     }
+    if let Some(prefs) = prefs {
+        return space_preferences(name, dir, prefs, reset);
+    }
     if path {
         println!("{}", dir.display());
         return Ok(());
     }
-    eprintln!("==> space {name} · {} (`exit` volta)", dir.display());
+    let summary = preferences_summary(&Preferences::load(dir)?)
+        .map(|s| format!(" · {s}"))
+        .unwrap_or_default();
+    eprintln!(
+        "==> space {name} · {}{summary} (`exit` volta)",
+        dir.display()
+    );
     exec(space::shell(name, dir))
+}
+
+/// Grava as preferências do space: `reset` apaga as anteriores, o resto
+/// substitui só o que foi passado.
+fn space_preferences(
+    name: &str,
+    dir: &std::path::Path,
+    new: Preferences,
+    reset: bool,
+) -> Result<()> {
+    if let Some(p) = new.agent
+        && !p.is_implemented()
+    {
+        bail!("o agente {} ainda não foi implementado", p.name());
+    }
+    let mut prefs = if reset {
+        Preferences::default()
+    } else {
+        Preferences::load(dir)?
+    };
+    prefs.agent = new.agent.or(prefs.agent);
+    prefs.mode = new.mode.or(prefs.mode);
+    prefs.jail = new.jail.or(prefs.jail);
+    prefs.save(dir)?;
+    match preferences_summary(&prefs) {
+        Some(summary) => println!(
+            "✔ preferências do space {name}: {summary}\n{}",
+            Preferences::path(dir).display()
+        ),
+        None => println!("✔ space {name} sem preferências (usa o `terraforme config`)"),
+    }
+    Ok(())
+}
+
+/// `agente claude · modo eco · AI Jail`; `None` sem preferências.
+fn preferences_summary(prefs: &Preferences) -> Option<String> {
+    let parts: Vec<String> = [
+        prefs.agent.map(|p| format!("agente {}", p.id())),
+        prefs.mode.map(|m| format!("modo {}", m.id())),
+        prefs
+            .jail
+            .map(|j| if j { "AI Jail" } else { "sem AI Jail" }.into()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 fn print_spaces(spaces: &Spaces, out: &mut impl Write) -> Result<()> {
@@ -685,14 +877,18 @@ fn print_spaces(spaces: &Spaces, out: &mut impl Write) -> Result<()> {
         .unwrap_or(0);
     writeln!(out, "Spaces")?;
     for (i, (name, dir)) in spaces.iter().enumerate() {
-        let missing = if dir.is_dir() {
-            ""
+        let extra = if !dir.is_dir() {
+            "  ✘ pasta não existe".to_string()
         } else {
-            "  ✘ pasta não existe"
+            Preferences::load(dir)
+                .ok()
+                .and_then(|p| preferences_summary(&p))
+                .map(|s| format!("  ({s})"))
+                .unwrap_or_default()
         };
         writeln!(
             out,
-            "  {:>2}  {name:<width$}  {}{missing}",
+            "  {:>2}  {name:<width$}  {}{extra}",
             i + 1,
             dir.display()
         )?;
@@ -707,6 +903,100 @@ fn ask(question: &str) -> Result<String> {
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
     Ok(answer.trim().to_string())
+}
+
+/// `terraforme setup`: passo a passo, identifica os agentes da máquina,
+/// instala e configura as extensões neles e instala as skills embutidas.
+fn setup_flow() -> Result<()> {
+    println!("Passo 1/3 — Agentes encontrados na máquina");
+    for provider in Provider::ALL.into_iter().filter(|p| p.adapter().is_some()) {
+        match provider.check().state {
+            State::Installed { path, version } => {
+                let version = version.map(|v| format!(" v{v}")).unwrap_or_default();
+                println!("  ✔ {}{version} ({})", provider.name(), path.display());
+            }
+            _ => println!("  ✘ {} não instalado — {}", provider.name(), provider.url()),
+        }
+    }
+    let agents: Vec<Provider> = Provider::ALL
+        .into_iter()
+        .filter(|provider| provider.adapter().is_some() && provider.check().state.is_installed())
+        .collect();
+    if agents.is_empty() {
+        bail!("nenhum agente suportado encontrado no PATH — instale o Claude Code ou o OpenCode");
+    }
+
+    let mut failed = 0usize;
+
+    println!("\nPasso 2/3 — Extensões");
+    for ext in Extension::ALL {
+        if ext.check().state.is_installed() {
+            continue;
+        }
+        println!("==> instalando {}", ext.name());
+        match ext.install() {
+            Ok(outcome) => report(ext, outcome),
+            Err(err) => {
+                eprintln!("✘ {}: {err:#}", ext.name());
+                failed += 1;
+            }
+        }
+    }
+    let installed: Vec<Extension> = Extension::ALL
+        .into_iter()
+        .filter(|ext| ext.check().state.is_installed())
+        .collect();
+    if installed.is_empty() {
+        eprintln!("⚠ nenhuma extensão instalada — nada a configurar");
+    } else if let Err(err) = setup_selected(&agents, &installed) {
+        eprintln!("⚠ {err:#}");
+        failed += 1;
+    }
+
+    println!("\nPasso 3/3 — Skills");
+    if let Err(err) = install_skills(&agents) {
+        eprintln!("✘ skills: {err:#}");
+        failed += 1;
+    }
+
+    if failed > 0 {
+        bail!("{failed} etapa(s) do setup falharam; veja os erros acima");
+    }
+    println!("\n✔ Setup concluído");
+    Ok(())
+}
+
+/// Instala as skills embutidas na pasta global de skills de cada agente.
+fn install_skills(agents: &[Provider]) -> Result<()> {
+    let names = skill::names();
+    if names.is_empty() {
+        println!("  nenhuma skill embutida");
+        return Ok(());
+    }
+    let mut failures = 0usize;
+    for &provider in agents {
+        let Some(dir) = provider.adapter().and_then(|adapter| adapter.skills_dir()) else {
+            eprintln!("  ⚠ {} não tem pasta de skills conhecida", provider.name());
+            continue;
+        };
+        for name in &names {
+            match skill::install(name, &dir) {
+                Ok(path) => println!(
+                    "  ✔ {} · skill {name} → {}",
+                    provider.name(),
+                    path.display()
+                ),
+                Err(err) => {
+                    eprintln!("  ✘ {} · skill {name}: {err:#}", provider.name());
+                    failures += 1;
+                }
+            }
+        }
+    }
+    if failures > 0 {
+        bail!("{failures} skill(s) não foram instaladas");
+    }
+    Ok(())
 }
 
 /// Seleciona agentes e extensões e só então executa as configurações escolhidas.
@@ -953,6 +1243,14 @@ mod tests {
     }
 
     #[test]
+    fn setup_subcommand_is_accepted() {
+        assert!(matches!(
+            parse(&["setup"]).unwrap().command,
+            Some(Command::Setup)
+        ));
+    }
+
+    #[test]
     fn extension_requires_an_action() {
         assert!(parse(&["extension"]).is_err());
         assert!(parse(&["extension", "rtk"]).is_err());
@@ -1006,6 +1304,50 @@ mod tests {
         assert!(parse(&["config", "--mode", "turbo"]).is_err());
         assert!(parse(&["config", "--budget-5h", "1000", "--budget-week", "0"]).is_ok());
         assert!(parse(&["config", "--budget-5h", "-1"]).is_err());
+    }
+
+    #[test]
+    fn config_cli_modes() {
+        let cli = parse(&["config", "--cli"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cli: Some(None),
+                ..
+            })
+        ));
+        for (name, expected) in [
+            ("eco", CliMode::Eco),
+            ("custom", CliMode::Custom),
+            ("security", CliMode::Security),
+            ("high", CliMode::High),
+            ("doc", CliMode::Doc),
+        ] {
+            let cli = parse(&["config", "--cli", name]).unwrap();
+            assert!(
+                matches!(
+                    cli.command,
+                    Some(Command::Config {
+                        cli: Some(Some(mode)),
+                        ..
+                    }) if mode == expected
+                ),
+                "esperava {expected:?}",
+            );
+        }
+        assert!(parse(&["config", "--cli", "turbo"]).is_err());
+        assert!(parse(&["config", "--cli", "eco", "--mode", "high"]).is_err());
+        assert!(parse(&["config", "--cli", "eco", "--jail", "true"]).is_err());
+    }
+
+    #[test]
+    fn custom_preset_maps_selected_extensions() {
+        assert_eq!(custom_preset(true, false, false), (Mode::Eco, false));
+        assert_eq!(custom_preset(false, true, false), (Mode::High, false));
+        assert_eq!(custom_preset(true, true, false), (Mode::Hybrid, false));
+        assert_eq!(custom_preset(false, false, false), (Mode::None, false));
+        assert_eq!(custom_preset(false, false, true), (Mode::None, true));
+        assert_eq!(custom_preset(true, true, true), (Mode::Hybrid, true));
     }
 
     #[test]
@@ -1127,6 +1469,11 @@ mod tests {
         assert!(parse(&["space", "--delete"]).is_err());
         assert!(parse(&["space", "api", "--delete", "-y"]).is_ok());
         assert!(parse(&["space", "--save", "--list"]).is_err());
+        assert!(parse(&["space", "api", "--agent", "opencode", "--mode", "eco"]).is_ok());
+        assert!(parse(&["space", "--save", "--jail", "true"]).is_ok());
+        assert!(parse(&["space", "api", "--reset"]).is_ok());
+        assert!(parse(&["space", "--list", "--mode", "eco"]).is_err());
+        assert!(parse(&["space", "api", "--path", "--jail", "false"]).is_err());
     }
 
     #[test]

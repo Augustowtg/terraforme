@@ -6,6 +6,10 @@
 # Node
 node_modules/
 
+# Python (scripts das skills)
+__pycache__/
+*.pyc
+
 # Editores / SO
 .idea/
 .vscode/

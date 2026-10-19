@@ -158,6 +158,14 @@ impl Adapter for OpenCode {
         }
         Ok(())
     }
+
+    /// `~/.config/opencode/skills` (ou `$OPENCODE_CONFIG_DIR`/`$XDG_CONFIG_HOME`).
+    fn skills_dir(&self) -> Option<PathBuf> {
+        global_dirs()
+            .ok()
+            .and_then(|dirs| dirs.into_iter().next())
+            .map(|dir| dir.join("skills"))
+    }
 }
 
 /// Consulta as estatísticas oficiais do OpenCode. `stats` não oferece uma

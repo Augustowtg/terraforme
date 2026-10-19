@@ -73,6 +73,12 @@ pub trait Adapter: Sync {
     fn forget(&self, _ext: Extension) -> Result<()> {
         Ok(())
     }
+
+    /// Pasta global de skills do agente, onde o [`crate::skill`] instala as
+    /// skills embutidas; `None` se o agente não tem uma.
+    fn skills_dir(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// O que [`Adapter::setup`] devolve.
@@ -183,6 +189,8 @@ impl Provider {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
+    /// Nenhuma extensão: o agente roda puro (é o modo do preset `security`).
+    None,
     /// Só RTK: economia de tokens.
     Eco,
     /// Só AI Memory: memória entre sessões.
@@ -195,6 +203,7 @@ pub enum Mode {
 impl Mode {
     pub fn id(self) -> &'static str {
         match self {
+            Mode::None => "none",
             Mode::Eco => "eco",
             Mode::High => "high",
             Mode::Hybrid => "hybrid",
@@ -203,6 +212,7 @@ impl Mode {
 
     pub fn uses(self, ext: Extension) -> bool {
         match self {
+            Mode::None => false,
             Mode::Eco => ext == Extension::Rtk,
             Mode::High => ext == Extension::AiMemory,
             Mode::Hybrid => matches!(ext, Extension::Rtk | Extension::AiMemory),
@@ -214,6 +224,86 @@ impl Mode {
             .into_iter()
             .filter(|&e| self.uses(e))
             .collect()
+    }
+}
+
+/// Presets de início do `terraforme cli`, mostrados por `terraforme config --cli`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum CliMode {
+    /// Eco: só RTK.
+    Eco,
+    /// Custom: o usuário escolhe quais extensões usar.
+    Custom,
+    /// Security: roda o agente dentro do AI Jail, sem extensões.
+    Security,
+    /// High: só AI Memory.
+    High,
+    /// Doc: AI Memory com MCP para geração de documentação.
+    Doc,
+}
+
+impl CliMode {
+    pub const ALL: [CliMode; 5] = [
+        CliMode::Eco,
+        CliMode::Custom,
+        CliMode::Security,
+        CliMode::High,
+        CliMode::Doc,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            CliMode::Eco => "eco",
+            CliMode::Custom => "custom",
+            CliMode::Security => "security",
+            CliMode::High => "high",
+            CliMode::Doc => "doc",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CliMode::Eco => "Eco (RTK)",
+            CliMode::Custom => "Customizado (você escolhe as extensões)",
+            CliMode::Security => "Security (AI Jail)",
+            CliMode::High => "High (AI Memory)",
+            CliMode::Doc => "Doc (AI Memory + MCP)",
+        }
+    }
+
+    /// `(modo, sandbox)` fixo do preset; `None` no `Custom`, que pergunta as
+    /// extensões na hora.
+    pub fn preset(self) -> Option<(Mode, bool)> {
+        match self {
+            CliMode::Eco => Some((Mode::Eco, false)),
+            CliMode::Custom => None,
+            CliMode::Security => Some((Mode::None, true)),
+            CliMode::High => Some((Mode::High, false)),
+            CliMode::Doc => Some((Mode::High, false)),
+        }
+    }
+
+    /// O preset que corresponde a este modo e sandbox (o contrário de
+    /// [`CliMode::preset`]).
+    pub fn of(mode: Mode, jail: bool) -> CliMode {
+        match (mode, jail) {
+            (Mode::Eco, false) => CliMode::Eco,
+            (Mode::High, false) => CliMode::High,
+            (Mode::None, true) => CliMode::Security,
+            _ => CliMode::Custom,
+        }
+    }
+
+    /// O preset pelo id ou pelo número da lista.
+    pub fn pick(choice: &str) -> Option<CliMode> {
+        let choice = choice.trim().to_lowercase();
+        if let Ok(n) = choice.parse::<usize>() {
+            return n.checked_sub(1).and_then(|i| CliMode::ALL.get(i).copied());
+        }
+        CliMode::ALL
+            .into_iter()
+            .find(|c| c.id() == choice || c.label().to_lowercase().starts_with(&choice))
     }
 }
 
@@ -370,6 +460,42 @@ mod tests {
                 text.contains(&format!("provider = \"{}\"", p.id())),
                 "{text}"
             );
+        }
+    }
+
+    #[test]
+    fn cli_presets_map_to_mode_and_jail() {
+        assert_eq!(CliMode::Eco.preset(), Some((Mode::Eco, false)));
+        assert_eq!(CliMode::High.preset(), Some((Mode::High, false)));
+        assert_eq!(CliMode::Security.preset(), Some((Mode::None, true)));
+        assert_eq!(CliMode::Custom.preset(), None);
+        // Doc = AI Memory (com o MCP dela), sem sandbox.
+        assert_eq!(CliMode::Doc.preset(), Some((Mode::High, false)));
+
+        assert_eq!(CliMode::of(Mode::Eco, false), CliMode::Eco);
+        assert_eq!(CliMode::of(Mode::High, false), CliMode::High);
+        assert_eq!(CliMode::of(Mode::None, true), CliMode::Security);
+        assert_eq!(CliMode::of(Mode::Hybrid, false), CliMode::Custom);
+        assert_eq!(CliMode::of(Mode::Eco, true), CliMode::Custom);
+    }
+
+    #[test]
+    fn picks_cli_mode_by_id_or_number() {
+        assert_eq!(CliMode::pick("eco"), Some(CliMode::Eco));
+        assert_eq!(CliMode::pick(" security "), Some(CliMode::Security));
+        assert_eq!(CliMode::pick("3"), Some(CliMode::Security));
+        assert_eq!(CliMode::pick("doc"), Some(CliMode::Doc));
+        assert_eq!(CliMode::pick("5"), Some(CliMode::Doc));
+        assert_eq!(CliMode::pick("0"), None);
+        assert_eq!(CliMode::pick("9"), None);
+        assert_eq!(CliMode::pick("turbo"), None);
+    }
+
+    #[test]
+    fn none_mode_uses_no_extension() {
+        assert!(Mode::None.extensions().is_empty());
+        for ext in Extension::ALL {
+            assert!(!Mode::None.uses(ext));
         }
     }
 }
