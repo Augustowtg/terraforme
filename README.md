@@ -1,8 +1,8 @@
 # terraforme
 
-**O framework de desenvolvimento com agentes de IA.** Um único comando prepara o seu agente (hoje o
-Claude Code) com economia de tokens, memória entre sessões e uma sandbox de segurança, e o abre num
-terminal que mostra em tempo real quanto você está consumindo.
+**O framework de desenvolvimento com agentes de IA.** Um único comando prepara o seu agente (Claude
+Code ou OpenCode) com economia de tokens, memória entre sessões e uma sandbox de segurança, e o abre
+num terminal que mostra em tempo real quanto você está consumindo.
 
 ## Por que usar
 
@@ -30,6 +30,10 @@ Você escolhe o modo de cada sessão sem mexer em configuração nenhuma:
 | `--hybrid` | RTK + AI Memory | o melhor dos dois |
 | `--jail` | AI Jail (com qualquer modo) | rodar o agente isolado |
 
+Para escolher o modo padrão de início, use `terraforme config --cli`: `eco` (RTK), `high`
+(AI Memory), `security` (AI Jail sem outras extensões) ou `custom` (escolha interativa entre
+RTK, AI Memory e AI Jail).
+
 ## Instalação
 
 Pré-requisitos: Linux, `git` e Rust ([rustup](https://rustup.rs) — a versão certa é baixada
@@ -47,7 +51,8 @@ depois, basta `terraforme upgrade`.
 ## Primeiros passos
 
 ```bash
-terraforme extension --install   # instala RTK, AI Memory e AI Jail
+terraforme setup                 # identifica os agentes, configura as extensões e instala as skills
+terraforme config --cli          # escolhe o modo de início (eco, custom, security, high)
 terraforme config --mode hybrid  # define o modo padrão
 terraforme cli                   # abre o agente no terminal do terraforme
 ```

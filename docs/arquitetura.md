@@ -14,7 +14,7 @@
 
 Toda a lógica vai no `terraforme-core`; a CLI é apenas uma "casca" que o chama. Com a feature
 opcional `clap`, o core deriva `clap::ValueEnum` nos enums públicos (`Extension`, `Provider`,
-`Mode`), que a CLI usa direto como argumentos.
+`Mode`, `CliMode`), que a CLI usa direto como argumentos.
 
 ## Módulos do `terraforme-core`
 
@@ -22,11 +22,12 @@ opcional `clap`, o core deriva `clap::ValueEnum` nos enums públicos (`Extension
 | --- | --- |
 | `status` | `Component`/`State` (instalado, conflito, não instalado), busca no `PATH` e leitura de `--version`. |
 | `extension` | Instala, atualiza e remove RTK e AI Memory pelos scripts oficiais de cada projeto; o AI Jail vem do tarball do release, conferido pelo `.sha256`. Define os relatórios (`rtk gain`, `ai-memory status`…), rodados com `NO_COLOR` e devolvidos sem ANSI. |
-| `agent` | `Provider` e `Mode` (`eco` = RTK, `high` = AI Memory, `hybrid` = os dois), o trait `Adapter` e `agent::prepare()`, que monta o comando do agente igual para todos. Cada agente é um adapter (`agent/claude.rs` para o Claude Code). |
+| `agent` | `Provider`, `Mode` (`none` = nenhuma, `eco` = RTK, `high` = AI Memory, `hybrid` = os dois) e `CliMode` (presets de início do `config --cli`: eco/custom/security/high), o trait `Adapter` e `agent::prepare()`, que monta o comando do agente igual para todos. Cada agente é um adapter (`agent/claude.rs` para o Claude Code). |
 | `jail` | Integração com o AI Jail: configuração padrão em `~/.ai-jail` e `wrap()`, que envolve o comando do agente. |
 | `usage` | Consumo de tokens por agente: transcripts do Claude Code, ou `opencode stats --json` no OpenCode. |
 | `limits` | Quanto resta dos limites do plano (API OAuth) ou do orçamento configurado. |
 | `config` | `Config { provider, mode, jail, budget }` em `~/.config/terraforme/config.toml` (`%APPDATA%\terraforme` no Windows; respeita `XDG_CONFIG_HOME`). |
+| `skill` | Skills de agente embutidas no binário (pasta `skills/`, embutidas pelo `build.rs`): lista e instala na pasta global de skills de cada agente (`Adapter::skills_dir`). |
 | `space` | Pastas de trabalho com nome, em `<config>/spaces.toml`. |
 
 ## Agentes (adapters)
@@ -114,9 +115,8 @@ Exige ai-jail 2.9+ (`--forward-port`) e, no Linux, o `bwrap` (pacote bubblewrap)
 
 ## Terminal do `terraforme cli` (`term.rs`)
 
-TUI em ratatui com barra de abas: a aba do agente (`claude`), cujas sub-abas são as instâncias,
-`Consumo` (Limites / Tokens / Subagentes, atualizada a cada 5s) e, quando o modo usa extensões, uma
-aba por relatório de cada extensão.
+TUI em ratatui com barra de abas: a aba do agente (`claude`), cujas sub-abas são as instâncias, e
+`Consumo` (Limites / Tokens / Subagentes, atualizada a cada 5s).
 
 - Cada instância roda no seu próprio pseudoterminal (`portable-pty`), redimensionado para a tela
   real antes de cada desenho (`App::fit`), e é renderizada com `vt100` + `tui-term` (5000 linhas de
@@ -135,3 +135,8 @@ aba por relatório de cada extensão.
 Um programa não consegue mudar a pasta do shell que o chamou. Por isso abrir um space faz `exec` de
 um shell novo (`$SHELL`; `%COMSPEC%` no Windows) na pasta, com `TERRAFORME_SPACE` definido. Os
 spaces ficam fora do `config.toml` porque `Config` é `Copy`.
+
+As preferências de um space (`space::Preferences`: `agent`, `mode`, `jail`, todos opcionais) ficam
+na própria pasta, em `.terraforme/preferences.toml`, para acompanharem o projeto. `Choice::resolve`
+procura o arquivo na pasta atual e nas de cima (`Preferences::find`) e resolve cada campo nesta
+ordem: linha de comando → preferências do space → `.ai-jail` da pasta (só `jail`) → `config.toml`.

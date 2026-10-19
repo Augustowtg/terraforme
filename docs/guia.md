@@ -25,6 +25,7 @@ Depois de uma atualização, o script mostra as novidades do [`CHANGELOG.md`](..
 [AI Jail](https://github.com/akitaonrails/ai-jail):
 
 ```bash
+terraforme setup                           # configura tudo: agentes, extensões e skills
 terraforme extension --status              # status e versão de todas
 terraforme extension rtk --status          # de uma só
 terraforme extension --install             # instala todas (pula as já instaladas)
@@ -34,6 +35,11 @@ terraforme extension ai-memory --setup      # refaz o setup individual da extens
 terraforme extension rtk --update          # atualiza (nome obrigatório)
 terraforme extension rtk --delete          # remove (nome obrigatório; -y pula a confirmação)
 ```
+
+`terraforme setup` é o caminho mais curto para deixar a máquina pronta: identifica os agentes no
+`PATH`, instala as extensões que faltarem e as configura em cada agente e, por fim, instala as
+skills embutidas no binário na pasta global de skills de cada agente (`~/.claude/skills`,
+`~/.config/opencode/skills`).
 
 A instalação usa os scripts oficiais de cada projeto (em `~/.local/bin`) e já configura os agentes
 (`rtk init -g` / `ai-memory setup`). A remoção desfaz essa configuração e apaga o binário; os dados
@@ -59,6 +65,8 @@ Configuração em `~/.config/terraforme/config.toml`:
 terraforme config                    # mostra provider e modo padrão
 terraforme config --provider         # lista os providers (claude; cursor ainda não implementado)
 terraforme config --provider claude  # define o provider
+terraforme config --cli              # lista os modos de início e pergunta o padrão
+terraforme config --cli eco          # define o modo de início (eco, custom, security, high)
 terraforme config --mode eco         # define o modo padrão
 terraforme config --jail true        # roda o agente dentro do AI Jail por padrão (false desliga)
 terraforme config --budget-5h <tokens> --budget-week <tokens>   # orçamento sem login OAuth
@@ -73,6 +81,15 @@ terraforme cli -n 3                  # três instâncias do agente, sub-abas da 
 terraforme cli --jail                # dentro do AI Jail (sandbox), em qualquer modo; --no-jail fora
 ```
 
+`terraforme config --cli` define o **modo de início**, um atalho que já escolhe o modo e a sandbox:
+
+| Modo | O que liga |
+| --- | --- |
+| `eco` | RTK (economia de tokens) |
+| `high` | AI Memory (memória entre sessões) |
+| `security` | AI Jail (sandbox), sem extensões |
+| `custom` | você escolhe as extensões (RTK, AI Memory e/ou AI Jail) |
+
 Como os modos são aplicados ao Claude Code está em [arquitetura](arquitetura.md#como-os-modos-funcionam-no-claude-code).
 
 ## Terminal do `terraforme cli`
@@ -80,7 +97,7 @@ Como os modos são aplicados ao Claude Code está em [arquitetura](arquitetura.m
 O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no topo:
 
 ```
- terraforme   ⇧F1 claude   ⇧F2 Consumo   ⇧F3 RTK · gain   ⇧F4 AI Memory   F10 sair   ⇧Tab alterna · …
+  terraforme   ⇧F1 claude   ⇧F2 Consumo   F10 sair   ⇧Tab alterna · …
 ```
 
 - **claude** — o agente. Cada instância é uma sub-aba (`claude 1`, `claude 2`…), todas rodando ao
@@ -98,21 +115,18 @@ O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no t
     projeto hoje e de todos hoje/7 dias, com custo e tokens por modelo.
   - **Subagentes** — a sessão atual dividida entre o agente principal e cada subagente; com o
     OpenCode, a contagem de sessões, prompts e subagentes.
-- **RTK · gain** — só nos modos com RTK: `rtk gain` (geral, neste projeto, por dia, histórico).
-- **AI Memory** — só nos modos com AI Memory: status, projetos e handoffs.
-- **AI Jail** — só com o AI Jail ligado: `ai-jail status` e a sandbox montada (`--dry-run`).
 
 | Tecla | Ação |
 | --- | --- |
 | `Shift+Tab` | próxima aba |
-| `Shift+F1`…`Shift+F4` | vai direto para a aba |
-| `Alt+1`…`Alt+9` | vai direto para a sub-aba da aba aberta (instância do agente, visão do consumo ou relatório) |
+| `Shift+F1`…`Shift+F2` | vai direto para a aba |
+| `Alt+1`…`Alt+9` | vai direto para a sub-aba da aba aberta (instância do agente ou visão do consumo) |
 | `Ctrl+←→` / `Ctrl+PgUp/PgDn` | vai para a sub-aba vizinha, em volta (o mesmo em todas as abas) |
 | `F12` / `Shift+F12` | abre outra instância do agente / fecha a aberta |
 | `F10` | sai (encerra todas as instâncias) |
 | `Shift+PgUp/PgDn` | rola o histórico do agente |
 
-Nas abas de relatório: `↑↓`/`PgUp/PgDn` rolam, `r` recarrega e `Esc` volta para o agente. Na aba do
+Na aba Consumo: `↑↓`/`PgUp/PgDn` rolam, `r` recarrega e `Esc` volta para o agente. Na aba do
 agente, `Tab` e `F1`–`F9` chegam ao Claude, mas `Shift+Tab` não (troca de aba). O agente continua
 rodando enquanto outra aba está aberta.
 
@@ -137,3 +151,19 @@ lista e a pergunta vão para o stderr):
 # ~/.bashrc ou ~/.zshrc
 ts() { local dir; dir=$(terraforme space --path "$@") && cd "$dir"; }
 ```
+
+### Preferências do space
+
+Cada space pode ter preferências próprias — agente, modo e sandbox — gravadas em
+`<pasta do space>/.terraforme/preferences.toml`. O `terraforme cli` aberto na pasta (ou numa
+subpasta) usa essas preferências no lugar do `terraforme config`; flags da linha de comando
+(`--agent`, `--eco`, `--jail`…) continuam vencendo:
+
+```bash
+terraforme space api --agent opencode --mode eco   # define (só o que for passado muda)
+terraforme space api --jail true                   # roda no AI Jail neste space
+terraforme space --save api --mode hybrid          # salva o space já com preferências
+terraforme space api --reset                       # apaga as preferências
+```
+
+`terraforme space --list` mostra as preferências de cada space.
