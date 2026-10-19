@@ -1784,13 +1784,14 @@ dependencies = [
 
 [[package]]
 name = "terraforme-cli"
-version = "0.8.1"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
  "portable-pty",
  "ratatui",
+ "serde_json",
  "terraforme-core",
  "tui-term",
  "uuid",
@@ -1799,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "terraforme-core"
-version = "0.8.1"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",

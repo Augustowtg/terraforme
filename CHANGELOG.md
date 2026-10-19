@@ -5,6 +5,54 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.10.0 - 2026-10-19
+
+### Adicionado
+
+- **Instância de documentação no terminal (`terraforme cli`):** quando o agente
+  precisa gerar uma documentação, ele grava um pedido em
+  `~/.config/terraforme/doc-request.json` e o terminal abre uma nova sub-aba
+  do agente (`📄 doc`) já com as instruções da tarefa; a instância fica aberta
+  até o usuário fechá-la (`Shift+F12`) ou continuar existindo
+  (`doc::write_request`, `doc::take_request` no núcleo, watcher na TUI e
+  entrega do prompt depois da inicialização do agente).
+- **Modo de início `doc` no `terraforme config --cli`:** AI Memory com o MCP
+  dela disponível (execuções usam o modo `high`, sem sandbox); a escolha fica
+  registrada no `config.toml` (`doc = true`) e volta no resumo da configuração.
+- **Preferências por space:** agente, modo e sandbox de cada space em
+  `<pasta do space>/.terraforme/preferences.toml`, definidos com
+  `terraforme space <nome> --agent/--mode/--jail` (ou junto do `--save`) e
+  apagados com `--reset`. O `terraforme cli` aberto na pasta do space (ou numa
+  subpasta) usa essas preferências no lugar do `config.toml`; flags da linha
+  de comando continuam vencendo. `terraforme space --list` e a abertura do
+  space mostram as preferências.
+- **Skill embutida `terraforme-doc`:** instalada pelo `terraforme setup`, ensina
+  o agente quando e como instanciar a instância de documentação e o que
+  incluir nas instruções dela.
+
+## 0.9.0 - 2026-10-18
+
+### Adicionado
+- `terraforme setup`: configura a máquina em três passos — identifica os agentes (Claude Code,
+  OpenCode) no `PATH`, instala as extensões (RTK, AI Memory, AI Jail) que faltarem e as configura
+  em cada agente, e instala as skills embutidas na pasta global de skills de cada agente
+  (`~/.claude/skills`, `~/.config/opencode/skills`).
+- Skill `terraform-requisitos` embutida no binário (pasta `skills/` do repositório, copiada para o
+  agente a partir de `build.rs`): ficou independente do agente (resolve a própria pasta em vez de
+  `~/.claude`) e sem a parte do modelo di2win.
+- `terraforme config --cli`: lista e define o **modo de início** do `terraforme cli` — `eco` (RTK),
+  `high` (AI Memory), `security` (AI Jail, sem extensões) e `custom` (você escolhe as extensões:
+  RTK, AI Memory e/ou AI Jail). Sem valor, lista os modos e pergunta o padrão; com valor, define
+  direto. O `Mode` ganhou a variante `none` (nenhuma extensão), usada pelo modo `security`.
+
+### Alterado
+- A aba **Extensões** saiu do menu principal do `terraforme cli`. Os relatórios continuam
+  disponíveis pela linha de comando (`terraforme extension <nome> --status`).
+
+### Removido
+- As abas **Monitoramento** e **Setup skills** saíram do menu principal do `terraforme cli`; agora
+  ele tem só o agente e a aba Consumo.
+
 ## 0.8.1 - 2026-10-18
 
 ### Adicionado
