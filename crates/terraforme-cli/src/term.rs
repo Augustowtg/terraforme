@@ -48,7 +48,6 @@ use ratatui::{Frame, crossterm};
 use terraforme_core::accounts::ClaudeAccounts;
 use terraforme_core::agent::{Adapter, Mode, Provider};
 use terraforme_core::config::Config;
-use terraforme_core::doc;
 use terraforme_core::extension::{Extension, Report};
 use terraforme_core::limits::{self, Limit, Source};
 use terraforme_core::space::Preferences;
@@ -65,11 +64,9 @@ const USAGE_VIEWS: [&str; 3] = ["Limites", "Tokens", "Subagentes"];
 const BAR_WIDTH: usize = 40;
 /// Máximo de instâncias do agente abertas ao mesmo tempo.
 pub const MAX_INSTANCES: usize = 9;
-/// Espera até entregar as instruções à instância de documentação: a TUI do
-/// agente precisa estar pronta para receber o prompt.
+/// Espera até entregar um prompt pendente à instância: a TUI do agente
+/// precisa estar pronta para recebê-lo.
 const PROMPT_DELAY: Duration = Duration::from_secs(2);
-/// Intervalo de verificação do pedido de documentação.
-const DOC_POLL: Duration = Duration::from_millis(500);
 /// Linhas roladas por passo da roda do mouse.
 const WHEEL_LINES: u16 = 3;
 /// Linhas acima do pseudoterminal do agente: o menu e as sub-abas.
@@ -285,8 +282,6 @@ struct SpawnRequest {
 enum Msg {
     Output(usize, Vec<u8>),
     Exited(usize),
-    /// Pedido de instância de documentação consumido (instruções ou erro).
-    Doc(Result<String, String>),
     Loaded {
         tab: Tab,
         index: usize,
@@ -358,7 +353,6 @@ enum Field {
     Provider,
     Mode,
     Jail,
-    Doc,
     /// Conta do Claude Code: nome registrado em `terraforme config --account`.
     /// Só vale no contexto de um space (grava em `preferences.toml`).
     Account,
@@ -371,11 +365,10 @@ enum Field {
     McpMax,
 }
 
-const FIELDS: [Field; 12] = [
+const FIELDS: [Field; 11] = [
     Field::Provider,
     Field::Mode,
     Field::Jail,
-    Field::Doc,
     Field::Account,
     Field::BudgetFiveHours,
     Field::BudgetWeek,
@@ -392,7 +385,7 @@ impl Field {
     /// Seção da tela em que o campo aparece.
     fn group(self) -> &'static str {
         match self {
-            Field::Provider | Field::Mode | Field::Jail | Field::Doc | Field::Account => {
+            Field::Provider | Field::Mode | Field::Jail | Field::Account => {
                 "Início do agente (vale no próximo terraforme cli)"
             }
             Field::BudgetFiveHours | Field::BudgetWeek => "Orçamento de tokens (aba Consumo)",
@@ -406,7 +399,6 @@ impl Field {
             Field::Provider => "Agente",
             Field::Mode => "Modo",
             Field::Jail => "AI Jail (sandbox)",
-            Field::Doc => "Preset doc",
             Field::Account => "Conta Claude Code",
             Field::BudgetFiveHours => "Tokens em 5h",
             Field::BudgetWeek => "Tokens em 7 dias",
@@ -446,7 +438,6 @@ impl Field {
                 }
             ),
             Field::Jail => yes(config.jail),
-            Field::Doc => yes(config.doc),
             // Account é resolvido em Form::account_display(); nunca chamado por este caminho.
             Field::Account => String::new(),
             Field::BudgetFiveHours => tokens(config.budget.five_hours),
@@ -475,7 +466,6 @@ impl Field {
                 config.mode = MODES[step_index(MODES.len(), i, delta)];
             }
             Field::Jail => config.jail = !config.jail,
-            Field::Doc => config.doc = !config.doc,
             Field::Mouse => config.tui.mouse = !config.tui.mouse,
             Field::CopyOnSelect => config.tui.copy_on_select = !config.tui.copy_on_select,
             _ => {}
@@ -550,7 +540,6 @@ impl Field {
             Field::Provider => config.provider = default.provider,
             Field::Mode => config.mode = default.mode,
             Field::Jail => config.jail = default.jail,
-            Field::Doc => config.doc = default.doc,
             // Account não existe no config.toml (só em preferências de space).
             Field::Account => {}
             Field::BudgetFiveHours => config.budget.five_hours = None,
@@ -881,8 +870,6 @@ struct Agent {
     launched: SystemTime,
     /// Id de sessão passado ao agente.
     session: Option<String>,
-    /// Instância de documentação: marcada na sub-aba e com prompt próprio.
-    doc: bool,
     /// Instruções a entregar ao agente logo que ele inicializar.
     pending: Option<String>,
     /// Momento da abertura, para o atraso de entregar o prompt.
@@ -952,7 +939,6 @@ impl Agent {
             scrollback: 0,
             launched,
             session,
-            doc: false,
             pending: None,
             booted: Instant::now(),
             spawn_id: None,
@@ -967,7 +953,7 @@ impl Agent {
         Ok(())
     }
 
-    /// Entrega as instruções de documentação ao agente quando ele já
+    /// Entrega o prompt pendente ao agente quando ele já
     /// inicializou (primeira saída recebida e ao menos [`PROMPT_DELAY`]).
     fn deliver_pending(&mut self) {
         let Some(prompt) = self.pending.clone() else {
@@ -1121,20 +1107,6 @@ pub fn run(options: Options) -> Result<()> {
         });
     }
 
-    // Assiste o pedido de documentação: o agente grava o arquivo, o
-    // terminal abre a instância.
-    let doc_tx = tx;
-    thread::spawn(move || {
-        loop {
-            if let Some(result) = poll_doc()
-                && doc_tx.send(Msg::Doc(result)).is_err()
-            {
-                return;
-            }
-            thread::sleep(DOC_POLL);
-        }
-    });
-
     let mut terminal = ratatui::init();
     let mut stdout = std::io::stdout();
     let _ = execute!(stdout, EnableBracketedPaste);
@@ -1272,26 +1244,6 @@ impl App {
         }
     }
 
-    /// Abre a instância de documentação com as instruções pedidas pelo
-    /// agente; fica aberta até o usuário fechá-la (`Shift+F12`).
-    fn spawn_doc(&mut self, instructions: String) {
-        if self.agents.len() >= MAX_INSTANCES {
-            self.notify(format!("⚠ no máximo {MAX_INSTANCES} instâncias"));
-            return;
-        }
-        match self.spawn() {
-            Ok(id) => {
-                if let Some(agent) = self.agent_mut(id) {
-                    agent.doc = true;
-                    agent.pending = Some(instructions);
-                }
-                self.focus(id);
-                self.notify("ℹ instância de documentação aberta · ⌃⌥W fecha quando terminar");
-            }
-            Err(err) => self.notify(format!("⚠ {err:#}")),
-        }
-    }
-
     fn agent(&self, id: usize) -> Option<&Agent> {
         self.agents.iter().find(|a| a.id == id)
     }
@@ -1350,10 +1302,7 @@ impl App {
                 // Encerra a antiga (o `Drop` mata o processo).
                 self.agents.remove(i);
                 self.focus(id);
-                self.flash(format!(
-                    "↻ {} reiniciado",
-                    instance_label(&self.agent, id, false)
-                ));
+                self.flash(format!("↻ {} {id} reiniciado", self.agent));
             }
             Err(err) => self.notify(format!("⚠ {err:#}")),
         }
@@ -1517,10 +1466,6 @@ impl App {
                 }
                 self.closed(id);
             }
-            Msg::Doc(result) => match result {
-                Ok(instructions) => self.spawn_doc(instructions),
-                Err(err) => self.notify(format!("⚠ {err}")),
-            },
             Msg::Loaded { tab, index, result } => {
                 if let Some(view) = &mut self.view
                     && view.tab == tab
@@ -2045,7 +1990,7 @@ impl App {
         let labels: Vec<_> = self
             .agents
             .iter()
-            .map(|a| ("", instance_label(&self.agent, a.id, a.doc)))
+            .map(|a| ("", format!("{} {}", self.agent, a.id)))
             .collect();
         let (_, current) = self.sub_tabs();
         let mut spans = vec![Span::raw(" ")];
@@ -2629,15 +2574,6 @@ fn thousands(n: u64) -> String {
     out
 }
 
-/// Rótulo da sub-aba de uma instância; a de documentação é marcada com `📄`.
-fn instance_label(agent: &str, id: usize, doc: bool) -> String {
-    if doc {
-        format!("{agent} {id} 📄 doc")
-    } else {
-        format!("{agent} {id}")
-    }
-}
-
 /// Instruções como teclas: quebra de linha vira `Alt+Enter` (não envia o
 /// prompt no meio das instruções) e termina com Enter, que envia.
 fn prompt_bytes(instructions: &str) -> Vec<u8> {
@@ -2650,17 +2586,6 @@ fn prompt_bytes(instructions: &str) -> Vec<u8> {
     }
     bytes.push(b'\r');
     bytes
-}
-
-/// Vê se há pedido de documentação pendente (arquivo gravado pelo agente):
-/// as instruções a instanciar ou o erro do pedido.
-fn poll_doc() -> Option<Result<String, String>> {
-    let outcome = doc::take_request().ok()?;
-    match (outcome.instructions, outcome.error) {
-        (Some(instructions), _) => Some(Ok(instructions)),
-        (None, Some(err)) => Some(Err(err)),
-        (None, None) => None,
-    }
 }
 
 /// Servidor de controle: recebe `POST /spawn` do MCP e envia `SpawnSubagent`
@@ -3178,18 +3103,11 @@ mod tests {
     }
 
     #[test]
-    fn doc_prompt_ends_with_enter_and_does_not_submit_midway() {
+    fn prompt_ends_with_enter_and_does_not_submit_midway() {
         // Quebra de linha → Alt+Enter (não envia); só o final envia.
-        assert_eq!(prompt_bytes("doc do módulo"), "doc do módulo\r".as_bytes());
+        assert_eq!(prompt_bytes("olá"), "olá\r".as_bytes());
         assert_eq!(prompt_bytes("l1\nl2"), b"l1\x1b\rl2\r");
         assert_eq!(prompt_bytes("l1\n\nl3"), b"l1\x1b\r\x1b\rl3\r");
-    }
-
-    #[test]
-    fn doc_instances_are_marked_in_the_sub_tab() {
-        assert_eq!(instance_label("claude", 1, false), "claude 1");
-        assert_eq!(instance_label("claude", 2, true), "claude 2 📄 doc");
-        assert_eq!(instance_label("opencode", 3, true), "opencode 3 📄 doc");
     }
 
     #[test]
@@ -3222,7 +3140,6 @@ mod tests {
         assert!(form.in_space(Field::Provider));
         assert!(form.in_space(Field::Mode));
         assert!(form.in_space(Field::Jail));
-        assert!(!form.in_space(Field::Doc));
         assert!(!form.in_space(Field::BudgetFiveHours));
         assert!(!form.in_space(Field::Mouse));
         // Fora de space, tudo continua no config.toml.

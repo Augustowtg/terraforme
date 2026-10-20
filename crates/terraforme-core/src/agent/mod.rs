@@ -254,17 +254,14 @@ pub enum CliMode {
     Security,
     /// High: só AI Memory.
     High,
-    /// Doc: AI Memory com MCP para geração de documentação.
-    Doc,
 }
 
 impl CliMode {
-    pub const ALL: [CliMode; 5] = [
+    pub const ALL: [CliMode; 4] = [
         CliMode::Eco,
         CliMode::Custom,
         CliMode::Security,
         CliMode::High,
-        CliMode::Doc,
     ];
 
     pub fn id(self) -> &'static str {
@@ -273,7 +270,6 @@ impl CliMode {
             CliMode::Custom => "custom",
             CliMode::Security => "security",
             CliMode::High => "high",
-            CliMode::Doc => "doc",
         }
     }
 
@@ -283,7 +279,6 @@ impl CliMode {
             CliMode::Custom => "Customizado (você escolhe as extensões)",
             CliMode::Security => "Security (AI Jail)",
             CliMode::High => "High (AI Memory)",
-            CliMode::Doc => "Doc (AI Memory + MCP)",
         }
     }
 
@@ -295,7 +290,6 @@ impl CliMode {
             CliMode::Custom => None,
             CliMode::Security => Some((Mode::None, true)),
             CliMode::High => Some((Mode::High, false)),
-            CliMode::Doc => Some((Mode::High, false)),
         }
     }
 
@@ -484,8 +478,6 @@ mod tests {
         assert_eq!(CliMode::High.preset(), Some((Mode::High, false)));
         assert_eq!(CliMode::Security.preset(), Some((Mode::None, true)));
         assert_eq!(CliMode::Custom.preset(), None);
-        // Doc = AI Memory (com o MCP dela), sem sandbox.
-        assert_eq!(CliMode::Doc.preset(), Some((Mode::High, false)));
 
         assert_eq!(CliMode::of(Mode::Eco, false), CliMode::Eco);
         assert_eq!(CliMode::of(Mode::High, false), CliMode::High);
@@ -499,8 +491,7 @@ mod tests {
         assert_eq!(CliMode::pick("eco"), Some(CliMode::Eco));
         assert_eq!(CliMode::pick(" security "), Some(CliMode::Security));
         assert_eq!(CliMode::pick("3"), Some(CliMode::Security));
-        assert_eq!(CliMode::pick("doc"), Some(CliMode::Doc));
-        assert_eq!(CliMode::pick("5"), Some(CliMode::Doc));
+        assert_eq!(CliMode::pick("5"), None);
         assert_eq!(CliMode::pick("0"), None);
         assert_eq!(CliMode::pick("9"), None);
         assert_eq!(CliMode::pick("turbo"), None);

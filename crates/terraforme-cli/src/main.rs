@@ -77,7 +77,7 @@ enum Command {
         /// Agente padrão do `terraforme cli` (claude, opencode). Sem valor: lista e pergunta
         #[arg(long, visible_alias = "agente", alias = "provider", value_enum, num_args = 0..=1)]
         agent: Option<Option<Provider>>,
-        /// Modo de início do `terraforme cli` (eco, custom, security, high, doc). Sem valor: lista e pergunta
+        /// Modo de início do `terraforme cli` (eco, custom, security, high). Sem valor: lista e pergunta
         #[arg(long, value_enum, num_args = 0..=1, conflicts_with_all = ["mode", "jail"])]
         cli: Option<Option<CliMode>>,
         /// Define o modo padrão do `terraforme cli` (none, eco, high, hybrid; custom: pergunta as extensões)
@@ -479,7 +479,7 @@ fn config(
         // Sem valor: lista os modos de início e, num terminal, pergunta qual
         // vira o padrão.
         Some(None) => {
-            print_cli_modes(config.mode, config.jail, config.doc);
+            print_cli_modes(config.mode, config.jail);
             if !io::stdin().is_terminal() {
                 return Ok(());
             }
@@ -510,7 +510,6 @@ fn config(
                 config.mode = custom_cli_preset()?;
             }
         }
-        config.doc = cli == CliMode::Doc;
         changed = true;
     }
     if let Some(choice) = mode {
@@ -521,12 +520,10 @@ fn config(
             ModeChoice::Hybrid => Mode::Hybrid,
             ModeChoice::Custom => custom_cli_preset()?,
         };
-        config.doc = false;
         changed = true;
     }
     if let Some(jail) = jail {
         config.jail = jail;
-        config.doc = false;
         changed = true;
     }
     for (value, field) in [
@@ -549,11 +546,7 @@ fn config(
         config.provider.id(),
         config.provider.name()
     );
-    let inicio = if config.doc {
-        CliMode::Doc
-    } else {
-        CliMode::of(config.mode, config.jail)
-    };
+    let inicio = CliMode::of(config.mode, config.jail);
     println!("  início    {} ({})", inicio.id(), mode_label(config.mode));
     println!(
         "  modo      {} ({})",
@@ -685,12 +678,8 @@ fn mode_label(mode: Mode) -> String {
     names.join(" + ")
 }
 
-fn print_cli_modes(mode: Mode, jail: bool, doc: bool) {
-    let current = if doc {
-        CliMode::Doc
-    } else {
-        CliMode::of(mode, jail)
-    };
+fn print_cli_modes(mode: Mode, jail: bool) {
+    let current = CliMode::of(mode, jail);
     println!("Modos de início do `terraforme cli`");
     for (i, cli) in CliMode::ALL.into_iter().enumerate() {
         let marker = if cli == current { "●" } else { "○" };
@@ -1575,7 +1564,6 @@ mod tests {
             ("custom", CliMode::Custom),
             ("security", CliMode::Security),
             ("high", CliMode::High),
-            ("doc", CliMode::Doc),
         ] {
             let cli = parse(&["config", "--cli", name]).unwrap();
             assert!(

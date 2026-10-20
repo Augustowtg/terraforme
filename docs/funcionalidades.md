@@ -288,7 +288,7 @@ terraforme space api --agent opencode --mode eco --jail false
 terraforme space api --reset          # apaga as preferências
 ```
 
-Aba **Config** da TUI: dentro de um space, agente, modo e AI Jail gravam nas preferências do space (criando o `preferences.toml` se não existir) em vez do `config.toml` global — os valores exibidos são os efetivos da sessão e o rodapé diz onde cada campo vale; preset doc, orçamento, TUI e MCP continuam no `config.toml`. `Delete` num campo tira o override do space e volta ao valor global.
+Aba **Config** da TUI: dentro de um space, agente, modo e AI Jail gravam nas preferências do space (criando o `preferences.toml` se não existir) em vez do `config.toml` global — os valores exibidos são os efetivos da sessão e o rodapé diz onde cada campo vale; orçamento, TUI e MCP continuam no `config.toml`. `Delete` num campo tira o override do space e volta ao valor global.
 
 ---
 

@@ -128,7 +128,7 @@ O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no t
 - **Extensões** — só aparece quando o modo usa o AI Memory ou o AI Jail está ligado: os relatórios
   de cada um, um por sub-aba — AI Memory (Status, Projetos, Handoffs) e AI Jail (Status, Sandbox).
   São os mesmos de `terraforme extension <nome> --status`, carregados quando a sub-aba é aberta.
-- **Config** — a configuração geral (`config.toml`), editável: agente, modo, AI Jail e preset doc
+- **Config** — a configuração geral (`config.toml`), editável: agente, modo e AI Jail
   (valem no próximo `terraforme cli`), orçamento de tokens, preferências da TUI (capturar o mouse,
   copiar ao selecionar — aplicadas na hora) e o daemon MCP. Cada alteração é gravada na hora.
   Dentro de um space, agente, modo e AI Jail gravam nas preferências do space

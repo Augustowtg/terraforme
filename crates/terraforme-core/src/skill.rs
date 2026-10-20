@@ -57,7 +57,6 @@ mod tests {
     fn bundles_the_terraform_requisitos_skill() {
         let names = names();
         assert!(names.contains(&"terraform-requisitos"), "{names:?}");
-        assert!(names.contains(&"terraforme-doc"), "{names:?}");
     }
 
     #[test]

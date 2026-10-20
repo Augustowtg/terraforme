@@ -4,7 +4,6 @@
 pub mod accounts;
 pub mod agent;
 pub mod config;
-pub mod doc;
 pub mod extension;
 pub mod jail;
 pub mod limits;

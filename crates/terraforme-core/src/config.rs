@@ -23,10 +23,6 @@ pub struct Config {
     /// chamado sem --jail/--no-jail.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub jail: bool,
-    /// Preset `doc` do `--cli`: AI Memory com MCP pronto para instâncias de
-    /// documentação (o modo de execução continua o [`Mode::High`]).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub doc: bool,
     /// Orçamento de tokens da aba de consumo, sem os limites do plano.
     #[serde(skip_serializing_if = "Budget::is_empty")]
     pub budget: Budget,
@@ -111,7 +107,6 @@ mod tests {
             provider: Provider::Claude,
             mode: Mode::Eco,
             jail: false,
-            doc: false,
             budget: Budget::default(),
             mcp: McpConfig::default(),
             tui: TuiConfig::default(),
@@ -127,14 +122,6 @@ mod tests {
         let text = toml::to_string(&jailed).unwrap();
         assert_eq!(text, "provider = \"claude\"\nmode = \"eco\"\njail = true\n");
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), jailed);
-
-        let doc = Config {
-            doc: true,
-            ..config
-        };
-        let text = toml::to_string(&doc).unwrap();
-        assert_eq!(text, "provider = \"claude\"\nmode = \"eco\"\ndoc = true\n");
-        assert_eq!(toml::from_str::<Config>(&text).unwrap(), doc);
 
         let config = Config {
             budget: Budget {

@@ -5,6 +5,14 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.18.0 - 2026-10-20
+
+### Removido
+
+- Preset `doc` do `terraforme config --cli`, o campo "Preset doc" da aba Config, a chave `doc` do
+  `config.toml` (ignorada se ainda existir), a instância de documentação aberta pelo pedido em
+  `~/.config/terraforme/doc-request.json` e a skill `terraforme-doc`.
+
 ## 0.17.0 - 2026-10-20
 
 ### Alterado
