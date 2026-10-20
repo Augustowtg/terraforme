@@ -1,3 +1,4 @@
+mod select;
 mod term;
 
 use std::io::{self, IsTerminal, Write};
@@ -1194,6 +1195,62 @@ fn print_spaces(spaces: &Spaces, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
+/// Sem nenhum agente na máquina: o usuário marca quais instalar (Espaço) e
+/// o terraforme roda o instalador oficial de cada um.
+fn install_agents() -> Result<()> {
+    if !io::stdin().is_terminal() {
+        bail!("nenhum agente suportado encontrado no PATH — instale o Claude Code ou o OpenCode");
+    }
+    let providers: Vec<Provider> = Provider::ALL
+        .into_iter()
+        .filter(|p| p.adapter().is_some())
+        .collect();
+    let items: Vec<select::Item> = providers
+        .iter()
+        .map(|p| select::Item {
+            label: p.name().to_string(),
+            disabled: p
+                .installer()
+                .is_none()
+                .then(|| format!("instale manualmente: {}", p.url())),
+        })
+        .collect();
+    let checked: Vec<bool> = providers.iter().map(|&p| p == Provider::Claude).collect();
+    println!();
+    let Some(selected) = select::checkboxes(
+        "Nenhum agente encontrado. Quais instalar nesta máquina?",
+        &items,
+        &checked,
+    )?
+    else {
+        bail!("instalação cancelada; nada foi alterado");
+    };
+    if selected.is_empty() {
+        bail!("nenhum agente selecionado — instale o Claude Code ou o OpenCode e rode de novo");
+    }
+    for provider in selected.into_iter().map(|i| providers[i]) {
+        println!("==> instalando {}", provider.name());
+        match provider.install() {
+            Ok(()) => println!("✔ {} instalado", provider.name()),
+            Err(err) => eprintln!("✘ {err:#}"),
+        }
+        // O instalador põe o binário numa pasta que este processo ainda não
+        // tem no PATH (o shell só a lê num terminal novo).
+        let current = std::env::var_os("PATH").unwrap_or_default();
+        let dirs = provider
+            .install_dirs()
+            .into_iter()
+            .filter(|d| d.is_dir())
+            .chain(std::env::split_paths(&current));
+        if let Ok(path) = std::env::join_paths(dirs) {
+            // Single-thread neste ponto do setup.
+            unsafe { std::env::set_var("PATH", path) };
+        }
+    }
+    println!();
+    Ok(())
+}
+
 /// Pergunta no stderr e devolve a resposta sem espaços nas pontas.
 fn ask(question: &str) -> Result<String> {
     eprint!("{question}");
@@ -1216,12 +1273,22 @@ fn setup_flow() -> Result<()> {
             _ => println!("  ✘ {} não instalado — {}", provider.name(), provider.url()),
         }
     }
-    let agents: Vec<Provider> = Provider::ALL
-        .into_iter()
-        .filter(|provider| provider.adapter().is_some() && provider.check().state.is_installed())
-        .collect();
+    let installed = || -> Vec<Provider> {
+        Provider::ALL
+            .into_iter()
+            .filter(|p| p.adapter().is_some() && p.check().state.is_installed())
+            .collect()
+    };
+    let mut agents = installed();
     if agents.is_empty() {
-        bail!("nenhum agente suportado encontrado no PATH — instale o Claude Code ou o OpenCode");
+        install_agents()?;
+        agents = installed();
+        if agents.is_empty() {
+            bail!(
+                "nenhum agente encontrado no PATH depois da instalação — \
+                 abra um novo terminal e rode `terraforme setup` de novo"
+            );
+        }
     }
 
     let mut failed = 0usize;

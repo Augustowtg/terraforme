@@ -57,7 +57,10 @@ terraforme extension rtk --delete          # remove (nome obrigatório; -y pula 
 `terraforme setup` é o caminho mais curto para deixar a máquina pronta: identifica os agentes no
 `PATH`, instala as extensões que faltarem e as configura em cada agente e, por fim, instala as
 skills embutidas no binário na pasta global de skills de cada agente (`~/.claude/skills`,
-`~/.config/opencode/skills`).
+`~/.config/opencode/skills`). Se não houver nenhum agente, ele mostra a lista para marcar quais
+instalar (`↑`/`↓` movem, `Espaço` marca, `Enter` confirma) e roda o instalador oficial de cada um
+(Claude Code: `claude.ai/install.sh` / `install.ps1`; OpenCode: `opencode.ai/install`, ou
+`npm install -g opencode-ai` no Windows).
 
 A instalação usa os scripts oficiais de cada projeto (em `~/.local/bin`) e já configura os agentes
 (`rtk init -g` / `ai-memory setup`). A remoção desfaz essa configuração e apaga o binário; os dados

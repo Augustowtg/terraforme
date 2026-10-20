@@ -165,6 +165,66 @@ impl Provider {
         }
     }
 
+    /// Comando do instalador oficial do agente nesta plataforma; `None` quando
+    /// não há instalador automático (aí o usuário segue a [`Provider::url`]).
+    pub fn installer(self) -> Option<Command> {
+        let script = |url: &str| {
+            if cfg!(windows) {
+                let mut command = Command::new("powershell");
+                command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]);
+                command.arg(format!("irm {url} | iex"));
+                command
+            } else {
+                let mut command = Command::new("bash");
+                command.arg("-c").arg(format!("curl -fsSL {url} | bash"));
+                command
+            }
+        };
+        match self {
+            Provider::Claude if cfg!(windows) => Some(script("https://claude.ai/install.ps1")),
+            Provider::Claude => Some(script("https://claude.ai/install.sh")),
+            // No Windows o OpenCode sai do npm (`npm` é um `.cmd`: precisa do cmd).
+            Provider::OpenCode if cfg!(windows) => find_in_path("npm").map(|_| {
+                let mut command = Command::new("cmd");
+                command.args(["/C", "npm", "install", "-g", "opencode-ai"]);
+                command
+            }),
+            Provider::OpenCode => Some(script("https://opencode.ai/install")),
+            Provider::Cursor | Provider::Antigravity => None,
+        }
+    }
+
+    /// Roda o instalador oficial ([`Provider::installer`]) no terminal atual.
+    pub fn install(self) -> Result<()> {
+        let Some(mut command) = self.installer() else {
+            bail!(
+                "{} não tem instalador automático — veja {}",
+                self.name(),
+                self.url()
+            );
+        };
+        let status = command
+            .status()
+            .with_context(|| format!("rodando o instalador do {}", self.name()))?;
+        if !status.success() {
+            bail!("o instalador do {} falhou ({status})", self.name());
+        }
+        Ok(())
+    }
+
+    /// Pastas onde os instaladores oficiais põem o binário, que podem ainda não
+    /// estar no `PATH` deste processo logo depois da instalação.
+    pub fn install_dirs(self) -> Vec<PathBuf> {
+        let Ok(home) = home() else {
+            return Vec::new();
+        };
+        match self {
+            Provider::Claude => vec![home.join(".local").join("bin")],
+            Provider::OpenCode => vec![home.join(".opencode").join("bin")],
+            Provider::Cursor | Provider::Antigravity => Vec::new(),
+        }
+    }
+
     /// Integração com o agente; `None` se ainda não foi implementada.
     pub fn adapter(self) -> Option<&'static dyn Adapter> {
         match self {

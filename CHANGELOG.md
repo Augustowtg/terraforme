@@ -5,6 +5,16 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.20.0 - 2026-10-20
+
+### Adicionado
+
+- `terraforme setup` sem nenhum agente na máquina: lista os agentes para marcar quais instalar
+  (`↑`/`↓` movem, `Espaço` marca, `a` marca todos, `Enter` confirma) e roda o instalador oficial
+  de cada um — Claude Code (`claude.ai/install.sh` / `install.ps1`) e OpenCode
+  (`opencode.ai/install`; no Windows, `npm install -g opencode-ai`). Os sem instalador automático
+  aparecem desabilitados, com o link.
+
 ## 0.19.0 - 2026-10-20
 
 ### Adicionado
