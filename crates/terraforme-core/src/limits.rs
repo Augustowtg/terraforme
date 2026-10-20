@@ -1,22 +1,19 @@
-//! Quanto falta dos limites de uso do agente. Com login OAuth no Claude Code
-//! (assinaturas Pro/Max/Team), lê a utilização do plano em
-//! `api.anthropic.com/api/oauth/usage` — o mesmo dado do `/usage`; sem login,
-//! ou se a consulta falhar, compara o consumo dos transcripts com o orçamento
-//! de `[budget]` do config.toml.
+//! Quanto falta dos limites de uso do agente. Os limites chegam pelo
+//! [`Adapter::quota`], no formato padronizado do terraforme ([`Quota`]):
+//! cada CLI traduz o que o dele informa (a API OAuth do Claude Code, o
+//! `opencode stats`…) e o cálculo de quanto falta é sempre deste módulo.
+//! Sem limites de plano — ou se a consulta falhar —, o consumo dos
+//! transcripts é comparado com o orçamento de `[budget]` do config.toml.
 
-use std::fs;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::agent::Adapter;
-use crate::agent::claude::claude_config_dir;
-use crate::usage::{Usage, UsageSource, parse_timestamp};
+use crate::usage::{Usage, UsageSource};
 
-const PLAN_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// A aba de consumo atualiza a cada poucos segundos; a API não precisa.
 const PLAN_TTL: Duration = Duration::from_secs(60);
 
@@ -54,7 +51,8 @@ pub struct Limit {
     pub used: f64,
     /// Quando o limite zera, em segundos desde a época Unix.
     pub resets_at: Option<u64>,
-    /// Tokens usados e o máximo, no orçamento.
+    /// Tokens usados e o limite total, quando há (orçamento ou o próprio
+    /// provedor).
     pub tokens: Option<(u64, u64)>,
 }
 
@@ -73,10 +71,42 @@ pub struct Limits {
     pub note: Option<String>,
 }
 
+/// Informação padronizada de um limite que o adapter de um CLI devolve ao
+/// terraforme ([`Adapter::quota`]): o adapter só traduz o que o dele informa
+/// (tokens usados, limite total, quando zera), e o terraforme calcula o
+/// quanto falta e desenha a barra.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Quota {
+    /// Janela do limite (ex.: `Sessão · 5h`).
+    pub label: String,
+    /// Porcentagem já usada, calculada pelo próprio provedor (0–100);
+    /// `None` quando ela deve sair de [`Quota::tokens`].
+    pub used: Option<f64>,
+    /// Tokens usados e o limite total da janela, quando o provedor informa.
+    pub tokens: Option<(u64, u64)>,
+    /// Quando o limite zera, em segundos desde a época Unix.
+    pub resets_at: Option<u64>,
+}
+
+impl From<Quota> for Limit {
+    fn from(quota: Quota) -> Self {
+        let used = quota.used.unwrap_or_else(|| match quota.tokens {
+            Some((used, max)) if max > 0 => used as f64 * 100.0 / max as f64,
+            _ => 0.0,
+        });
+        Limit {
+            label: quota.label,
+            used,
+            resets_at: quota.resets_at,
+            tokens: quota.tokens,
+        }
+    }
+}
+
 /// Limites do plano do agente quando há (ex.: login OAuth no Claude Code);
 /// senão, o orçamento.
 pub fn collect(adapter: &dyn Adapter, usage: &Usage, budget: &Budget) -> Limits {
-    let note = match plan(adapter) {
+    let note = match quotas(adapter) {
         Ok(Some(items)) if !items.is_empty() => {
             return Limits {
                 source: Source::Plan,
@@ -124,88 +154,21 @@ type PlanCache = Option<(Instant, Result<Option<Vec<Limit>>, String>)>;
 
 static PLAN: Mutex<PlanCache> = Mutex::new(None);
 
-/// [`Adapter::plan_limits`], guardado por `PLAN_TTL` (o terraforme roda um
-/// agente só por vez).
-fn plan(adapter: &dyn Adapter) -> Result<Option<Vec<Limit>>> {
+/// [`Adapter::quota`], guardado por `PLAN_TTL` (o terraforme roda um agente
+/// só por vez) e convertido nos [`Limit`] prontos para a interface.
+fn quotas(adapter: &dyn Adapter) -> Result<Option<Vec<Limit>>> {
     let mut cache = PLAN.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, result)) = cache.as_ref()
         && at.elapsed() < PLAN_TTL
     {
         return result.clone().map_err(anyhow::Error::msg);
     }
-    let result = adapter.plan_limits().map_err(|e| format!("{e:#}"));
+    let result = adapter
+        .quota()
+        .map(|quota| quota.map(|items| items.into_iter().map(Limit::from).collect()))
+        .map_err(|e| format!("{e:#}"));
     *cache = Some((Instant::now(), result.clone()));
     result.map_err(anyhow::Error::msg)
-}
-
-/// Limites do plano do Claude Code; `None` sem login OAuth.
-pub(crate) fn fetch_claude_plan() -> Result<Option<Vec<Limit>>> {
-    let path = claude_config_dir()?.join(".credentials.json");
-    let Ok(text) = fs::read_to_string(&path) else {
-        return Ok(None);
-    };
-    let credentials: Value =
-        serde_json::from_str(&text).with_context(|| format!("lendo {}", path.display()))?;
-    let Some(oauth) = credentials.get("claudeAiOauth") else {
-        return Ok(None);
-    };
-    let token = oauth
-        .get("accessToken")
-        .and_then(Value::as_str)
-        .context("credenciais sem accessToken")?;
-    let now_ms = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64);
-    if oauth
-        .get("expiresAt")
-        .and_then(Value::as_u64)
-        .is_some_and(|exp| exp <= now_ms)
-    {
-        // Renovar aqui trocaria o refresh token do Claude Code.
-        bail!("token OAuth expirado; abra o claude para renová-lo");
-    }
-
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .build()
-        .into();
-    let body = agent
-        .get(PLAN_URL)
-        .header("Authorization", &format!("Bearer {token}"))
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .header(
-            "User-Agent",
-            concat!("terraforme/", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .context("consultando o uso do plano")?
-        .body_mut()
-        .read_to_string()?;
-    let body: Value = serde_json::from_str(&body).context("resposta inválida da API")?;
-    Ok(Some(parse_plan(&body)))
-}
-
-fn parse_plan(body: &Value) -> Vec<Limit> {
-    [
-        ("five_hour", "Sessão · 5h"),
-        ("seven_day", "Semana · todos os modelos"),
-        ("seven_day_opus", "Semana · Opus"),
-        ("seven_day_sonnet", "Semana · Sonnet"),
-    ]
-    .into_iter()
-    .filter_map(|(key, label)| {
-        let limit = body.get(key)?;
-        Some(Limit {
-            label: label.into(),
-            used: limit.get("utilization")?.as_f64()?,
-            resets_at: limit
-                .get("resets_at")
-                .and_then(Value::as_str)
-                .and_then(parse_timestamp),
-            tokens: None,
-        })
-    })
-    .collect()
 }
 
 #[cfg(test)]
@@ -214,20 +177,36 @@ mod tests {
     use crate::usage::{Summary, Tokens};
 
     #[test]
-    fn parses_plan_usage() {
-        let body: Value = serde_json::from_str(
-            r#"{"five_hour":{"utilization":10.0,"resets_at":"1970-01-01T01:00:00.240634+00:00"},
-                "seven_day":{"utilization":48.0,"resets_at":null},
-                "seven_day_opus":null}"#,
-        )
-        .unwrap();
-        let limits = parse_plan(&body);
-        assert_eq!(limits.len(), 2);
-        assert_eq!(limits[0].label, "Sessão · 5h");
-        assert_eq!(limits[0].resets_at, Some(3600));
-        assert_eq!(limits[0].remaining(), 90.0);
-        assert_eq!(limits[1].used, 48.0);
-        assert_eq!(limits[1].resets_at, None);
+    fn quota_becomes_a_limit_with_tokens_or_a_provider_percentage() {
+        // O provedor já calculou a porcentagem (ex.: Claude Code).
+        let from_api = Limit::from(Quota {
+            label: "Sessão · 5h".into(),
+            used: Some(10.0),
+            tokens: None,
+            resets_at: Some(3600),
+        });
+        assert_eq!(from_api.used, 10.0);
+        assert_eq!(from_api.remaining(), 90.0);
+        assert_eq!(from_api.resets_at, Some(3600));
+
+        // O terraforme calcula a porcentagem dos tokens informados.
+        let from_tokens = Limit::from(Quota {
+            label: "Últimos 7 dias".into(),
+            used: None,
+            tokens: Some((250, 1_000)),
+            resets_at: None,
+        });
+        assert_eq!(from_tokens.used, 25.0);
+        assert_eq!(from_tokens.tokens, Some((250, 1_000)));
+
+        // Sem tokens e sem porcentagem não há usage para mostrar.
+        let empty = Limit::from(Quota {
+            label: "vazio".into(),
+            used: None,
+            tokens: None,
+            resets_at: None,
+        });
+        assert_eq!(empty.used, 0.0);
     }
 
     #[test]

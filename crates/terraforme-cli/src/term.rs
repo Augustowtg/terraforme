@@ -3,15 +3,19 @@
 //! instância), o consumo de tokens (com os relatórios do RTK), as outras
 //! extensões do modo e a configuração geral.
 //!
-//! Abas: `Ctrl+Shift+Tab` passa para a próxima e `Ctrl+Shift+1`–`9` vai direto
-//! (`Shift+F1`–`F9` também). Sub-abas, iguais em todas as abas: `Ctrl+Alt+Tab`
-//! passa para a próxima e `Ctrl+Alt+1`–`9` vai direto (`Alt+1`–`9`,
-//! `Shift+Alt+1`–`9`, `Ctrl+PgUp/PgDn` e `←`/`→` nas visões também); na aba
-//! do agente, um número além da última abre
-//! outra instância. Os atalhos próprios da TUI usam `Ctrl+Alt`, que o agente não
-//! usa (`Ctrl+Alt+K` lista todos). Para distinguir `Ctrl+Shift`/`Ctrl+Alt` de
+//! As abas são construídas pelo padrão de projeto **Registro**: cada uma é uma
+//! única entrada de [`TABS`] ([`TabSpec`]) com o rótulo, o atalho, as sub-abas
+//! próprias e o comportamento dela, e o menu, os atalhos, a ajuda e a ordem
+//! saem todos dessa lista (ver [`spec`]). Abas: `Ctrl+Shift+F1` (Agente),
+//! `Ctrl+Shift+F2` (Consumo), `Ctrl+Shift+F3` (Extensões, quando o modo abre
+//! uma) e `Ctrl+Shift+F4` (Config). Sub-abas, iguais em todas as abas:
+//! `Ctrl+Alt+Tab` passa para a próxima e `Ctrl+Alt+1`–`9` vai direto
+//! (`Alt+1`–`9`, `Shift+Alt+1`–`9`, `Ctrl+PgUp/PgDn` e `←`/`→` nas visões
+//! também); na aba do agente, um número além da última abre outra instância.
+//! Os atalhos próprios da TUI usam `Ctrl+Alt`, que o agente não usa
+//! (`Ctrl+Alt+K` lista todos). Para distinguir `Ctrl+Shift`/`Ctrl+Alt` de
 //! teclas comuns, a TUI liga o protocolo de teclado do kitty quando o terminal
-//! o suporta; sem ele, `Shift+Tab` alterna as abas. As instâncias continuam
+//! o suporta; sem ele, `Shift+Tab` segue para o agente. As instâncias continuam
 //! rodando enquanto outra aba ou sub-aba está aberta.
 //!
 //! Mouse: a roda rola o histórico do agente e o conteúdo das outras abas;
@@ -41,6 +45,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, crossterm};
+use terraforme_core::accounts::ClaudeAccounts;
 use terraforme_core::agent::{Adapter, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::doc;
@@ -111,24 +116,33 @@ enum Tab {
 }
 
 impl Tab {
+    /// Nome da aba: o agente usa o nome dele (`claude`, `opencode`).
     fn label(self, agent: &str) -> String {
         match self {
             Tab::Agent => agent.to_string(),
-            Tab::Usage => "Consumo".into(),
-            Tab::Extensions => "Extensões".into(),
-            Tab::Config => "Config".into(),
+            other => other.nome().to_string(),
         }
     }
 
-    /// Sub-abas como (grupo, rótulo): as visões do consumo (sem grupo) e os
-    /// relatórios, agrupados pela extensão. As instâncias do agente ficam à
-    /// parte, porque não carregam conteúdo.
+    /// Nome fixo da aba, para a ajuda e para o menu quando não há nome de
+    /// agente.
+    fn nome(self) -> &'static str {
+        match self {
+            Tab::Agent => "Agente",
+            Tab::Usage => "Consumo",
+            Tab::Extensions => "Extensões",
+            Tab::Config => "Config",
+        }
+    }
+
+    /// Sub-abas como (grupo, rótulo): as sub-abas próprias da aba, tiradas do
+    /// Registro [`TABS`] (sem grupo), e os relatórios, agrupados pela
+    /// extensão. As instâncias do agente ficam à parte, porque não carregam
+    /// conteúdo.
     fn views(self, extensions: &[Extension]) -> Vec<(&'static str, &'static str)> {
-        let base: &[&'static str] = match self {
-            Tab::Usage => &USAGE_VIEWS,
-            _ => &[],
-        };
-        base.iter()
+        spec(self)
+            .own_views
+            .iter()
             .map(|&v| ("", v))
             .chain(
                 reports(self, extensions)
@@ -151,6 +165,113 @@ fn reports(tab: Tab, extensions: &[Extension]) -> Vec<(Extension, Report)> {
         })
         .flat_map(|&ext| ext.reports().iter().map(move |&report| (ext, report)))
         .collect()
+}
+
+/// Como a aba se comporta, escolhido no Registro [`TABS`] em vez de por
+/// `match tab` espalhado pelo arquivo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabKind {
+    /// O agente: um pseudoterminal por sub-aba, sem conteúdo carregado.
+    Agent,
+    /// Conteúdo carregado em segundo plano (Consumo e Extensões).
+    Content,
+    /// Formulário editável, gravado a cada alteração (Config).
+    Form,
+}
+
+/// Descrição de uma aba.
+///
+/// Padrão de projeto **Registro** (registry / table-driven): as entradas de
+/// [`TABS`] são a fonte única das abas — ordem no menu, nome, atalho,
+/// sub-abas próprias e comportamento —, e menu, atalhos, ajuda e abertura
+/// leem esta lista em vez de espalhar `match tab` pelo arquivo. Para criar
+/// uma aba nova basta acrescentar a entrada e dizer o seu [`TabKind`].
+struct TabSpec {
+    /// Aba descrita.
+    tab: Tab,
+    /// Número da tecla `Ctrl+Shift+F<n>` que a abre (mais as variantes
+    /// legadas `F13`–`F16` com Ctrl e `F25`–`F28` sem modificadores).
+    shortcut: u8,
+    /// Se a aba aparece no menu com estas extensões.
+    show: fn(&[Extension]) -> bool,
+    /// Sub-abas próprias da aba, antes dos relatórios (as visões do Consumo).
+    own_views: &'static [&'static str],
+    /// Recarrega o conteúdo sozinho, a cada [`USAGE_REFRESH`].
+    refresh: bool,
+    /// Como a aba se constrói.
+    kind: TabKind,
+}
+
+/// Registro das abas, na ordem do menu e na ordem dos atalhos `F1`–`F4`.
+const TABS: [TabSpec; 4] = [
+    TabSpec {
+        tab: Tab::Agent,
+        shortcut: 1,
+        show: sempre,
+        own_views: &[],
+        refresh: false,
+        kind: TabKind::Agent,
+    },
+    TabSpec {
+        tab: Tab::Usage,
+        shortcut: 2,
+        show: sempre,
+        own_views: &USAGE_VIEWS,
+        refresh: true,
+        kind: TabKind::Content,
+    },
+    TabSpec {
+        tab: Tab::Extensions,
+        shortcut: 3,
+        show: tem_relatorios,
+        own_views: &[],
+        refresh: false,
+        kind: TabKind::Content,
+    },
+    TabSpec {
+        tab: Tab::Config,
+        shortcut: 4,
+        show: sempre,
+        own_views: &[],
+        refresh: false,
+        kind: TabKind::Form,
+    },
+];
+
+impl TabSpec {
+    /// Atalho como tecla do menu (`⌃⇧F4`), sempre igual ao que abre a aba.
+    fn tecla(&self) -> String {
+        format!("⌃⇧F{}", self.shortcut)
+    }
+
+    /// Atalho por extenso, na janela de atalhos (`Ctrl+Shift+F4`).
+    fn tecla_longa(&self) -> String {
+        format!("Ctrl+Shift+F{}", self.shortcut)
+    }
+}
+
+/// Descrição da aba, sempre presente no Registro.
+fn spec(tab: Tab) -> &'static TabSpec {
+    TABS.iter()
+        .find(|s| s.tab == tab)
+        .expect("toda aba tem entrada no registro")
+}
+
+/// Aba que o atalho `n` (`Ctrl+Shift+F<n>`) abre; `None` quando nenhuma
+/// usa esse número.
+fn tab_by_shortcut(n: u8) -> Option<Tab> {
+    TABS.iter().find(|s| s.shortcut == n).map(|s| s.tab)
+}
+
+/// Aba que sempre aparece no menu.
+fn sempre(_extensions: &[Extension]) -> bool {
+    true
+}
+
+/// A aba Extensões só existe quando o modo tem relatórios fora do RTK (que
+/// fica no Consumo).
+fn tem_relatorios(extensions: &[Extension]) -> bool {
+    !reports(Tab::Extensions, extensions).is_empty()
 }
 
 /// Pedido de spawn de subagente recebido do servidor de controle MCP.
@@ -238,6 +359,9 @@ enum Field {
     Mode,
     Jail,
     Doc,
+    /// Conta do Claude Code: nome registrado em `terraforme config --account`.
+    /// Só vale no contexto de um space (grava em `preferences.toml`).
+    Account,
     BudgetFiveHours,
     BudgetWeek,
     Mouse,
@@ -247,11 +371,12 @@ enum Field {
     McpMax,
 }
 
-const FIELDS: [Field; 11] = [
+const FIELDS: [Field; 12] = [
     Field::Provider,
     Field::Mode,
     Field::Jail,
     Field::Doc,
+    Field::Account,
     Field::BudgetFiveHours,
     Field::BudgetWeek,
     Field::Mouse,
@@ -267,7 +392,7 @@ impl Field {
     /// Seção da tela em que o campo aparece.
     fn group(self) -> &'static str {
         match self {
-            Field::Provider | Field::Mode | Field::Jail | Field::Doc => {
+            Field::Provider | Field::Mode | Field::Jail | Field::Doc | Field::Account => {
                 "Início do agente (vale no próximo terraforme cli)"
             }
             Field::BudgetFiveHours | Field::BudgetWeek => "Orçamento de tokens (aba Consumo)",
@@ -282,6 +407,7 @@ impl Field {
             Field::Mode => "Modo",
             Field::Jail => "AI Jail (sandbox)",
             Field::Doc => "Preset doc",
+            Field::Account => "Conta Claude Code",
             Field::BudgetFiveHours => "Tokens em 5h",
             Field::BudgetWeek => "Tokens em 7 dias",
             Field::Mouse => "Capturar o mouse",
@@ -321,6 +447,8 @@ impl Field {
             ),
             Field::Jail => yes(config.jail),
             Field::Doc => yes(config.doc),
+            // Account é resolvido em Form::account_display(); nunca chamado por este caminho.
+            Field::Account => String::new(),
             Field::BudgetFiveHours => tokens(config.budget.five_hours),
             Field::BudgetWeek => tokens(config.budget.week),
             Field::Mouse => yes(config.tui.mouse),
@@ -382,6 +510,7 @@ impl Field {
             Field::Provider => prefs.agent = None,
             Field::Mode => prefs.mode = None,
             Field::Jail => prefs.jail = None,
+            Field::Account => prefs.account = None,
             _ => {}
         }
     }
@@ -422,6 +551,8 @@ impl Field {
             Field::Mode => config.mode = default.mode,
             Field::Jail => config.jail = default.jail,
             Field::Doc => config.doc = default.doc,
+            // Account não existe no config.toml (só em preferências de space).
+            Field::Account => {}
             Field::BudgetFiveHours => config.budget.five_hours = None,
             Field::BudgetWeek => config.budget.week = None,
             Field::Mouse => config.tui.mouse = default.tui.mouse,
@@ -453,11 +584,13 @@ fn step_index(len: usize, i: usize, delta: isize) -> usize {
 /// Estado da aba Config.
 struct Form {
     config: Config,
-    /// Pasta do space quando agente, modo e jail gravam nas preferências
+    /// Pasta do space quando agente, modo, jail e conta gravam nas preferências
     /// dele (`None`: tudo fica no `config.toml`).
     space: Option<PathBuf>,
     /// Preferências do space (vazias fora dele: tudo vem do `config.toml`).
     prefs: Preferences,
+    /// Nomes das contas registradas em `claude.toml`, para o campo Account ciclar.
+    accounts: Vec<String>,
     /// Campo escolhido em [`FIELDS`].
     index: usize,
     /// Número sendo digitado no campo escolhido.
@@ -492,10 +625,14 @@ impl Form {
                 (None, Preferences::default())
             }
         };
+        let accounts = ClaudeAccounts::load()
+            .map(|a| a.iter().map(|(n, _)| n.to_string()).collect())
+            .unwrap_or_default();
         Form {
             config,
             space,
             prefs,
+            accounts,
             index: 0,
             editing: None,
             message,
@@ -506,10 +643,52 @@ impl Form {
         FIELDS[self.index]
     }
 
-    /// Agente, modo e jail gravam nas preferências do space quando há um;
-    /// os outros campos são sempre do `config.toml`.
+    /// Agente, modo, jail e conta gravam nas preferências do space quando há
+    /// um; os outros campos são sempre do `config.toml`.
     fn in_space(&self, field: Field) -> bool {
-        self.space.is_some() && matches!(field, Field::Provider | Field::Mode | Field::Jail)
+        self.space.is_some()
+            && matches!(
+                field,
+                Field::Provider | Field::Mode | Field::Jail | Field::Account
+            )
+    }
+
+    /// Valor exibido para o campo Account: nome da conta nas preferências do
+    /// space, ou indicação de que está fora de um space (campo inativo).
+    fn account_display(&self) -> String {
+        if self.space.is_none() {
+            return "— (fora de space)".into();
+        }
+        self.prefs
+            .account
+            .as_deref()
+            .unwrap_or("padrão")
+            .to_string()
+    }
+
+    /// Avança (ou retrocede) a conta nas preferências do space, ciclando pela
+    /// lista de contas registradas mais a opção "padrão" (sem conta fixa).
+    fn step_account(&mut self, delta: isize) {
+        if self.accounts.is_empty() {
+            self.message = Some(Err(
+                "nenhuma conta registrada — use `terraforme config --account NOME=PASTA`".into(),
+            ));
+            return;
+        }
+        // Opções: [None/"padrão", "conta1", "conta2", ...]
+        let len = self.accounts.len() + 1; // +1 para o "padrão"
+        let current = self
+            .prefs
+            .account
+            .as_deref()
+            .and_then(|name| self.accounts.iter().position(|a| a == name).map(|i| i + 1))
+            .unwrap_or(0);
+        let next = step_index(len, current, delta);
+        self.prefs.account = if next == 0 {
+            None
+        } else {
+            Some(self.accounts[next - 1].clone())
+        };
     }
 
     /// Valores que a sessão vai usar: as preferências do space vencem o
@@ -555,8 +734,12 @@ impl Form {
     /// para ele, senão no `config.toml`.
     fn step(&mut self, field: Field, delta: isize) {
         if self.in_space(field) {
-            let current = self.effective();
-            field.step_prefs(&mut self.prefs, &current, delta);
+            if field == Field::Account {
+                self.step_account(delta);
+            } else {
+                let current = self.effective();
+                field.step_prefs(&mut self.prefs, &current, delta);
+            }
             self.save_prefs();
         } else {
             field.step(&mut self.config, delta);
@@ -648,6 +831,7 @@ impl Form {
             let selected = i == self.index;
             let value = match (&self.editing, selected) {
                 (Some(text), true) => format!("{text}▏"),
+                _ if field == Field::Account => self.account_display(),
                 _ => field.value(&effective),
             };
             let style = if selected {
@@ -670,12 +854,12 @@ impl Form {
         }
         let footer = match &self.space {
             Some(dir) => format!(
-                "Agente, modo e jail valem em {} (preferências do space); \
+                "Agente, modo, jail e conta valem em {} (preferências do space); \
                  os outros campos valem no config.toml. As flags do terraforme cli têm prioridade.",
                 Preferences::path(dir).display()
             ),
             None => "As flags do terraforme cli e as preferências do space têm prioridade \
-                     sobre o agente, o modo e o jail."
+                     sobre o agente, o modo e o jail. Conta só vale dentro de um space."
                 .to_string(),
         };
         lines.push(Line::raw(footer).dark_gray());
@@ -981,14 +1165,13 @@ pub fn run(options: Options) -> Result<()> {
     result
 }
 
-/// Abas na ordem do menu: o agente, o consumo, as extensões (se o modo usa
-/// alguma além do RTK, que fica no consumo) e a configuração.
+/// Abas na ordem do menu: as entradas do Registro [`TABS`] que o modo abre
+/// (o agente, o consumo, as extensões — se o modo usa alguma além do RTK,
+/// que fica no consumo — e a configuração).
 fn tabs(extensions: &[Extension]) -> Vec<Tab> {
-    let others = !reports(Tab::Extensions, extensions).is_empty();
-    [Tab::Agent, Tab::Usage]
-        .into_iter()
-        .chain(others.then_some(Tab::Extensions))
-        .chain([Tab::Config])
+    TABS.iter()
+        .filter(|spec| (spec.show)(extensions))
+        .map(|spec| spec.tab)
         .collect()
 }
 
@@ -1116,10 +1299,11 @@ impl App {
         self.agents.iter_mut().find(|a| a.id == id)
     }
 
-    /// Instância da sub-aba aberta, se a aba aberta for a do agente.
+    /// Instância da sub-aba aberta, se a aba aberta for a do agente (o
+    /// `kind` dela no Registro).
     fn active_agent(&mut self) -> Option<&mut Agent> {
-        match self.active {
-            Tab::Agent => self.agent_mut(self.focused),
+        match spec(self.active).kind {
+            TabKind::Agent => self.agent_mut(self.focused),
             _ => None,
         }
     }
@@ -1143,7 +1327,7 @@ impl App {
 
     /// Troca a instância aberta por uma nova, no mesmo lugar das sub-abas.
     fn restart_active(&mut self) {
-        if self.active != Tab::Agent {
+        if !matches!(spec(self.active).kind, TabKind::Agent) {
             return;
         }
         let Some(i) = self.agents.iter().position(|a| a.id == self.focused) else {
@@ -1235,13 +1419,9 @@ impl App {
                 self.handle_msg(msg);
                 dirty = true;
             }
-            // Só as visões do consumo se atualizam sozinhas (não os relatórios do RTK).
-            if let Some(view) = &self.view
-                && !view.loading
-                && view.tab == Tab::Usage
-                && view.index < USAGE_VIEWS.len()
-                && view.loaded_at.elapsed() >= USAGE_REFRESH
-            {
+            // Só as abas com `refresh` no Registro se atualizam sozinhas (as
+            // visões do consumo, não os relatórios do RTK).
+            if self.deve_atualizar() {
                 self.load(false);
             }
             if self
@@ -1271,6 +1451,20 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Se o conteúdo da aba aberta deve ser recarregado sozinho: a aba tem
+    /// `refresh` no Registro, não está carregando, está numa sub-aba própria
+    /// (não num relatório) e já passou o [`USAGE_REFRESH`].
+    fn deve_atualizar(&self) -> bool {
+        let Some(view) = &self.view else {
+            return false;
+        };
+        let spec = spec(view.tab);
+        !view.loading
+            && spec.refresh
+            && view.index < spec.own_views.len()
+            && view.loaded_at.elapsed() >= USAGE_REFRESH
     }
 
     /// Ajusta as instâncias ao tamanho real da tela. Conferido antes de cada
@@ -1550,9 +1744,12 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<bool> {
-        let tabs = self.tabs();
-        if let Some(n) = tab_number(key).filter(|&n| n <= tabs.len()) {
-            self.select(tabs[n - 1]);
+        if let Some(tab) = tab_shortcut(key) {
+            // Uma aba fora do menu (Extensões sem relatórios) não tem para
+            // onde ir; a tecla não passa para o agente.
+            if self.tabs().contains(&tab) && self.active != tab {
+                self.select(tab);
+            }
             return Ok(false);
         }
         if let Some(n) = sub_tab_number(key) {
@@ -1563,21 +1760,11 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let back = key.code == KeyCode::BackTab || shift;
-        let current = tabs.iter().position(|&t| t == self.active).unwrap_or(0);
-        let next_tab = tabs[(current + 1) % tabs.len()];
         match key.code {
             KeyCode::F(10) => return Ok(true),
             // Ctrl+Alt+Tab: próxima sub-aba (com Shift, a anterior). Sem o
             // protocolo do kitty chega como Alt+Tab.
             KeyCode::Tab | KeyCode::BackTab if alt => self.cycle(if back { -1 } else { 1 }),
-            // Ctrl+Shift+Tab: próxima aba.
-            KeyCode::Tab | KeyCode::BackTab if ctrl && back => self.select(next_tab),
-            // Sem o protocolo do kitty, Ctrl+Shift+Tab chega igual a Shift+Tab,
-            // que então também alterna as abas; com ele, Shift+Tab segue para
-            // o agente (troca de modo do Claude Code).
-            KeyCode::BackTab if !self.enhanced || self.active != Tab::Agent => {
-                self.select(next_tab)
-            }
             KeyCode::PageUp if ctrl => self.cycle(-1),
             KeyCode::PageDown if ctrl => self.cycle(1),
             // Comandos da TUI: Ctrl+Alt+letra, que o agente não usa.
@@ -1674,13 +1861,16 @@ impl App {
         }
     }
 
-    /// Abre a aba; as que não são do agente recarregam o conteúdo.
+    /// Abre a aba pelo jeito que o Registro [`TABS`] diz: o agente fica com
+    /// o pseudoterminal, as abas de conteúdo recarregam o conteúdo e a
+    /// Config abre o formulário.
     fn select(&mut self, tab: Tab) {
+        let kind = spec(tab).kind;
         self.active = tab;
-        self.form = (tab == Tab::Config).then(Form::load);
-        self.view = match tab {
-            Tab::Agent => None,
-            tab => Some(View {
+        self.form = (kind == TabKind::Form).then(Form::load);
+        self.view = match kind {
+            TabKind::Agent => None,
+            TabKind::Content | TabKind::Form => Some(View {
                 tab,
                 index: 0,
                 content: Content::Loading,
@@ -1710,12 +1900,11 @@ impl App {
         }
         view.loading = true;
         let (tab, index) = (view.tab, view.index);
-        // No consumo, os relatórios do RTK vêm depois das visões próprias.
-        let report = match tab {
-            Tab::Usage => index.checked_sub(USAGE_VIEWS.len()),
-            _ => Some(index),
-        }
-        .and_then(|i| reports(tab, &self.extensions).get(i).copied());
+        // Os relatórios vêm depois das sub-abas próprias da aba (as visões
+        // do consumo), que o Registro guarda.
+        let report = index
+            .checked_sub(spec(tab).own_views.len())
+            .and_then(|i| reports(tab, &self.extensions).get(i).copied());
         let tx = self.tx.clone();
         let cwd = self.cwd.clone();
         let adapter = self.adapter;
@@ -1827,36 +2016,26 @@ impl App {
             Span::styled(" terraforme ", Style::new().black().on_green().bold()),
             Span::raw(" "),
         ];
-        for (i, tab) in self.tabs().into_iter().enumerate() {
+        for tab in self.tabs() {
             let style = if tab == self.active {
                 Style::new().black().on_cyan().bold()
             } else {
                 Style::new().white().on_dark_gray()
             };
-            let key = if self.enhanced {
-                format!(" ⌃⇧{} ", i + 1)
-            } else {
-                format!(" ⇧F{} ", i + 1)
-            };
+            // O rótulo da tecla vem do Registro: é o atalho que a abre.
+            let key = format!(" {} ", spec(tab).tecla());
             spans.push(Span::styled(key, style.add_modifier(Modifier::BOLD)));
             spans.push(Span::styled(format!("{} ", tab.label(&self.agent)), style));
             spans.push(Span::raw(" "));
         }
         spans.push(Span::styled(" F10 ", Style::new().white().on_red().bold()));
         spans.push(Span::styled("sair ", Style::new().white().on_red()));
-        let switch = if self.enhanced { "⌃⇧Tab" } else { "⇧Tab" };
         let mouse = if self.mouse {
             ""
         } else {
             " · 🖱 seleção nativa"
         };
-        spans.push(
-            Span::raw(format!(
-                "  {switch} alterna · ⌃⌥K atalhos{mouse} · {}",
-                self.title
-            ))
-            .dark_gray(),
-        );
+        spans.push(Span::raw(format!("  ⌃⌥K atalhos{mouse} · {}", self.title)).dark_gray());
         Line::from(spans).style(Style::new().bg(Color::Reset))
     }
 
@@ -1974,7 +2153,8 @@ fn sub_tab_spans(labels: &[(&str, String)], current: usize, key: &str) -> Vec<Sp
     spans
 }
 
-/// Uma barra por limite, com quanto já foi usado e quanto falta.
+/// Uma barra por limite, no estilo do Claude Code: o título traz o limite
+/// total de tokens (quando há) e a barra verde vai encurtando a cada consumo.
 fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
     let budget = Config::load().map(|c| c.budget).unwrap_or_default();
     let limits = limits::collect(adapter, usage, &budget);
@@ -2023,6 +2203,12 @@ fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
                 ));
                 lines.push(Line::raw("  terraforme config --budget-week 300000000").cyan());
             }
+            UsageSource::Antigravity => {
+                lines.push(Line::raw(
+                    "Sem limites do agy (abra o `agy` para entrar na conta), defina um orçamento de tokens:",
+                ));
+                lines.push(Line::raw("  terraforme config --budget-week 300000000").cyan());
+            }
         }
         lines.push(Line::default());
     }
@@ -2031,15 +2217,23 @@ fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
     }
     lines.push(
         Line::raw(match limits.source {
-            Source::Plan => {
-                "Fonte: limites do plano (api.anthropic.com, como o /usage) · atualiza a cada 60s"
-            }
+            Source::Plan => match usage.source {
+                UsageSource::Antigravity => {
+                    "Fonte: limites da conta do Antigravity (`agy -p /usage`) · atualiza a cada 60s"
+                }
+                _ => {
+                    "Fonte: limites do plano (api.anthropic.com, como o /usage) · atualiza a cada 60s"
+                }
+            },
             Source::Budget => match usage.source {
                 UsageSource::Claude => {
                     "Fonte: orçamento [budget] do config.toml × transcripts do Claude Code"
                 }
                 UsageSource::OpenCode => {
                     "Fonte: orçamento semanal [budget] × opencode stats --json · sem janela de 5h"
+                }
+                UsageSource::Antigravity => {
+                    "Fonte: orçamento semanal [budget] × transcripts do Antigravity (agy)"
                 }
             },
         })
@@ -2048,10 +2242,12 @@ fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
     Text::from(lines)
 }
 
-/// `██████░░░░  60% usado · 40% restante`, colorida pelo que falta.
+/// Barra no estilo do Claude Code: o verde começa cheio em 100% e vai
+/// diminuindo a cada consumo — `████████░░░░  75% restante` —, com a cor
+/// esquentando quando o que falta aperta.
 fn bar(limit: &Limit) -> Line<'static> {
     let remaining = limit.remaining();
-    let filled = ((limit.used.clamp(0.0, 100.0) / 100.0) * BAR_WIDTH as f64).round() as usize;
+    let filled = ((remaining / 100.0) * BAR_WIDTH as f64).round() as usize;
     let color = if remaining > 50.0 {
         Color::Green
     } else if remaining > 20.0 {
@@ -2062,7 +2258,7 @@ fn bar(limit: &Limit) -> Line<'static> {
     Line::from(vec![
         Span::styled("█".repeat(filled), Style::new().fg(color)),
         Span::raw("░".repeat(BAR_WIDTH - filled)).dark_gray(),
-        Span::raw(format!("  {:.0}% usado · ", limit.used)),
+        Span::raw("  "),
         Span::styled(
             format!("{remaining:.0}% restante"),
             Style::new().fg(color).bold(),
@@ -2141,10 +2337,17 @@ fn format_usage(usage: &usage::Usage) -> Text<'static> {
         None => lines.push("A sessão atual ainda não tem respostas do modelo.".into()),
     }
     lines.push(String::new());
-    lines.push(format!(
-        "Fonte: transcripts do Claude Code · atualiza a cada {}s",
-        USAGE_REFRESH.as_secs()
-    ));
+    let fonte = match usage.source {
+        UsageSource::Antigravity => format!(
+            "Fonte: transcripts do Antigravity (agy) · atualiza a cada {}s",
+            USAGE_REFRESH.as_secs()
+        ),
+        _ => format!(
+            "Fonte: transcripts do Claude Code · atualiza a cada {}s",
+            USAGE_REFRESH.as_secs()
+        ),
+    };
+    lines.push(fonte);
     Text::from(lines.join("\n"))
 }
 
@@ -2202,6 +2405,12 @@ fn format_agents(usage: &usage::Usage) -> Text<'static> {
             USAGE_REFRESH.as_secs()
         ));
     }
+    if usage.source == UsageSource::Antigravity {
+        return Text::from(format!(
+            "O Antigravity não detalha tokens por subagente nesta versão.\n\nFonte: transcripts do agy · atualiza a cada {}s",
+            USAGE_REFRESH.as_secs()
+        ));
+    }
     if usage.session_agents.is_empty() {
         return Text::from("A sessão atual ainda não tem respostas do modelo.");
     }
@@ -2248,30 +2457,25 @@ fn truncate(text: &str, max: usize) -> String {
     out
 }
 
-/// Aba 1–9 pedida pela tecla: `Ctrl+Shift+1`–`9` (só chega com o protocolo
-/// do kitty; o terminal pode mandar o dígito ou o símbolo do Shift) ou
-/// `Shift+F1`–`F9` (alguns terminais mandam `Shift+F1` como `F13`).
-fn tab_number(key: KeyEvent) -> Option<usize> {
+/// Atalho das abas: `Ctrl+Shift+F<n>`, na ordem do Registro [`TABS`] — a
+/// primeira função é só o agente, a segunda o consumo, a terceira as
+/// extensões e a quarta a configuração. As variantes `F13`–`F16` (com Ctrl)
+/// e `F25`–`F28` (sem modificadores) cobrem os terminais legados.
+fn tab_shortcut(key: KeyEvent) -> Option<Tab> {
     let m = key.modifiers;
-    match key.code {
-        KeyCode::F(n @ 1..=9) if m.contains(KeyModifiers::SHIFT) => Some(n as usize),
-        KeyCode::F(n @ 13..=21) => Some(n as usize - 12),
-        KeyCode::Char(c) if m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) => {
-            match c {
-                '1'..='9' if m.contains(KeyModifiers::SHIFT) => Some(c as usize - '0' as usize),
-                // US e ABNT2 (`¨` no 6).
-                _ => "!@#$%¨&*("
-                    .chars()
-                    .position(|s| s == c)
-                    .map(|i| i + 1)
-                    .or(match c {
-                        '^' => Some(6),
-                        _ => None,
-                    }),
-            }
-        }
-        _ => None,
+    let ctrl = m.contains(KeyModifiers::CONTROL);
+    let shift = m.contains(KeyModifiers::SHIFT);
+    let alt = m.contains(KeyModifiers::ALT);
+    if alt {
+        return None;
     }
+    let n = match key.code {
+        KeyCode::F(n @ 1..=4) if ctrl && shift => n,
+        KeyCode::F(n @ 13..=16) if ctrl => n - 12,
+        KeyCode::F(n @ 25..=28) => n - 24,
+        _ => return None,
+    };
+    tab_by_shortcut(n)
 }
 
 /// Sub-aba 1–9 pedida pela tecla: `Ctrl+Alt+1`–`9` ou `Alt+1`–`9` (sem o
@@ -2288,17 +2492,33 @@ fn sub_tab_number(key: KeyEvent) -> Option<usize> {
     }
 }
 
-/// Texto da janela de atalhos (`Ctrl+Alt+K`).
+/// Texto da janela de atalhos (`Ctrl+Alt+K`); as abas saem do Registro
+/// [`TABS`], igual ao menu.
 fn shortcuts(enhanced: bool) -> String {
     let protocol = if enhanced {
         "Protocolo de teclado do kitty ligado: Ctrl+Shift e Ctrl+Alt chegam distintos e Shift+Tab vai para o agente."
     } else {
-        "Este terminal não tem o protocolo de teclado do kitty: Ctrl+Shift+1–9 não chega (use Shift+F1–F9), Ctrl+Shift+Tab chega como Shift+Tab (que então alterna as abas) e Ctrl+Alt+1–9 pode chegar como Alt+1–9."
+        "Este terminal não tem o protocolo de teclado do kitty: Ctrl+Alt+1–9 pode chegar como Alt+1–9."
     };
+    let abas = TABS
+        .iter()
+        .map(|entrada| {
+            let nota = if entrada.tab == Tab::Extensions {
+                " (só com extensões)"
+            } else {
+                ""
+            };
+            format!(
+                "  {:<23}{}{nota}",
+                entrada.tecla_longa(),
+                entrada.tab.nome()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         "ABAS
-  Ctrl+Shift+Tab         próxima aba
-  Ctrl+Shift+1–9         vai para a aba (alternativa: Shift+F1–F9)
+{abas}
 
 SUB-ABAS (instâncias do agente, visões do consumo, relatórios)
   Ctrl+Alt+Tab           próxima sub-aba (com Shift, a anterior)
@@ -2333,7 +2553,6 @@ GERAL
 
 Tab, F1–F9, Ctrl+←→ e as demais teclas seguem para o agente. Os atalhos evitam
 os do ambiente Linux (Ctrl+Alt+T/L/D/Del, Ctrl+Alt+F1–F12 e Ctrl+Alt+setas).
-No kitty, Ctrl+Shift+1–9 é do próprio terminal: use Shift+F1–F9.
 
 {protocol}"
     )
@@ -2725,17 +2944,108 @@ mod tests {
     }
 
     #[test]
+    fn registry_is_the_single_source_of_the_tabs() {
+        // Menu, nome e comportamento vêm todos do Registro `TABS`.
+        let todas = [Extension::Rtk, Extension::AiMemory];
+        assert_eq!(
+            tabs(&todas),
+            [Tab::Agent, Tab::Usage, Tab::Extensions, Tab::Config]
+        );
+        let mut atalhos = Vec::new();
+        for tab in tabs(&todas) {
+            let entrada = spec(tab);
+            assert!(
+                !atalhos.contains(&entrada.shortcut),
+                "atalho repetido: Ctrl+Shift+F{}",
+                entrada.shortcut
+            );
+            atalhos.push(entrada.shortcut);
+            // O menu mostra o atalho que esta mesma entrada abre.
+            assert_eq!(
+                tab_by_shortcut(entrada.shortcut),
+                Some(tab),
+                "Ctrl+Shift+F{} não devolve {}",
+                entrada.shortcut,
+                tab.nome()
+            );
+            assert_eq!(entrada.tab, tab);
+        }
+        // F1 só o agente, F2 o consumo, F3 as extensões e F4 a configuração.
+        assert_eq!(atalhos, [1, 2, 3, 4]);
+        assert_eq!(spec(Tab::Agent).kind, TabKind::Agent);
+        assert_eq!(spec(Tab::Config).kind, TabKind::Form);
+        assert_eq!(spec(Tab::Usage).kind, TabKind::Content);
+        assert!(spec(Tab::Usage).refresh);
+        assert!(!spec(Tab::Extensions).refresh);
+        assert_eq!(spec(Tab::Usage).own_views.len(), USAGE_VIEWS.len());
+        assert_eq!(spec(Tab::Agent).own_views, &[] as &[&str]);
+    }
+
+    #[test]
+    fn help_lists_every_registered_tab() {
+        let text = shortcuts(true);
+        for entrada in &TABS {
+            // A ajuda mostra o mesmo atalho do menu e da abertura da aba.
+            assert!(
+                text.contains(&entrada.tecla_longa()),
+                "ajuda sem {}",
+                entrada.tecla_longa()
+            );
+            assert!(
+                text.contains(entrada.tab.nome()),
+                "ajuda sem {}",
+                entrada.tab.nome()
+            );
+        }
+        // A terceira função é só as extensões (marcada) e a quarta a configuração.
+        assert!(text.contains("Extensões (só com extensões)"));
+        assert!(text.contains(Tab::Config.nome()));
+        assert!(!text.contains("terceira função"));
+    }
+
+    #[test]
     fn shortcut_keys_pick_tabs_and_sub_tabs() {
-        let t = |code, m| tab_number(KeyEvent::new(code, m));
+        let t = |code, m| tab_shortcut(KeyEvent::new(code, m));
         let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-        assert_eq!(t(KeyCode::F(2), KeyModifiers::SHIFT), Some(2));
+        // Cada função abre a aba da entrada dela no Registro: F1 é o agente
+        // (só o agente), F2 o consumo, F3 as extensões e F4 a configuração.
+        assert_eq!(t(KeyCode::F(1), ctrl_shift), Some(Tab::Agent));
+        assert_eq!(t(KeyCode::F(2), ctrl_shift), Some(Tab::Usage));
+        assert_eq!(t(KeyCode::F(3), ctrl_shift), Some(Tab::Extensions));
+        assert_eq!(t(KeyCode::F(4), ctrl_shift), Some(Tab::Config));
+        assert_eq!(t(KeyCode::F(5), ctrl_shift), None);
+        // F13..16 com Ctrl (terminais legados)
+        assert_eq!(t(KeyCode::F(13), KeyModifiers::CONTROL), Some(Tab::Agent));
+        assert_eq!(t(KeyCode::F(14), KeyModifiers::CONTROL), Some(Tab::Usage));
+        assert_eq!(
+            t(KeyCode::F(15), KeyModifiers::CONTROL),
+            Some(Tab::Extensions)
+        );
+        assert_eq!(t(KeyCode::F(16), KeyModifiers::CONTROL), Some(Tab::Config));
+        assert_eq!(t(KeyCode::F(25), KeyModifiers::NONE), Some(Tab::Agent));
+        assert_eq!(t(KeyCode::F(26), KeyModifiers::NONE), Some(Tab::Usage));
+        assert_eq!(t(KeyCode::F(27), KeyModifiers::NONE), Some(Tab::Extensions));
+        assert_eq!(t(KeyCode::F(28), KeyModifiers::NONE), Some(Tab::Config));
+
+        // Atalhos desativados: F1..F4 puros, Shift+F1..F4, dígitos, símbolos
+        assert_eq!(t(KeyCode::F(1), KeyModifiers::NONE), None);
         assert_eq!(t(KeyCode::F(2), KeyModifiers::NONE), None);
-        assert_eq!(t(KeyCode::F(13), KeyModifiers::NONE), Some(1));
-        assert_eq!(t(KeyCode::Char('3'), ctrl_shift), Some(3));
-        assert_eq!(t(KeyCode::Char('#'), ctrl_shift), Some(3));
-        assert_eq!(t(KeyCode::Char('¨'), KeyModifiers::CONTROL), Some(6));
-        assert_eq!(t(KeyCode::Char('3'), KeyModifiers::CONTROL), None);
+        assert_eq!(t(KeyCode::F(3), KeyModifiers::NONE), None);
+        assert_eq!(t(KeyCode::F(4), KeyModifiers::NONE), None);
+        assert_eq!(t(KeyCode::F(1), KeyModifiers::SHIFT), None);
+        assert_eq!(t(KeyCode::F(2), KeyModifiers::SHIFT), None);
+        assert_eq!(t(KeyCode::F(3), KeyModifiers::SHIFT), None);
+        assert_eq!(t(KeyCode::F(4), KeyModifiers::SHIFT), None);
+        assert_eq!(t(KeyCode::F(13), KeyModifiers::NONE), None);
+        assert_eq!(t(KeyCode::Char('1'), ctrl_shift), None);
+        assert_eq!(t(KeyCode::Char('2'), ctrl_shift), None);
+        assert_eq!(t(KeyCode::Char('3'), ctrl_shift), None);
+        assert_eq!(t(KeyCode::Char('4'), ctrl_shift), None);
+        assert_eq!(t(KeyCode::Char('1'), KeyModifiers::SHIFT), None);
+        assert_eq!(t(KeyCode::Char('2'), KeyModifiers::SHIFT), None);
         assert_eq!(t(KeyCode::Char('!'), KeyModifiers::NONE), None);
+        assert_eq!(t(KeyCode::Char('@'), KeyModifiers::NONE), None);
+        assert_eq!(t(KeyCode::Char('!'), ctrl_shift), None);
 
         let s = |c, m| sub_tab_number(KeyEvent::new(KeyCode::Char(c), m));
         let ctrl_alt = KeyModifiers::CONTROL | KeyModifiers::ALT;
@@ -2895,7 +3205,9 @@ mod tests {
                 agent: Some(Provider::OpenCode),
                 mode: None,
                 jail: Some(true),
+                account: None,
             },
+            accounts: Vec::new(),
             index: 0,
             editing: None,
             message: None,

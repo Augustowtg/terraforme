@@ -1,12 +1,14 @@
 //! Núcleo do terraforme: toda a lógica fica aqui para ser reutilizada
 //! pela CLI.
 
+pub mod accounts;
 pub mod agent;
 pub mod config;
 pub mod doc;
 pub mod extension;
 pub mod jail;
 pub mod limits;
+pub mod mcp;
 pub mod skill;
 pub mod space;
 pub mod status;

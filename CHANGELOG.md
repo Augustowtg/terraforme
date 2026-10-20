@@ -5,6 +5,74 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.16.0 - 2026-10-20
+
+### Adicionado
+
+- Suporte a múltiplas contas do Claude Code por space: `terraforme config --account NOME=PASTA`
+  registra uma conta (cada conta é um `CLAUDE_CONFIG_DIR` distinto — credenciais, sessões e
+  configurações separadas); `terraforme space <nome> --account <nome-da-conta>` atribui a conta ao
+  space, e o `terraforme cli` aberto nele define `CLAUDE_CONFIG_DIR` automaticamente antes de
+  iniciar o Claude Code (inclusive dentro do AI Jail). A lista de contas fica em
+  `~/.config/terraforme/claude.toml`.
+
+## 0.15.1 - 2026-10-20
+
+### Adicionado
+
+- Limites de consumo do Antigravity (`agent/antigravity.rs`): o adapter pergunta ao próprio agente
+  com `agy -p "/usage" --output-format json` e cada grupo de modelos da resposta vira um limite na
+  aba Consumo — a porcentagem já usada sai do `remaining_fraction` e o instante em que a janela
+  semanal zera vem do `reset_time`, que aparece no título do limite (`· zera em 5d 22h`). Sem login
+  no `agy`, vale o orçamento `[budget]` do `config.toml`, como nos outros agentes.
+
+### Alterado
+
+- Rodapé e dica da visão Limites deixam de citar só o Claude Code: com o Antigravity a fonte é o
+  `agy -p /usage` e a dica passa a sugerir entrar na conta pelo `agy` antes de cair no orçamento.
+
+## 0.15.0 - 2026-10-20
+
+### Adicionado
+
+- Adapter padronizado de limites de consumo (`Adapter::quota`): cada CLI traduz o que o dele
+  informa para o formato `Quota` (porcentagem usada, tokens usados e o limite total, quando a
+  janela zera) e o terraforme é quem calcula o quanto falta e desenha a barra. A consulta da API
+  OAuth do Claude Code virou parte do adapter dele (`agent/claude.rs`); os agentes sem limites
+  usam o default e caem no orçamento do `config.toml`.
+
+### Alterado
+
+- Barra de limites da aba Consumo no estilo do Claude Code: o verde nasce cheio em 100% e vai
+  encurtando a cada consumo (`████████░░░░  75% restante`), esquentando para amarelo e vermelho
+  quando o que falta aperta; o título de cada limite continua trazendo o total de tokens e quando
+  a janela zera.
+
+## 0.14.3 - 2026-10-20
+
+### Adicionado
+
+- Registro de abas na TUI (padrão de projeto **Registro**): cada aba vira uma entrada única
+  (`TabSpec` em `TABS`) com o nome, o atalho, as sub-abas próprias e o comportamento
+  (`TabKind`), e o menu, os atalhos e a janela de ajuda saem todos dessa lista.
+
+### Alterado
+
+- Atalhos de abas na TUI, um por aba e na ordem do menu: `Ctrl+Shift+F1` abre só o agente,
+  `Ctrl+Shift+F2` o Consumo, `Ctrl+Shift+F3` as Extensões (quando o modo abre a aba) e
+  `Ctrl+Shift+F4` a Config; o menu e a janela de atalhos (`Ctrl+Alt+K`) mostram a mesma tecla e
+  uma aba fora do menu não tem atalho.
+
+## 0.14.2 - 2026-10-20
+
+### Alterado
+
+- Atalhos de abas na TUI: mantidos exclusivamente `Ctrl+Shift+F1` (Consumo), `Ctrl+Shift+F2`
+  (Config) e `Ctrl+Shift+F3` (terceira função: Extensões ou Agente).
+- Atalhos duplicados e extras de troca de abas (`Shift+1`/`2`, `F1`/`F2`, `Ctrl+Shift+1`–`9`,
+  `Shift+F1`–`F9`, `Ctrl+Shift+Tab` e `Shift+Tab`) foram desativados, liberando teclas de função,
+  dígitos e `Shift+Tab` para o agente sem interferência da TUI.
+
 ## 0.14.1 - 2026-10-19
 
 ### Corrigido

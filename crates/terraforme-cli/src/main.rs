@@ -5,10 +5,12 @@ use std::io::{self, IsTerminal, Write};
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
+use terraforme_core::accounts::ClaudeAccounts;
 use terraforme_core::agent::{self, CliMode, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Outcome};
 use terraforme_core::jail;
+use terraforme_core::mcp;
 use terraforme_core::skill;
 use terraforme_core::space::{self, Preferences, Spaces};
 use terraforme_core::status::{self, Component, State};
@@ -78,9 +80,9 @@ enum Command {
         /// Modo de início do `terraforme cli` (eco, custom, security, high, doc). Sem valor: lista e pergunta
         #[arg(long, value_enum, num_args = 0..=1, conflicts_with_all = ["mode", "jail"])]
         cli: Option<Option<CliMode>>,
-        /// Define o modo padrão do `terraforme cli`
+        /// Define o modo padrão do `terraforme cli` (none, eco, high, hybrid; custom: pergunta as extensões)
         #[arg(long, value_enum)]
-        mode: Option<Mode>,
+        mode: Option<ModeChoice>,
         /// Roda o agente dentro do AI Jail (sandbox) por padrão
         #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set)]
         jail: Option<bool>,
@@ -90,6 +92,14 @@ enum Command {
         /// Orçamento de tokens nos últimos 7 dias (0 remove)
         #[arg(long = "budget-week", value_name = "TOKENS")]
         budget_week: Option<u64>,
+        /// Claude Code: lista as contas (sem valor) ou registra/atualiza uma conta
+        /// (`NOME=PASTA`, ex.: `--account work=~/.claude-work`).
+        /// A pasta é o `CLAUDE_CONFIG_DIR` da conta (credenciais, configurações, sessões).
+        #[arg(long, value_name = "NOME=PASTA", num_args = 0..=1)]
+        account: Option<Option<String>>,
+        /// Claude Code: remove a conta registrada
+        #[arg(long, value_name = "NOME", conflicts_with = "account")]
+        remove_account: Option<String>,
     },
     /// Abre o agente de IA no terminal do terraforme (aba de consumo de tokens)
     #[command(group(ArgGroup::new("modo").args(["eco", "high", "hybrid"])))]
@@ -129,7 +139,7 @@ enum Command {
         args: Vec<String>,
     },
     /// Pastas de trabalho salvas com um nome: lista e abre um shell no space escolhido
-    #[command(group(ArgGroup::new("acao").args(["save", "delete", "list", "path"])))]
+    #[command(group(ArgGroup::new("acao").args(["save", "delete", "list", "path", "rename"])))]
     Space {
         /// Nome do space (ou número da lista); sem ele, pergunta
         name: Option<String>,
@@ -139,6 +149,9 @@ enum Command {
         /// Remove o space
         #[arg(long, requires = "name")]
         delete: bool,
+        /// Renomeia o space (ex.: terraforme space antigo --rename novo)
+        #[arg(long, value_name = "NOVO-NOME", requires = "name")]
+        rename: Option<String>,
         /// Só lista os spaces salvos
         #[arg(long)]
         list: bool,
@@ -146,16 +159,19 @@ enum Command {
         #[arg(long)]
         path: bool,
         /// Preferência do space: agente do `terraforme cli` aberto nele
-        #[arg(long, visible_alias = "agente", value_enum, conflicts_with_all = ["delete", "list", "path"])]
+        #[arg(long, visible_alias = "agente", value_enum, conflicts_with_all = ["delete", "list", "path", "rename"])]
         agent: Option<Provider>,
         /// Preferência do space: modo do `terraforme cli` aberto nele
-        #[arg(long, value_enum, conflicts_with_all = ["delete", "list", "path"])]
+        #[arg(long, value_enum, conflicts_with_all = ["delete", "list", "path", "rename"])]
         mode: Option<Mode>,
         /// Preferência do space: roda (true) ou não (false) o agente no AI Jail
-        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, conflicts_with_all = ["delete", "list", "path"])]
+        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, conflicts_with_all = ["delete", "list", "path", "rename"])]
         jail: Option<bool>,
+        /// Preferência do space: conta do Claude Code (nome registrado em `terraforme config --account`)
+        #[arg(long, conflicts_with_all = ["delete", "list", "path", "rename"])]
+        account: Option<String>,
         /// Apaga as preferências do space (volta ao `terraforme config`)
-        #[arg(long, conflicts_with_all = ["delete", "list", "path"])]
+        #[arg(long, conflicts_with_all = ["delete", "list", "path", "rename"])]
         reset: bool,
         /// Não pede confirmação ao substituir ou remover
         #[arg(short, long)]
@@ -286,7 +302,7 @@ fn run(cli: Cli) -> Result<()> {
             } else if project {
                 jail_project()?;
             } else if let Some(on) = default {
-                config(None, None, Some(on), None, None, None)?;
+                config(None, None, Some(on), None, None, None, None, None)?;
             } else if delete {
                 let ext = targets[0];
                 if yes || confirm(&format!("Remover {}?", ext.name()))? {
@@ -305,7 +321,18 @@ fn run(cli: Cli) -> Result<()> {
             jail,
             budget_five_hours,
             budget_week,
-        } => config(agent, mode, jail, cli, budget_five_hours, budget_week)?,
+            account,
+            remove_account,
+        } => config(
+            agent,
+            mode,
+            jail,
+            cli,
+            budget_five_hours,
+            budget_week,
+            account,
+            remove_account,
+        )?,
         Command::Cli {
             agent,
             eco,
@@ -332,17 +359,35 @@ fn run(cli: Cli) -> Result<()> {
             name,
             save,
             delete,
+            rename,
             list,
             path,
             agent,
             mode,
             jail,
+            account,
             reset,
             yes,
         } => {
-            let prefs = (agent.is_some() || mode.is_some() || jail.is_some() || reset)
-                .then_some(Preferences { agent, mode, jail });
-            space(name.as_deref(), save, delete, list, path, prefs, reset, yes)?
+            let has_pref =
+                agent.is_some() || mode.is_some() || jail.is_some() || account.is_some() || reset;
+            let prefs = has_pref.then_some(Preferences {
+                agent,
+                mode,
+                jail,
+                account: account.clone(),
+            });
+            space(
+                name.as_deref(),
+                save,
+                delete,
+                rename.as_deref(),
+                list,
+                path,
+                prefs,
+                reset,
+                yes,
+            )?
         }
         Command::Upgrade {
             repo,
@@ -360,14 +405,32 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// Valores do `config --mode`: os modos e `custom`, que pergunta quais
+/// extensões usar (RTK, AI Memory, AI Jail).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ModeChoice {
+    None,
+    Eco,
+    High,
+    Hybrid,
+    Custom,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn config(
     agent: Option<Option<Provider>>,
-    mode: Option<Mode>,
+    mode: Option<ModeChoice>,
     jail: Option<bool>,
     cli: Option<Option<CliMode>>,
     budget_five_hours: Option<u64>,
     budget_week: Option<u64>,
+    account: Option<Option<String>>,
+    remove_account: Option<String>,
 ) -> Result<()> {
+    // Gerenciamento de contas Claude (independente do restante do config).
+    if account.is_some() || remove_account.is_some() {
+        return config_accounts(account, remove_account);
+    }
     let mut config = Config::load()?;
     let mut changed = false;
 
@@ -438,17 +501,26 @@ fn config(
         None => None,
     };
     if let Some(cli) = cli {
-        let (mode, jail) = match cli.preset() {
-            Some(preset) => preset,
-            None => custom_cli_preset()?,
-        };
-        config.mode = mode;
-        config.jail = jail;
+        match cli.preset() {
+            Some((mode, jail)) => {
+                config.mode = mode;
+                config.jail = jail;
+            }
+            None => {
+                config.mode = custom_cli_preset()?;
+            }
+        }
         config.doc = cli == CliMode::Doc;
         changed = true;
     }
-    if let Some(mode) = mode {
-        config.mode = mode;
+    if let Some(choice) = mode {
+        config.mode = match choice {
+            ModeChoice::None => Mode::None,
+            ModeChoice::Eco => Mode::Eco,
+            ModeChoice::High => Mode::High,
+            ModeChoice::Hybrid => Mode::Hybrid,
+            ModeChoice::Custom => custom_cli_preset()?,
+        };
         config.doc = false;
         changed = true;
     }
@@ -498,6 +570,73 @@ fn config(
     println!("  orçamento 5h {}", budget(config.budget.five_hours));
     println!("  orçamento 7d {}", budget(config.budget.week));
     Ok(())
+}
+
+/// Gerencia as contas do Claude Code: lista, adiciona ou remove.
+fn config_accounts(account: Option<Option<String>>, remove_account: Option<String>) -> Result<()> {
+    let mut accounts = ClaudeAccounts::load()?;
+
+    if let Some(name) = remove_account {
+        match accounts.remove(&name) {
+            Some(dir) => {
+                accounts.save()?;
+                println!("✔ conta '{name}' removida (era: {})", dir.display());
+            }
+            None => bail!("conta '{name}' não encontrada"),
+        }
+        print_accounts(&accounts);
+        return Ok(());
+    }
+
+    match account {
+        // --account sem valor: lista as contas registradas.
+        Some(None) => {
+            print_accounts(&accounts);
+            return Ok(());
+        }
+        // --account NOME=PASTA: adiciona/atualiza.
+        Some(Some(spec)) => {
+            let (name, raw_dir) = spec.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("formato esperado: NOME=PASTA (ex.: work=/home/user/.claude-work)")
+            })?;
+            let dir = std::path::Path::new(raw_dir);
+            if !dir.is_dir() {
+                bail!(
+                    "a pasta '{}' não existe — crie-a antes ou rode `claude` com CLAUDE_CONFIG_DIR='{}'",
+                    dir.display(),
+                    dir.display()
+                );
+            }
+            let old = accounts.insert(name, dir)?;
+            accounts.save()?;
+            match old {
+                Some(old) => println!(
+                    "✔ conta '{name}' atualizada: {} → {}",
+                    old.display(),
+                    dir.display()
+                ),
+                None => println!("✔ conta '{name}' registrada: {}", dir.display()),
+            }
+        }
+        None => {}
+    }
+
+    print_accounts(&accounts);
+    println!("{}", ClaudeAccounts::path()?.display());
+    Ok(())
+}
+
+fn print_accounts(accounts: &ClaudeAccounts) {
+    if accounts.is_empty() {
+        println!("Nenhuma conta do Claude Code registrada.");
+        println!("  Use `terraforme config --account NOME=PASTA` para registrar uma.");
+        return;
+    }
+    println!("Contas do Claude Code");
+    for (i, (name, dir)) in accounts.iter().enumerate() {
+        let ok = if dir.is_dir() { "✔" } else { "✘" };
+        println!("  {:>2}  {ok}  {name:<16}  {}", i + 1, dir.display());
+    }
 }
 
 fn print_providers(current: Provider) {
@@ -559,12 +698,14 @@ fn print_cli_modes(mode: Mode, jail: bool, doc: bool) {
     }
 }
 
-/// `--cli custom`: pergunta quais extensões o modo usa e deriva `(modo, jail)`.
-fn custom_cli_preset() -> Result<(Mode, bool)> {
+/// `--mode custom` / `--cli custom`: pergunta quais extensões do modo (RTK e/ou
+/// AI Memory) e devolve o `Mode` derivado. O AI Jail é ortogonal ao modo e é
+/// controlado com `--jail` / `config.jail`.
+fn custom_cli_preset() -> Result<Mode> {
     if !io::stdin().is_terminal() {
-        bail!("`terraforme config --cli custom` precisa de um terminal interativo");
+        bail!("`terraforme config --mode custom` precisa de um terminal interativo");
     }
-    let extensions = [Extension::Rtk, Extension::AiMemory, Extension::AiJail];
+    let extensions = [Extension::Rtk, Extension::AiMemory];
     let labels: Vec<_> = extensions.iter().map(|ext| ext.name()).collect();
     let Some(indices) = ask_selection(
         "Extensões do modo customizado:",
@@ -574,22 +715,16 @@ fn custom_cli_preset() -> Result<(Mode, bool)> {
     else {
         bail!("seleção cancelada; nada foi alterado");
     };
-    let (mode, jail) = custom_preset(
-        indices.contains(&0),
-        indices.contains(&1),
-        indices.contains(&2),
-    );
-    Ok((mode, jail))
+    Ok(custom_preset(indices.contains(&0), indices.contains(&1)))
 }
 
-fn custom_preset(rtk: bool, ai_memory: bool, ai_jail: bool) -> (Mode, bool) {
-    let mode = match (rtk, ai_memory) {
+fn custom_preset(rtk: bool, ai_memory: bool) -> Mode {
+    match (rtk, ai_memory) {
         (true, true) => Mode::Hybrid,
         (true, false) => Mode::Eco,
         (false, true) => Mode::High,
         (false, false) => Mode::None,
-    };
-    (mode, ai_jail)
+    }
 }
 
 /// Título da sessão: agente, modo e, se for o caso, a sandbox.
@@ -636,7 +771,7 @@ impl Choice {
             Some(dir) => Preferences::find(dir)?,
             None => None,
         };
-        let prefs = space.as_ref().map(|(_, p)| *p).unwrap_or_default();
+        let prefs = space.as_ref().map(|(_, p)| p.clone()).unwrap_or_default();
         let provider = self.agent.or(prefs.agent).unwrap_or(config.provider);
         let mode = self.mode.or(prefs.mode).unwrap_or(config.mode);
         let project = cwd.as_deref().and_then(jail::project_config);
@@ -644,23 +779,39 @@ impl Choice {
             .jail
             .or(prefs.jail)
             .unwrap_or(config.jail || project.is_some());
-        let mut launch = agent::prepare(provider, mode, jail, args)?;
-        if let Some((path, _)) = &space {
-            launch
-                .notices
-                .push(format!("preferências do space em {}", path.display()));
-        }
-        if let Some(path) = project
-            && jail
-            && self.jail.is_none()
-            && prefs.jail.is_none()
-            && !config.jail
+
+        // Conta do Claude Code: define CLAUDE_CONFIG_DIR antes de prepare()
+        // para que Claude::setup() use a pasta certa (hooks, credenciais, MCP).
+        // SAFETY: a CLI é single-threaded; estamos prestes a exec o agente.
+        if provider == Provider::Claude
+            && let Some(name) = prefs.account.as_deref()
         {
-            launch.notices.push(format!(
-                "AI Jail ligado pelo {} desta pasta",
-                path.display()
-            ));
+            let accounts = ClaudeAccounts::load()?;
+            match accounts.get(name) {
+                Some(dir) => unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir) },
+                None => bail!(
+                    "conta '{name}' não encontrada — registre com \
+                     `terraforme config --account {name}=<pasta>`"
+                ),
+            }
         }
+
+        // Extensões que precisam de algo no projeto (ex.: o `.ai-jail`) são
+        // preparadas aqui, só na primeira vez em cada pasta.
+        let mut prepared = Vec::new();
+        if let Some(dir) = &cwd
+            && let Some(adapter) = provider.adapter()
+        {
+            let mut extensions = mode.extensions();
+            if jail {
+                extensions.push(Extension::AiJail);
+            }
+            for ext in extensions {
+                prepared.extend(ext.setup_project(dir, adapter.bin())?);
+            }
+        }
+        let mut launch = agent::prepare(provider, mode, jail, args)?;
+        launch.notices.extend(prepared);
         Ok(Resolved {
             provider,
             mode,
@@ -679,6 +830,16 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
     } = choice.resolve(args)?;
     let adapter = provider.adapter().context("agente sem adapter")?;
 
+    let config = Config::load()?;
+    let mcp_lock = match mcp::ensure_running(&config.mcp) {
+        Ok(lock) => Some(lock),
+        Err(e) => {
+            eprintln!("aviso: terraforme-mcp indisponível: {e}");
+            None
+        }
+    };
+    let client_id = uuid::Uuid::new_v4().to_string();
+
     let notices = launch
         .notices
         .iter()
@@ -686,6 +847,10 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
         .chain(launch.warnings.iter().map(|w| format!("⚠ {w}")))
         .collect();
     let title = launch_title(provider, mode, jail);
+    let mut extensions = mode.extensions();
+    if jail {
+        extensions.push(Extension::AiJail);
+    }
     term::run(term::Options {
         agent: provider.id().to_string(),
         title,
@@ -694,6 +859,9 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
         instances,
         session_ids: !adapter.picks_session(args),
         notices,
+        extensions,
+        mcp_lock,
+        client_id,
     })
 }
 
@@ -774,6 +942,7 @@ fn space(
     name: Option<&str>,
     save: bool,
     delete: bool,
+    rename: Option<&str>,
     list: bool,
     path: bool,
     prefs: Option<Preferences>,
@@ -824,6 +993,21 @@ fn space(
             spaces.remove(name);
             spaces.save()?;
             println!("✔ space {name} removido");
+        }
+        return Ok(());
+    }
+
+    if let Some(new_name) = rename {
+        let old_name = name.unwrap_or_default();
+        match spaces.rename(old_name, new_name)? {
+            None => bail!("space {old_name} não encontrado"),
+            Some(dir) => {
+                spaces.save()?;
+                println!(
+                    "✔ space {old_name} renomeado para {new_name}: {}",
+                    dir.display()
+                );
+            }
         }
         return Ok(());
     }
@@ -883,6 +1067,15 @@ fn space_preferences(
     {
         bail!("o agente {} ainda não foi implementado", p.name());
     }
+    if let Some(account_name) = new.account.as_deref() {
+        let accounts = ClaudeAccounts::load()?;
+        if accounts.get(account_name).is_none() {
+            bail!(
+                "conta '{account_name}' não encontrada — registre com \
+                 `terraforme config --account {account_name}=<pasta>`"
+            );
+        }
+    }
     let mut prefs = if reset {
         Preferences::default()
     } else {
@@ -891,6 +1084,7 @@ fn space_preferences(
     prefs.agent = new.agent.or(prefs.agent);
     prefs.mode = new.mode.or(prefs.mode);
     prefs.jail = new.jail.or(prefs.jail);
+    prefs.account = new.account.or(prefs.account);
     prefs.save(dir)?;
     match preferences_summary(&prefs) {
         Some(summary) => println!(
@@ -902,7 +1096,7 @@ fn space_preferences(
     Ok(())
 }
 
-/// `agente claude · modo eco · AI Jail`; `None` sem preferências.
+/// `agente claude · modo eco · AI Jail · conta work`; `None` sem preferências.
 fn preferences_summary(prefs: &Preferences) -> Option<String> {
     let parts: Vec<String> = [
         prefs.agent.map(|p| format!("agente {}", p.id())),
@@ -910,6 +1104,7 @@ fn preferences_summary(prefs: &Preferences) -> Option<String> {
         prefs
             .jail
             .map(|j| if j { "AI Jail" } else { "sem AI Jail" }.into()),
+        prefs.account.as_deref().map(|a| format!("conta {a}")),
     ]
     .into_iter()
     .flatten()
@@ -1358,6 +1553,7 @@ mod tests {
         assert!(parse(&["config", "--agent", "claude"]).is_ok());
         assert!(parse(&["config", "--agent", "gemini"]).is_err());
         assert!(parse(&["config", "--mode", "eco"]).is_ok());
+        assert!(parse(&["config", "--mode", "custom"]).is_ok());
         assert!(parse(&["config", "--mode", "turbo"]).is_err());
         assert!(parse(&["config", "--budget-5h", "1000", "--budget-week", "0"]).is_ok());
         assert!(parse(&["config", "--budget-5h", "-1"]).is_err());
@@ -1399,12 +1595,10 @@ mod tests {
 
     #[test]
     fn custom_preset_maps_selected_extensions() {
-        assert_eq!(custom_preset(true, false, false), (Mode::Eco, false));
-        assert_eq!(custom_preset(false, true, false), (Mode::High, false));
-        assert_eq!(custom_preset(true, true, false), (Mode::Hybrid, false));
-        assert_eq!(custom_preset(false, false, false), (Mode::None, false));
-        assert_eq!(custom_preset(false, false, true), (Mode::None, true));
-        assert_eq!(custom_preset(true, true, true), (Mode::Hybrid, true));
+        assert_eq!(custom_preset(true, false), Mode::Eco);
+        assert_eq!(custom_preset(false, true), Mode::High);
+        assert_eq!(custom_preset(true, true), Mode::Hybrid);
+        assert_eq!(custom_preset(false, false), Mode::None);
     }
 
     #[test]

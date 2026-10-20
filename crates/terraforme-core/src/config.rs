@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{Mode, Provider};
 use crate::limits::Budget;
+use crate::mcp::McpConfig;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,6 +30,38 @@ pub struct Config {
     /// Orçamento de tokens da aba de consumo, sem os limites do plano.
     #[serde(skip_serializing_if = "Budget::is_empty")]
     pub budget: Budget,
+    /// Configuração do daemon MCP compartilhado.
+    #[serde(default, skip_serializing_if = "McpConfig::is_default")]
+    pub mcp: McpConfig,
+    /// Preferências da TUI do `terraforme cli` (seção `[tui]`).
+    #[serde(default, skip_serializing_if = "TuiConfig::is_default")]
+    pub tui: TuiConfig,
+}
+
+/// Seção `[tui]` do config.toml, editável na aba Config da TUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TuiConfig {
+    /// Captura o mouse ao abrir: a roda rola o histórico e arrastar seleciona
+    /// pela própria TUI. Desligado, a seleção é a nativa do terminal.
+    pub mouse: bool,
+    /// Copia o texto para a área de transferência ao soltar o botão do mouse.
+    pub copy_on_select: bool,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            mouse: true,
+            copy_on_select: true,
+        }
+    }
+}
+
+impl TuiConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Config {
@@ -80,6 +113,8 @@ mod tests {
             jail: false,
             doc: false,
             budget: Budget::default(),
+            mcp: McpConfig::default(),
+            tui: TuiConfig::default(),
         };
         let text = toml::to_string(&config).unwrap();
         assert_eq!(text, "provider = \"claude\"\nmode = \"eco\"\n");
@@ -119,5 +154,11 @@ mod tests {
         assert_eq!(config.provider, Provider::Claude);
         assert_eq!(config.mode, Mode::High);
         assert!(!config.jail);
+        assert_eq!(config.mcp, McpConfig::default());
+        assert_eq!(config.tui, TuiConfig::default());
+
+        let config: Config = toml::from_str("[tui]\nmouse = false").unwrap();
+        assert!(!config.tui.mouse);
+        assert!(config.tui.copy_on_select);
     }
 }

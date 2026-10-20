@@ -224,6 +224,13 @@ impl Extension {
         Ok(Vec::new())
     }
 
+    /// Prepara a extensão no projeto em `dir` quando ela precisa de algo ali
+    /// para rodar. O `.ai-jail` do projeto **não** é criado aqui: ele só é
+    /// criado explicitamente via `terraforme extension ai-jail --project`.
+    pub fn setup_project(self, _dir: &Path, _agent: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Configura uma extensão para um agente específico, sem tocar nos demais.
     /// O AI Jail é uma configuração global e deve usar [`Extension::setup`].
     pub fn setup_for(self, provider: Provider) -> Result<SetupMessages> {
@@ -241,6 +248,9 @@ impl Extension {
             }
             (Extension::AiJail, _) => unreachable!("AI Jail tratado acima"),
             (_, Provider::Cursor) => bail!("a integração com Cursor ainda não foi implementada"),
+            (_, Provider::Antigravity) => {
+                bail!("a integração com Antigravity ainda não foi implementada")
+            }
         }
 
         let mode = match self {

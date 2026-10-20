@@ -57,6 +57,19 @@ impl Spaces {
         self.spaces.remove(name.trim())
     }
 
+    /// Renomeia o space: remove `old`, insere com `new` e a mesma pasta.
+    /// Devolve `None` se `old` não existia.
+    pub fn rename(&mut self, old: &str, new: &str) -> Result<Option<PathBuf>> {
+        let new = validate_name(new)?;
+        match self.spaces.remove(old.trim()) {
+            None => Ok(None),
+            Some(dir) => {
+                self.spaces.insert(new.to_string(), dir.clone());
+                Ok(Some(dir))
+            }
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<&Path> {
         self.spaces.get(name.trim()).map(PathBuf::as_path)
     }
@@ -71,6 +84,17 @@ impl Spaces {
 
     pub fn is_empty(&self) -> bool {
         self.spaces.is_empty()
+    }
+
+    /// Raiz do space salvo mais específico que contém `start` (`None` fora
+    /// de space): um de dentro vence um de fora, como a pasta mais próxima
+    /// com `preferences.toml`.
+    pub fn containing(&self, start: &Path) -> Option<&Path> {
+        self.spaces
+            .values()
+            .filter(|dir| start.starts_with(dir))
+            .max_by_key(|dir| dir.components().count())
+            .map(PathBuf::as_path)
     }
 
     /// Space escolhido pelo número da lista (a partir de 1) ou pelo nome.
@@ -92,7 +116,7 @@ const PREFERENCES_FILE: &str = "preferences.toml";
 
 /// Preferências do space: o que não estiver definido vem do `config.toml`
 /// (e, na sandbox, do `.ai-jail` da pasta).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
     /// Agente aberto pelo `terraforme cli` no space.
@@ -104,6 +128,10 @@ pub struct Preferences {
     /// Roda o agente no AI Jail sem --jail/--no-jail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jail: Option<bool>,
+    /// Conta do Claude Code (nome registrado em `terraforme config --account`);
+    /// define `CLAUDE_CONFIG_DIR` ao abrir o agente neste space.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 impl Preferences {
@@ -147,6 +175,22 @@ impl Preferences {
             }
         }
         Ok(None)
+    }
+
+    /// Pasta cujas preferências valem para `start`: a da mais próxima acima
+    /// dela com `preferences.toml`, ou a da raiz de space salvo mais
+    /// próxima (`None` fora de space — aí o `config.toml` é que vale).
+    ///
+    /// É o mesmo que o `terraforme cli` usa na abertura (`find`), com o
+    /// acréscimo da raiz de space sem preferências ainda: gravar nelas faz
+    /// o space passar a ter voz própria.
+    pub fn dir_for(start: &Path) -> Result<Option<PathBuf>> {
+        if let Some((path, _)) = Self::find(start)?
+            && let Some(dir) = path.parent().and_then(Path::parent)
+        {
+            return Ok(Some(dir.to_path_buf()));
+        }
+        Ok(Spaces::load()?.containing(start).map(Path::to_path_buf))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -224,15 +268,51 @@ mod tests {
     }
 
     #[test]
+    fn containing_picks_deepest_saved_space() {
+        let mut spaces = spaces();
+        spaces.insert("deep", Path::new("/w/web/deep")).unwrap();
+        assert_eq!(
+            spaces.containing(Path::new("/w/web")),
+            Some(Path::new("/w/web"))
+        );
+        assert_eq!(
+            spaces.containing(Path::new("/w/web/src/app")),
+            Some(Path::new("/w/web"))
+        );
+        assert_eq!(
+            spaces.containing(Path::new("/w/web/deep/x")),
+            Some(Path::new("/w/web/deep"))
+        );
+        assert_eq!(spaces.containing(Path::new("/w")), None);
+        assert_eq!(spaces.containing(Path::new("/outro")), None);
+        assert_eq!(Spaces::default().containing(Path::new("/w/web")), None);
+    }
+
+    #[test]
     fn preferences_round_trip_and_find() {
         let prefs = Preferences {
             agent: Some(Provider::Claude),
             mode: Some(Mode::Eco),
             jail: None,
+            account: None,
         };
         let text = toml::to_string(&prefs).unwrap();
         assert_eq!(text, "agent = \"claude\"\nmode = \"eco\"\n");
         assert_eq!(toml::from_str::<Preferences>(&text).unwrap(), prefs);
+
+        let with_account = Preferences {
+            account: Some("work".into()),
+            ..prefs.clone()
+        };
+        let text_with_account = toml::to_string(&with_account).unwrap();
+        assert!(
+            text_with_account.contains("account = \"work\""),
+            "{text_with_account}"
+        );
+        assert_eq!(
+            toml::from_str::<Preferences>(&text_with_account).unwrap(),
+            with_account
+        );
         assert!(toml::from_str::<Preferences>("").unwrap().is_empty());
 
         let dir = env::temp_dir().join(format!("terraforme-space-{}", std::process::id()));

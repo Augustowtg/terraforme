@@ -41,7 +41,7 @@ impl Tokens {
         self.input + self.output + self.reasoning + self.cache_write + self.cache_read
     }
 
-    fn add(&mut self, other: &Tokens) {
+    pub(crate) fn add(&mut self, other: &Tokens) {
         self.input += other.input;
         self.output += other.output;
         self.reasoning += other.reasoning;
@@ -68,6 +68,15 @@ impl Summary {
             .or_default()
             .add(&entry.tokens);
     }
+
+    /// Soma outro `Summary` a este (usado pelos adaptadores que já agregam por conta própria).
+    pub fn add_summary(&mut self, other: &Summary) {
+        self.tokens.add(&other.tokens);
+        self.responses += other.responses;
+        for (model, tokens) in &other.by_model {
+            self.by_model.entry(model.clone()).or_default().add(tokens);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -92,6 +101,7 @@ pub enum UsageSource {
     #[default]
     Claude,
     OpenCode,
+    Antigravity,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

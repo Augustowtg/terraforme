@@ -13,6 +13,7 @@
 //! O AI Jail não entra nos modos: com `jail`, o comando inteiro roda dentro
 //! dele (ver `jail`), qualquer que seja o agente.
 
+pub(crate) mod antigravity;
 pub(crate) mod claude;
 pub(crate) mod opencode;
 
@@ -28,10 +29,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::extension::Extension;
-use crate::limits::Limit;
+use crate::limits::Quota;
 use crate::status::{Component, State, find_in_path, version_of};
 use crate::usage::Usage;
 
+pub use antigravity::Antigravity;
 pub use claude::Claude;
 pub use opencode::OpenCode;
 
@@ -62,9 +64,12 @@ pub trait Adapter: Sync {
         bail!("consumo ainda não disponível para este agente")
     }
 
-    /// Limites do plano do usuário; `None` quando não há (ex.: sem login),
+    /// Limites de uso do plano/conta no formato padronizado do terraforme
+    /// ([`Quota`]): o adapter só traduz o que o CLI informa (a API do plano,
+    /// os transcripts, o `stats`) e o terraforme calcula o quanto falta e
+    /// desenha a barra. `None` quando o CLI não tem limites (ex.: sem login),
     /// e aí o consumo é comparado com o orçamento do config.toml.
-    fn plan_limits(&self) -> Result<Option<Vec<Limit>>> {
+    fn quota(&self) -> Result<Option<Vec<Quota>>> {
         Ok(None)
     }
 
@@ -115,16 +120,23 @@ pub enum Provider {
     #[cfg_attr(feature = "clap", value(name = "opencode"))]
     OpenCode,
     Cursor,
+    Antigravity,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 3] = [Provider::Claude, Provider::OpenCode, Provider::Cursor];
+    pub const ALL: [Provider; 4] = [
+        Provider::Claude,
+        Provider::OpenCode,
+        Provider::Cursor,
+        Provider::Antigravity,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Provider::Claude => "claude",
             Provider::OpenCode => "opencode",
             Provider::Cursor => "cursor",
+            Provider::Antigravity => "antigravity",
         }
     }
 
@@ -133,6 +145,7 @@ impl Provider {
             Provider::Claude => "Claude Code",
             Provider::OpenCode => "OpenCode",
             Provider::Cursor => "Cursor",
+            Provider::Antigravity => "Antigravity",
         }
     }
 
@@ -141,6 +154,7 @@ impl Provider {
             Provider::Claude => "https://claude.com/claude-code",
             Provider::OpenCode => "https://opencode.ai",
             Provider::Cursor => "https://cursor.com/cli",
+            Provider::Antigravity => "https://antigravity.com",
         }
     }
 
@@ -150,6 +164,7 @@ impl Provider {
             Provider::Claude => Some(&Claude),
             Provider::OpenCode => Some(&OpenCode),
             Provider::Cursor => None,
+            Provider::Antigravity => Some(&Antigravity),
         }
     }
 

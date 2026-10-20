@@ -81,6 +81,7 @@ allow_hosts = ["opencode.ai", "models.dev"]
 "#,
         ),
         Provider::Cursor => None,
+        Provider::Antigravity => None,
     }
 }
 
@@ -178,14 +179,26 @@ pub fn project_config(dir: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Cria o `.ai-jail` do projeto em `dir` com [`init_project`] se ainda não
+/// houver um; devolve o caminho quando criou. Na pasta do usuário não faz
+/// nada, porque ali o `.ai-jail` é a configuração global.
+pub fn ensure_project(dir: &Path, agent: &str) -> Result<Option<PathBuf>> {
+    if project_config(dir).is_some() || config_path().is_ok_and(|p| p == dir.join(CONFIG_FILE)) {
+        return Ok(None);
+    }
+    init_project(dir, agent).map(Some)
+}
+
 /// Cria (ou atualiza) o `.ai-jail` do projeto em `dir` para o `agent`, com o
 /// `ai-jail --init`. A partir daí o `terraforme cli` roda nele dentro do AI
 /// Jail, e as regras do projeto (pastas, hosts liberados) ficam nesse arquivo.
 pub fn init_project(dir: &Path, agent: &str) -> Result<PathBuf> {
     let (bin, _) = require()?;
+    // Só a mensagem "Config saved" sai no stdout; os erros continuam no stderr.
     let status = Command::new(&bin)
         .args(["--init", agent])
         .current_dir(dir)
+        .stdout(std::process::Stdio::null())
         .status()
         .with_context(|| format!("falha ao executar `{}`", bin.display()))?;
     if !status.success() {
@@ -254,6 +267,9 @@ pub(crate) fn wrap(
     for path in maps {
         command.arg("--map").arg(path);
     }
+    for map in tool_maps() {
+        command.arg("--map").arg(map);
+    }
     let mut ports = Vec::new();
     for (ext, plugin) in plugins {
         command.arg("--map").arg(plugin);
@@ -320,6 +336,44 @@ fn mounts(ext: Extension) -> Result<Mounts> {
     Ok(mounts)
 }
 
+/// Ferramentas que o ai-jail não monta sozinho (ele só traz toolchains como o
+/// cargo e o node do nvm): o bun. O instalador dele põe tudo em `~/.bun/bin`,
+/// que fica fora do `PATH` na sandbox (a home é privada e o `.bashrc` não
+/// entra), então os binários vão para `~/.local/bin`, que já está no `PATH`.
+fn tool_maps() -> Vec<OsString> {
+    let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let bun_dir = env::var_os("BUN_INSTALL")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| home.join(".bun"), PathBuf::from)
+        .join("bin");
+    let bin_dir = home.join(".local/bin");
+    let mut maps = Vec::new();
+    for name in ["bun", "bunx"] {
+        let Some(source) = find_in_path(name).or_else(|| {
+            let path = bun_dir.join(name);
+            path.is_file().then_some(path)
+        }) else {
+            continue;
+        };
+        maps.push(bind_into(&source, &bin_dir));
+    }
+    maps
+}
+
+/// Argumento do `--map` que monta `source` em `dir` com o mesmo nome
+/// (`ORIGEM:DESTINO`), ou só `source` quando ele já está em `dir`.
+fn bind_into(source: &Path, dir: &Path) -> OsString {
+    if source.parent() == Some(dir) {
+        return source.as_os_str().to_owned();
+    }
+    let mut map = source.as_os_str().to_owned();
+    map.push(":");
+    map.push(dir.join(source.file_name().unwrap_or_default()));
+    map
+}
+
 fn data_dir() -> Result<PathBuf> {
     xdg_dir("XDG_DATA_HOME", ".local/share")
 }
@@ -376,6 +430,19 @@ mod tests {
     }
 
     #[test]
+    fn binds_tools_into_dir() {
+        let bin = Path::new("/home/u/.local/bin");
+        assert_eq!(
+            bind_into(Path::new("/home/u/.bun/bin/bun"), bin),
+            "/home/u/.bun/bin/bun:/home/u/.local/bin/bun"
+        );
+        assert_eq!(
+            bind_into(Path::new("/home/u/.local/bin/bun"), bin),
+            "/home/u/.local/bin/bun"
+        );
+    }
+
+    #[test]
     fn compares_versions() {
         assert_eq!(parse_version("2.10.0"), Some((2, 10)));
         assert_eq!(parse_version("v1.20.1"), Some((1, 20)));
@@ -428,6 +495,8 @@ mod tests {
         assert_eq!(project_config(&dir), None);
         fs::write(dir.join(CONFIG_FILE), "command = [\"claude\"]\n").unwrap();
         assert_eq!(project_config(&dir), Some(dir.join(CONFIG_FILE)));
+        // Projeto já configurado: nada a fazer (nem roda o ai-jail).
+        assert_eq!(ensure_project(&dir, "claude").unwrap(), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

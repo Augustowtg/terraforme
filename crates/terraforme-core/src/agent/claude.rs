@@ -11,19 +11,23 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use super::{Adapter, Mode, Setup, home, read_json, write_json};
 use crate::config::Config;
 use crate::extension::Extension;
-use crate::limits::Limit;
-use crate::usage::Usage;
+use crate::limits::Quota;
+use crate::usage::{Usage, parse_timestamp};
 
 /// Nome do servidor MCP que o `ai-memory setup` registra no Claude.
 const AI_MEMORY_MCP: &str = "ai-memory";
+/// Uso do plano do usuário, o mesmo dado do `/usage` (assinaturas Pro/Max/Team).
+const PLAN_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+/// Espera pela resposta da API de uso do plano.
+const PLAN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Claude Code (`claude`).
 pub struct Claude;
@@ -83,6 +87,11 @@ impl Adapter for Claude {
                 .to_string()
                 .into(),
         );
+
+        // Repassa CLAUDE_CONFIG_DIR ao AI Jail quando foi definida (conta por space).
+        if let Some(dir) = env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
+            setup.env.push(("CLAUDE_CONFIG_DIR", dir));
+        }
         Ok(setup)
     }
 
@@ -105,8 +114,10 @@ impl Adapter for Claude {
         crate::usage::collect(cwd, launched, session)
     }
 
-    fn plan_limits(&self) -> Result<Option<Vec<Limit>>> {
-        crate::limits::fetch_claude_plan()
+    /// Uso do plano em `api.anthropic.com/api/oauth/usage`, no formato
+    /// padronizado do terraforme; `None` sem login OAuth.
+    fn quota(&self) -> Result<Option<Vec<Quota>>> {
+        fetch_quota()
     }
 
     fn forget(&self, ext: Extension) -> Result<()> {
@@ -294,6 +305,79 @@ fn claude_json_path(claude_dir: &Path) -> Result<PathBuf> {
     Ok(home()?.join(".claude.json"))
 }
 
+/// Limites do plano do Claude Code; `None` sem login OAuth. O token vem do
+/// `.credentials.json` (nunca é renovado aqui: trocar o refresh token quebraria
+/// o próprio Claude Code).
+fn fetch_quota() -> Result<Option<Vec<Quota>>> {
+    let path = claude_config_dir()?.join(".credentials.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    let credentials: Value =
+        serde_json::from_str(&text).with_context(|| format!("lendo {}", path.display()))?;
+    let Some(oauth) = credentials.get("claudeAiOauth") else {
+        return Ok(None);
+    };
+    let token = oauth
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .context("credenciais sem accessToken")?;
+    let now_ms = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    if oauth
+        .get("expiresAt")
+        .and_then(Value::as_u64)
+        .is_some_and(|exp| exp <= now_ms)
+    {
+        bail!("token OAuth expirado; abra o claude para renová-lo");
+    }
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(PLAN_TIMEOUT))
+        .build()
+        .into();
+    let body = agent
+        .get(PLAN_URL)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header(
+            "User-Agent",
+            concat!("terraforme/", env!("CARGO_PKG_VERSION")),
+        )
+        .call()
+        .context("consultando o uso do plano")?
+        .body_mut()
+        .read_to_string()?;
+    let body: Value = serde_json::from_str(&body).context("resposta inválida da API")?;
+    Ok(Some(parse_quota(&body)))
+}
+
+/// Cada janela do plano (`utilization` + `resets_at`) vira uma [`Quota`]; a
+/// API não informa tokens, só a porcentagem já usada.
+fn parse_quota(body: &Value) -> Vec<Quota> {
+    [
+        ("five_hour", "Sessão · 5h"),
+        ("seven_day", "Semana · todos os modelos"),
+        ("seven_day_opus", "Semana · Opus"),
+        ("seven_day_sonnet", "Semana · Sonnet"),
+    ]
+    .into_iter()
+    .filter_map(|(key, label)| {
+        let limit = body.get(key)?;
+        Some(Quota {
+            label: label.into(),
+            used: Some(limit.get("utilization")?.as_f64()?),
+            tokens: None,
+            resets_at: limit
+                .get("resets_at")
+                .and_then(Value::as_str)
+                .and_then(parse_timestamp),
+        })
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +391,23 @@ mod tests {
         assert!(Claude.picks_session(&args(&["-r"])));
         assert!(Claude.picks_session(&args(&["--resume=abc"])));
         assert!(Claude.picks_session(&args(&["--session-id", "x"])));
+    }
+
+    #[test]
+    fn parses_plan_quota() {
+        let body: Value = serde_json::from_str(
+            r#"{"five_hour":{"utilization":10.0,"resets_at":"1970-01-01T01:00:00.240634+00:00"},
+                "seven_day":{"utilization":48.0,"resets_at":null},
+                "seven_day_opus":null}"#,
+        )
+        .unwrap();
+        let quota = parse_quota(&body);
+        assert_eq!(quota.len(), 2);
+        assert_eq!(quota[0].label, "Sessão · 5h");
+        assert_eq!(quota[0].used, Some(10.0));
+        assert_eq!(quota[0].resets_at, Some(3600));
+        assert_eq!(quota[1].used, Some(48.0));
+        assert_eq!(quota[1].resets_at, None);
     }
 
     fn settings() -> Value {
