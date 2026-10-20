@@ -4,7 +4,7 @@ mod term;
 use std::io::{self, IsTerminal, Write};
 
 use anyhow::{Context, Result, bail};
-use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::Shell;
 use terraforme_core::accounts::{ClaudeAccounts, is_default_dir};
 use terraforme_core::agent::{self, CliMode, Mode, Provider};
@@ -18,11 +18,35 @@ use terraforme_core::status::{self, Component, State};
 
 /// terraforme — CLI
 #[derive(Debug, Parser)]
-#[command(name = "terraforme", version, about, long_about = None)]
+#[command(
+    name = "terraforme",
+    version,
+    about = "Instala e gerencia as extensões dos agentes de IA (RTK, AI Memory, AI Jail) e abre o \
+             agente no terminal do terraforme",
+    long_about = None,
+    disable_help_flag = true,
+    disable_version_flag = true,
+    disable_help_subcommand = true,
+    after_help = "\
+Primeiros passos:
+  terraforme setup           configura a máquina (agentes, extensões e skills)
+  terraforme cli             abre o agente no terminal do terraforme
+  terraforme space --save    salva a pasta atual como space
+
+Ajuda de um comando: terraforme <comando> --help"
+)]
 struct Cli {
     /// Exibe mensagens detalhadas
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, display_order = 900)]
     verbose: bool,
+
+    /// Mostra a ajuda (-h resume, --help detalha)
+    #[arg(short, long, global = true, action = ArgAction::Help, display_order = 901)]
+    help: Option<bool>,
+
+    /// Mostra a versão
+    #[arg(short = 'V', long, action = ArgAction::Version, display_order = 902)]
+    version: Option<bool>,
 
     /// Sem subcomando, mostra a ajuda.
     #[command(subcommand)]
@@ -31,157 +55,230 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Exibe a versão do terraforme
-    Version,
-    /// Verifica as extensões (RTK, AI Memory, AI Jail)
-    Status,
-    /// Configura a máquina do zero, em três passos: identifica os agentes, instala e
-    /// configura as extensões neles e instala as skills embutidas
+    /// Configura a máquina do zero: identifica (ou instala) os agentes, instala e configura as
+    /// extensões neles e instala as skills embutidas
     Setup,
-    /// Instala, atualiza, configura, remove ou mostra as extensões (RTK, AI Memory, AI Jail)
-    #[command(group(
-        ArgGroup::new("action")
-            .required(true)
-            .args(["install", "update", "setup", "project", "default", "delete", "status"]),
-    ))]
-    Extension {
-        /// Extensão alvo; obrigatória com --update e --delete
-        #[arg(value_enum)]
-        name: Option<Extension>,
-        /// Instala a extensão (sem nome: instala todas)
-        #[arg(long)]
-        install: bool,
-        /// Atualiza a extensão para a última versão
-        #[arg(long, requires = "name")]
-        update: bool,
-        /// Refaz a configuração da extensão (no AI Jail: confere a versão e o bwrap e completa o ~/.ai-jail)
-        #[arg(long)]
-        setup: bool,
-        /// AI Jail: cria o .ai-jail na pasta atual, e o `terraforme cli` passa a rodar no AI Jail nela
-        #[arg(long)]
-        project: bool,
-        /// AI Jail: liga (true) ou desliga (false) a sandbox por padrão no `terraforme cli`
-        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set)]
-        default: Option<bool>,
-        /// Remove a extensão e a configuração dela nos agentes
-        #[arg(long, requires = "name")]
-        delete: bool,
-        /// Mostra o status e a versão (sem nome: todas)
-        #[arg(long)]
-        status: bool,
-        /// Não pede confirmação ao remover
-        #[arg(short, long)]
-        yes: bool,
-    },
-    /// Mostra ou altera a configuração (agente, modo de início, sandbox e orçamento)
-    Config {
-        /// Agente padrão do `terraforme cli` (claude, opencode). Sem valor: lista e pergunta
-        #[arg(long, visible_alias = "agente", alias = "provider", value_enum, num_args = 0..=1)]
-        agent: Option<Option<Provider>>,
-        /// Modo de início do `terraforme cli` (eco, custom, security, high). Sem valor: lista e pergunta
-        #[arg(long, value_enum, num_args = 0..=1, conflicts_with_all = ["mode", "jail"])]
-        cli: Option<Option<CliMode>>,
-        /// Define o modo padrão do `terraforme cli` (none, eco, high, hybrid; custom: pergunta as extensões)
-        #[arg(long, value_enum)]
-        mode: Option<ModeChoice>,
-        /// Roda o agente dentro do AI Jail (sandbox) por padrão
-        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set)]
-        jail: Option<bool>,
-        /// Orçamento de tokens nas últimas 5h, para a aba de consumo sem login OAuth (0 remove)
-        #[arg(long = "budget-5h", value_name = "TOKENS")]
-        budget_five_hours: Option<u64>,
-        /// Orçamento de tokens nos últimos 7 dias (0 remove)
-        #[arg(long = "budget-week", value_name = "TOKENS")]
-        budget_week: Option<u64>,
-        /// Liga a UI web do daemon MCP (instâncias de todos os spaces e mensagens entre elas)
-        #[arg(long = "mcp-ui", value_name = "BOOL", action = clap::ArgAction::Set)]
-        mcp_ui: Option<bool>,
-        /// Claude Code: lista as contas (sem valor) ou registra/atualiza uma conta
-        /// (`NOME=PASTA`, ex.: `--account work=~/.claude-work`).
-        /// A pasta é o `CLAUDE_CONFIG_DIR` da conta (credenciais, configurações, sessões).
-        #[arg(long, value_name = "NOME=PASTA", num_args = 0..=1)]
-        account: Option<Option<String>>,
-        /// Claude Code: remove a conta registrada
-        #[arg(long, value_name = "NOME", conflicts_with = "account")]
-        remove_account: Option<String>,
-    },
-    /// Abre o agente de IA no terminal do terraforme (aba de consumo de tokens)
-    #[command(group(ArgGroup::new("modo").args(["eco", "high", "hybrid"])))]
+    /// Abre o agente de IA no terminal do terraforme (abas do agente, consumo, extensões e config)
+    #[command(
+        group(ArgGroup::new("modo").args(["eco", "high", "hybrid"])),
+        after_help = "\
+Sem opções, usa o agente, o modo e a sandbox do space atual ou do `terraforme config`.
+
+Exemplos:
+  terraforme cli                    abre com as preferências salvas
+  terraforme cli --hybrid --jail    RTK + AI Memory, dentro do AI Jail
+  terraforme cli -n 3               três instâncias, cada uma numa sub-aba
+  terraforme cli --agent opencode   usa o OpenCode só nesta sessão
+  terraforme cli -- --continue      repassa --continue ao agente
+
+Dentro do terminal, Ctrl+Alt+K lista os atalhos e F10 sai."
+    )]
     Cli {
-        /// Agente desta sessão, qualquer que seja o padrão (`terraforme config --agent`)
-        #[arg(long, visible_alias = "agente", value_enum)]
+        /// Agente desta sessão (o padrão vem de `terraforme config --agent`)
+        #[arg(long, visible_alias = "agente", value_enum, help_heading = "Sessão")]
         agent: Option<Provider>,
-        /// Só RTK (economia de tokens)
-        #[arg(long)]
-        eco: bool,
-        /// Só AI Memory (memória entre sessões)
-        #[arg(long)]
-        high: bool,
-        /// RTK + AI Memory
-        #[arg(long)]
-        hybrid: bool,
-        /// Roda o agente dentro do AI Jail (sandbox), qualquer que seja o padrão
-        #[arg(long, conflicts_with = "no_jail")]
-        jail: bool,
-        /// Roda o agente fora do AI Jail, qualquer que seja o padrão
-        #[arg(long)]
-        no_jail: bool,
         /// Abre o agente direto, sem o terminal do terraforme
-        #[arg(long)]
+        #[arg(long, help_heading = "Sessão")]
         plain: bool,
-        /// Instâncias do agente abertas ao iniciar, cada uma numa sub-aba da aba do agente (F12 abre mais)
+        /// Quantas instâncias do agente abrir, cada uma numa sub-aba (Ctrl+Alt+N abre mais)
         #[arg(
             short = 'n',
             long,
+            value_name = "N",
             default_value_t = 1,
             conflicts_with = "plain",
+            help_heading = "Sessão",
             value_parser = clap::value_parser!(u8).range(1..=term::MAX_INSTANCES as i64),
         )]
         instances: u8,
+        /// Só RTK (economia de tokens)
+        #[arg(long, help_heading = "Modo (sobrepõe o padrão)")]
+        eco: bool,
+        /// Só AI Memory (memória entre sessões)
+        #[arg(long, help_heading = "Modo (sobrepõe o padrão)")]
+        high: bool,
+        /// RTK + AI Memory
+        #[arg(long, help_heading = "Modo (sobrepõe o padrão)")]
+        hybrid: bool,
+        /// Roda o agente dentro do AI Jail
+        #[arg(
+            long,
+            conflicts_with = "no_jail",
+            help_heading = "Sandbox (sobrepõe o padrão)"
+        )]
+        jail: bool,
+        /// Roda o agente fora do AI Jail
+        #[arg(long, help_heading = "Sandbox (sobrepõe o padrão)")]
+        no_jail: bool,
         /// Argumentos repassados ao agente, depois de `--` (ex.: -- --continue)
-        #[arg(last = true)]
+        #[arg(last = true, value_name = "ARGS")]
         args: Vec<String>,
     },
-    /// Pastas de trabalho salvas com um nome: lista e abre um shell no space escolhido
-    #[command(group(ArgGroup::new("acao").args(["save", "delete", "list", "path", "rename"])))]
+    /// Pastas de trabalho com nome: abre um shell no space, salva, renomeia, remove e guarda
+    /// preferências do `terraforme cli` para cada um
+    #[command(
+        group(ArgGroup::new("acao").args(["save", "delete", "list", "path", "rename"])),
+        after_help = "\
+Exemplos:
+  terraforme space                         lista e pergunta qual abrir
+  terraforme space api                     abre um shell na pasta do space api
+  terraforme space api --save              salva a pasta atual como api
+  terraforme space api --mode eco --jail true
+  terraforme space api --reset             volta às preferências do config
+  cd \"$(terraforme space api --path)\"      muda de pasta no shell atual (bash/zsh)
+  cd (terraforme space api --path)         idem no PowerShell"
+    )]
     Space {
-        /// Nome do space (ou número da lista); sem ele, pergunta
+        /// Nome do space (ou número na lista); sem ele, lista e pergunta
+        #[arg(value_name = "NOME", help_heading = "Argumentos")]
         name: Option<String>,
-        /// Salva a pasta atual como space (sem nome, pergunta)
-        #[arg(long)]
+        /// Salva a pasta atual como space (sem NOME, pergunta)
+        #[arg(long, help_heading = "Ações")]
         save: bool,
-        /// Remove o space
-        #[arg(long, requires = "name")]
-        delete: bool,
-        /// Renomeia o space (ex.: terraforme space antigo --rename novo)
-        #[arg(long, value_name = "NOVO-NOME", requires = "name")]
-        rename: Option<String>,
         /// Só lista os spaces salvos
-        #[arg(long)]
+        #[arg(long, help_heading = "Ações")]
         list: bool,
-        /// Imprime a pasta em vez de abrir um shell (ex.: cd "$(terraforme space --path)")
-        #[arg(long)]
+        /// Imprime a pasta em vez de abrir um shell
+        #[arg(long, help_heading = "Ações")]
         path: bool,
-        /// Preferência do space: agente do `terraforme cli` aberto nele
-        #[arg(long, visible_alias = "agente", value_enum, conflicts_with_all = ["delete", "list", "path", "rename"])]
+        /// Renomeia o space
+        #[arg(
+            long,
+            value_name = "NOVO-NOME",
+            requires = "name",
+            help_heading = "Ações"
+        )]
+        rename: Option<String>,
+        /// Remove o space (a pasta não é apagada)
+        #[arg(long, requires = "name", help_heading = "Ações")]
+        delete: bool,
+        /// Não pede confirmação ao substituir ou remover
+        #[arg(short, long, help_heading = "Ações")]
+        yes: bool,
+        /// Agente aberto pelo `terraforme cli` neste space
+        #[arg(long, visible_alias = "agente", value_enum, conflicts_with_all = ["delete", "list", "path", "rename"], help_heading = "Preferências do space")]
         agent: Option<Provider>,
-        /// Preferência do space: modo do `terraforme cli` aberto nele
-        #[arg(long, value_enum, conflicts_with_all = ["delete", "list", "path", "rename"])]
+        /// Modo (extensões) do `terraforme cli` neste space
+        #[arg(long, value_enum, conflicts_with_all = ["delete", "list", "path", "rename"], help_heading = "Preferências do space")]
         mode: Option<Mode>,
-        /// Preferência do space: roda (true) ou não (false) o agente no AI Jail
-        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, conflicts_with_all = ["delete", "list", "path", "rename"])]
+        /// Roda (true) ou não (false) o agente no AI Jail neste space
+        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, conflicts_with_all = ["delete", "list", "path", "rename"], help_heading = "Preferências do space")]
         jail: Option<bool>,
-        /// Preferência do space: conta do Claude Code (nome registrado em `terraforme config --account`)
-        #[arg(long, conflicts_with_all = ["delete", "list", "path", "rename"])]
+        /// Conta do Claude Code neste space (registrada com `terraforme config --account`)
+        #[arg(long, value_name = "NOME", conflicts_with_all = ["delete", "list", "path", "rename"], help_heading = "Preferências do space")]
         account: Option<String>,
         /// Apaga as preferências do space (volta ao `terraforme config`)
-        #[arg(long, conflicts_with_all = ["delete", "list", "path", "rename"])]
+        #[arg(long, conflicts_with_all = ["delete", "list", "path", "rename"], help_heading = "Preferências do space")]
         reset: bool,
-        /// Não pede confirmação ao substituir ou remover
-        #[arg(short, long)]
-        yes: bool,
     },
-    /// Atualiza o próprio terraforme: git pull no repositório, compila e reinstala (instalado por release: baixa a última)
+    /// Mostra a configuração padrão do `terraforme cli`; com opções, altera e salva
+    #[command(after_help = "\
+Exemplos:
+  terraforme config                          mostra a configuração atual
+  terraforme config --agent                  lista os agentes e pergunta o padrão
+  terraforme config --cli                    lista os presets de início e pergunta
+  terraforme config --cli security           sempre no AI Jail, sem extensões
+  terraforme config --mode hybrid --jail false
+  terraforme config --mcp-ui true            liga a UI web (a URL aparece no config)
+  terraforme config --account work=$HOME/.claude-work
+
+Preferências por pasta: `terraforme space <nome> --mode/--jail/--agent/--account`.")]
+    Config {
+        /// Agente padrão. Sem valor: lista e pergunta
+        #[arg(long, visible_alias = "agente", alias = "provider", value_enum, num_args = 0..=1, help_heading = "Agente e modo")]
+        agent: Option<Option<Provider>>,
+        /// Preset de início: define o modo e a sandbox de uma vez. Sem valor: lista e pergunta
+        #[arg(long, value_name = "PRESET", value_enum, num_args = 0..=1, conflicts_with_all = ["mode", "jail"], help_heading = "Agente e modo")]
+        cli: Option<Option<CliMode>>,
+        /// Modo padrão: quais extensões usar (custom pergunta)
+        #[arg(long, value_enum, help_heading = "Agente e modo")]
+        mode: Option<ModeChoice>,
+        /// Roda (true) ou não (false) o agente dentro do AI Jail por padrão
+        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, help_heading = "Agente e modo")]
+        jail: Option<bool>,
+        /// Limite de tokens em 5h, usado na aba Consumo quando o agente não informa o do plano (0 remove)
+        #[arg(
+            long = "budget-5h",
+            value_name = "TOKENS",
+            help_heading = "Orçamento de tokens"
+        )]
+        budget_five_hours: Option<u64>,
+        /// Limite de tokens em 7 dias, idem (0 remove)
+        #[arg(
+            long = "budget-week",
+            value_name = "TOKENS",
+            help_heading = "Orçamento de tokens"
+        )]
+        budget_week: Option<u64>,
+        /// Liga (true) ou desliga (false) a UI web: instâncias de todos os spaces e mensagens
+        /// entre elas
+        #[arg(long = "mcp-ui", value_name = "BOOL", action = clap::ArgAction::Set, help_heading = "UI web")]
+        mcp_ui: Option<bool>,
+        /// Sem valor, lista as contas; com `NOME=PASTA`, registra ou atualiza uma. A pasta é o
+        /// `CLAUDE_CONFIG_DIR` da conta (credenciais, configurações, sessões) e precisa existir
+        #[arg(long, value_name = "NOME=PASTA", num_args = 0..=1, help_heading = "Contas do Claude Code")]
+        account: Option<Option<String>>,
+        /// Remove a conta registrada
+        #[arg(
+            long,
+            value_name = "NOME",
+            conflicts_with = "account",
+            help_heading = "Contas do Claude Code"
+        )]
+        remove_account: Option<String>,
+    },
+    /// Instala, atualiza, reconfigura, remove ou mostra as extensões (RTK, AI Memory, AI Jail)
+    #[command(
+        override_usage = "terraforme extension [NOME] <AÇÃO> [-y]",
+        group(
+            ArgGroup::new("action")
+                .required(true)
+                .args(["install", "update", "setup", "project", "default", "delete", "status"]),
+        ),
+        after_help = "\
+Exemplos:
+  terraforme extension --status            status e versão de todas
+  terraforme extension --install           instala todas
+  terraforme extension rtk --update        atualiza o RTK
+  terraforme extension ai-memory --setup   refaz a configuração do AI Memory
+  terraforme extension ai-memory --delete  remove o AI Memory
+  terraforme extension ai-jail --project   sandbox na pasta atual
+  terraforme extension ai-jail --default true"
+    )]
+    Extension {
+        /// Extensão alvo (sem ela, a ação vale para todas); obrigatória com --update e --delete
+        #[arg(value_enum, value_name = "NOME", help_heading = "Argumentos")]
+        name: Option<Extension>,
+        /// Mostra o status e a versão
+        #[arg(long, help_heading = "Ações")]
+        status: bool,
+        /// Instala
+        #[arg(long, help_heading = "Ações")]
+        install: bool,
+        /// Atualiza para a última versão
+        #[arg(long, requires = "name", help_heading = "Ações")]
+        update: bool,
+        /// Refaz a configuração nos agentes (sem NOME, pergunta; no AI Jail, confere a versão e o
+        /// bwrap e completa o ~/.ai-jail)
+        #[arg(long, help_heading = "Ações")]
+        setup: bool,
+        /// Remove a extensão e a configuração dela nos agentes
+        #[arg(long, requires = "name", help_heading = "Ações")]
+        delete: bool,
+        /// Não pede confirmação ao remover
+        #[arg(short, long, help_heading = "Ações")]
+        yes: bool,
+        /// Cria o .ai-jail na pasta atual: o `terraforme cli` passa a rodar no AI Jail nela
+        #[arg(long, help_heading = "Só do AI Jail")]
+        project: bool,
+        /// Liga (true) ou desliga (false) o AI Jail por padrão no `terraforme cli`
+        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, help_heading = "Só do AI Jail")]
+        default: Option<bool>,
+    },
+    /// Mostra se as extensões estão instaladas e em que versão
+    Status,
+    /// Atualiza o terraforme: no repositório, git pull + compila + reinstala; instalado por
+    /// release, baixa a última versão
     Upgrade {
         /// Repositório do terraforme (padrão: onde este binário foi compilado)
         #[arg(long, env = "TERRAFORME_REPO", value_name = "DIR")]
@@ -193,21 +290,64 @@ enum Command {
         #[arg(long)]
         no_pull: bool,
     },
+    /// Mostra a versão do terraforme
+    Version,
+    /// Gera o script de autocompletar do shell
+    #[command(after_help = "\
+Exemplo:
+  terraforme completions bash > ~/.local/share/bash-completion/completions/terraforme")]
+    Completions {
+        /// Shell alvo
+        #[arg(value_enum, value_name = "SHELL", help_heading = "Argumentos")]
+        shell: Shell,
+    },
+    /// Mostra a ajuda de um comando (ex.: terraforme help space)
+    Help {
+        /// Comando (e subcomandos) cuja ajuda mostrar
+        #[arg(value_name = "COMANDO", help_heading = "Argumentos")]
+        command: Vec<String>,
+    },
     /// Exibe uma saudação
+    #[command(hide = true)]
     Greet {
         /// Nome a saudar
         #[arg(default_value = "mundo")]
         name: String,
     },
-    /// Gera o script de autocompletar para o shell (bash, zsh, fish, powershell, elvish)
-    Completions {
-        #[arg(value_enum)]
-        shell: Shell,
-    },
+}
+
+/// Títulos da ajuda em português: o modelo (`Uso:`), o grupo dos subcomandos (`Comandos`) e o
+/// das opções sem grupo próprio (`Opções`), em todos os subcomandos.
+fn localized(cmd: clap::Command) -> clap::Command {
+    const TEMPLATE: &str = "\
+{before-help}{about-with-newline}
+Uso: {usage}
+
+{all-args}{after-help}";
+    cmd.help_template(TEMPLATE)
+        .subcommand_help_heading("Comandos")
+        .subcommand_value_name("COMANDO")
+        .mut_args(|arg| {
+            if arg.get_help_heading().is_some() {
+                arg
+            } else if arg.is_positional() {
+                arg.help_heading("Argumentos")
+            } else {
+                arg.help_heading("Opções")
+            }
+        })
+        .mut_subcommands(localized)
+}
+
+fn cli_command() -> clap::Command {
+    localized(Cli::command())
 }
 
 fn main() {
-    let cli = Cli::try_parse().unwrap_or_else(|err| usage_error(&err));
+    let cli = cli_command()
+        .try_get_matches()
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+        .unwrap_or_else(|err| usage_error(&err));
     if let Err(err) = run(cli) {
         eprintln!("Error: {err:?}");
         let help = help_for(std::env::args().skip(1));
@@ -243,7 +383,7 @@ fn usage_error(err: &clap::Error) -> ! {
 /// O subcomando mais interno citado nos argumentos (ou o comando raiz), já com o nome completo
 /// (`terraforme space`) para o `Usage:` da ajuda.
 fn help_for(args: impl IntoIterator<Item = String>) -> clap::Command {
-    let mut cmd = Cli::command();
+    let mut cmd = cli_command();
     cmd.build();
     for arg in args {
         if arg == "--" {
@@ -262,7 +402,7 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     let Some(command) = cli.command else {
-        Cli::command().print_help()?;
+        cli_command().print_help()?;
         return Ok(());
     };
 
@@ -400,9 +540,13 @@ fn run(cli: Cli) -> Result<()> {
             dist,
             no_pull,
         } => upgrade(repo, dist, no_pull)?,
+        Command::Help { command } => {
+            let mut cmd = help_for(command);
+            cmd.print_long_help()?;
+        }
         Command::Greet { name } => println!("{}", terraforme_core::greeting(&name)),
         Command::Completions { shell } => {
-            let mut cmd = Cli::command();
+            let mut cmd = cli_command();
             let bin = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, bin, &mut io::stdout());
         }
@@ -576,7 +720,7 @@ fn config(
     let ui = match mcp::LockFile::read() {
         Ok(Some(lock)) if config.mcp.ui => format!("ligada · {}", mcp::ui_url(&lock)),
         _ if config.mcp.ui => "ligada (abre com o terraforme cli)".into(),
-        _ => "desligada (--mcp-ui true liga)".into(),
+        _ => "desligada (liga com `terraforme config --mcp-ui true`)".into(),
     };
     println!("  UI web    {ui}");
     Ok(())
@@ -785,6 +929,20 @@ impl Choice {
             .jail
             .or(prefs.jail)
             .unwrap_or(config.jail || project.is_some());
+        // Sem AI Jail no Windows: o `.ai-jail` de um projeto versionado, o
+        // config ou o space não podem impedir a sessão; só o `--jail` pedido
+        // agora vira erro.
+        let mut prepared = Vec::new();
+        let jail = if jail && !jail::is_supported() {
+            if self.jail == Some(true) {
+                bail!("o AI Jail não roda no Windows — use-o dentro do WSL2 ou rode sem --jail");
+            }
+            prepared
+                .push("AI Jail ignorado: ele não roda no Windows (use-o dentro do WSL2)".into());
+            false
+        } else {
+            jail
+        };
 
         // Conta do Claude Code: define CLAUDE_CONFIG_DIR antes de prepare()
         // para que Claude::setup() use a pasta certa (hooks, credenciais, MCP).
@@ -808,7 +966,6 @@ impl Choice {
 
         // Extensões que precisam de algo no projeto (ex.: o `.ai-jail`) são
         // preparadas aqui, só na primeira vez em cada pasta.
-        let mut prepared = Vec::new();
         if let Some(dir) = &cwd
             && let Some(adapter) = provider.adapter()
         {
@@ -912,6 +1069,8 @@ fn exec(mut command: std::process::Command) -> Result<()> {
 
 #[cfg(not(unix))]
 fn exec(mut command: std::process::Command) -> Result<()> {
+    // Sem `exec`, o terraforme espera o filho: o Ctrl+C é dele.
+    terraforme_core::platform::ignore_ctrl_c();
     let status = command
         .status()
         .with_context(|| format!("falha ao iniciar {}", command.get_program().display()))?;
@@ -1600,7 +1759,7 @@ mod tests {
 
     #[test]
     fn cli_definition_is_valid() {
-        Cli::command().debug_assert();
+        cli_command().debug_assert();
     }
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {

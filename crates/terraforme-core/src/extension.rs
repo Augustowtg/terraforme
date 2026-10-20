@@ -19,9 +19,11 @@ use crate::status::{Component, State, find_in_path, run_ok, version_of};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum Extension {
-    /// RTK — Rust Token Killer.
+    /// RTK — economia de tokens.
     Rtk,
+    /// AI Memory — memória entre sessões.
     AiMemory,
+    /// AI Jail — sandbox do sistema para o agente.
     AiJail,
 }
 
@@ -458,7 +460,7 @@ fn require_ours(ext: Extension, path: &Path) -> Result<()> {
 }
 
 fn home() -> Option<PathBuf> {
-    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+    crate::agent::home().ok()
 }
 
 fn run(cmd: &mut Command) -> Result<()> {

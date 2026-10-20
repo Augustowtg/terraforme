@@ -2651,13 +2651,17 @@ fn plain(text: &Text) -> String {
 }
 
 /// Copia para a área de transferência pelo terminal (OSC 52, que funciona
-/// também por SSH) e, no Linux, por `wl-copy`/`xclip`/`xsel` quando houver
-/// (o GNOME Terminal ignora o OSC 52). Devolve se uma ferramenta copiou.
+/// também por SSH) e pelo sistema: `clip.exe` no Windows (o console clássico
+/// ignora o OSC 52) e `wl-copy`/`xclip`/`xsel` no Linux (o GNOME Terminal
+/// também ignora). Devolve se uma ferramenta copiou.
 fn clipboard(text: &str) -> bool {
     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
     let mut stdout = std::io::stdout();
     let _ = write!(stdout, "\x1b]52;c;{encoded}\x07");
     let _ = stdout.flush();
+    if cfg!(windows) {
+        return pipe_to("clip", &[], &utf16le_with_bom(text));
+    }
     if !cfg!(target_os = "linux") {
         return false;
     }
@@ -2668,29 +2672,40 @@ fn clipboard(text: &str) -> bool {
         ("xclip", &["-selection", "clipboard"], x11),
         ("xsel", &["--clipboard", "--input"], x11),
     ];
-    for (bin, args, available) in tools {
-        if !available {
-            continue;
-        }
-        let Ok(mut child) = Command::new(bin)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
-            continue;
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        // A ferramenta fica servindo a área de transferência: não espera.
-        thread::spawn(move || {
-            let _ = child.wait();
-        });
-        return true;
+    tools
+        .into_iter()
+        .any(|(bin, args, available)| available && pipe_to(bin, args, text.as_bytes()))
+}
+
+/// Manda `input` para a entrada de `bin`, sem esperar: as ferramentas do
+/// Linux ficam servindo a área de transferência. Devolve se ele iniciou.
+fn pipe_to(bin: &str, args: &[&str], input: &[u8]) -> bool {
+    let Ok(mut child) = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input);
     }
-    false
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    true
+}
+
+/// O `clip.exe` lê a entrada na página de código do console, a não ser que
+/// ela venha em UTF-16LE com BOM.
+fn utf16le_with_bom(text: &str) -> Vec<u8> {
+    [0xFEFF_u16]
+        .into_iter()
+        .chain(text.encode_utf16())
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 
 /// `1234567` → `1.234.567`.
@@ -2891,6 +2906,12 @@ fn builder(command: &Command, cwd: &std::path::Path) -> CommandBuilder {
     builder
 }
 
+/// `Ctrl+Alt` com um caractere que não é letra é AltGr no Windows (`@`, `\`,
+/// `{`, `/` no ABNT2…): Ctrl+Alt+letra continua sendo atalho.
+fn is_altgr(c: char, ctrl: bool, alt: bool) -> bool {
+    ctrl && alt && !c.is_ascii_alphabetic()
+}
+
 /// Bytes que um terminal xterm enviaria para a tecla.
 fn key_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -2917,6 +2938,10 @@ fn key_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     };
 
     let bytes = match key.code {
+        // AltGr no Windows chega como Ctrl+Alt com o caractere já pronto.
+        KeyCode::Char(c) if cfg!(windows) && is_altgr(c, ctrl, alt) => {
+            return c.to_string().into_bytes();
+        }
         KeyCode::Char(c) if ctrl => match c.to_ascii_lowercase() {
             c @ 'a'..='z' => vec![c as u8 - b'a' + 1],
             ' ' | '@' | '2' => vec![0],
@@ -2968,6 +2993,21 @@ fn key_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_input_is_utf16le_with_bom() {
+        assert_eq!(utf16le_with_bom("aç"), [0xFF, 0xFE, b'a', 0, 0xE7, 0]);
+    }
+
+    #[test]
+    fn altgr_symbols_are_not_control_keys() {
+        assert!(is_altgr('@', true, true));
+        assert!(is_altgr('\\', true, true));
+        assert!(is_altgr('€', true, true));
+        assert!(!is_altgr('n', true, true));
+        assert!(!is_altgr('@', true, false));
+        assert!(!is_altgr('@', false, true));
+    }
 
     #[test]
     fn wheel_bytes_follow_the_agent_encoding() {

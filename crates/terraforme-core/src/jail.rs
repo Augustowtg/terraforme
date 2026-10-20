@@ -94,11 +94,14 @@ pub fn default_config() -> String {
     text
 }
 
+/// O ai-jail só existe para Linux e macOS; no Windows, só dentro do WSL2.
+pub fn is_supported() -> bool {
+    !cfg!(windows)
+}
+
 /// `~/.ai-jail`, a configuração global (confiável) do ai-jail.
 pub fn config_path() -> Result<PathBuf> {
-    env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(CONFIG_FILE))
-        .context("pasta do usuário não encontrada")
+    Ok(crate::agent::home()?.join(CONFIG_FILE))
 }
 
 /// Cria o `~/.ai-jail` com [`default_config`] se ainda não existir. Devolve
@@ -345,7 +348,7 @@ fn mounts(ext: Extension) -> Result<Mounts> {
 /// que fica fora do `PATH` na sandbox (a home é privada e o `.bashrc` não
 /// entra), então os binários vão para `~/.local/bin`, que já está no `PATH`.
 fn tool_maps() -> Vec<OsString> {
-    let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+    let Ok(home) = crate::agent::home() else {
         return Vec::new();
     };
     let bun_dir = env::var_os("BUN_INSTALL")
@@ -390,9 +393,7 @@ fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
     if let Some(dir) = env::var_os(var).filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
-    env::var_os("HOME")
-        .map(|h| Path::new(&h).join(fallback))
-        .context("pasta do usuário não encontrada")
+    Ok(crate::agent::home()?.join(fallback))
 }
 
 /// Portas de `127.0.0.1:PORTA` e `localhost:PORTA` citadas no texto.
@@ -433,6 +434,8 @@ mod tests {
         assert!(loopback_ports("http://example.com:443").is_empty());
     }
 
+    // Caminhos Unix: no Windows `join` usa `\` (e lá não há AI Jail).
+    #[cfg(unix)]
     #[test]
     fn binds_tools_into_dir() {
         let bin = Path::new("/home/u/.local/bin");

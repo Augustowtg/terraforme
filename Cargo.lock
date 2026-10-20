@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "terraforme-cli"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "terraforme-core"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2017,11 +2017,12 @@ dependencies = [
  "serde_json",
  "toml",
  "ureq",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "terraforme-mcp"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "axum",

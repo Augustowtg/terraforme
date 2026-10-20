@@ -17,3 +17,10 @@ clap = { workspace = true, optional = true }
 [features]
 # Deriva `clap::ValueEnum` nos enums públicos, para a CLI usá-los direto.
 clap = ["dep:clap"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+] }

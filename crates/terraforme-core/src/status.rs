@@ -87,15 +87,42 @@ pub(crate) fn run_ok(bin: &Path, args: &[&str]) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-fn exe_name(bin: &str) -> String {
-    format!("{bin}{}", env::consts::EXE_SUFFIX)
+/// Nomes que `bin` pode ter no disco. No Windows, um para cada extensão do
+/// `PATHEXT`: CLIs instaladas pelo npm (o OpenCode, por exemplo) são `.cmd`.
+fn exe_names(bin: &str) -> Vec<String> {
+    if !cfg!(windows) {
+        return vec![bin.to_string()];
+    }
+    let exts = env::var("PATHEXT")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+    exe_names_with(bin, &exts)
 }
 
+fn exe_names_with(bin: &str, pathext: &str) -> Vec<String> {
+    pathext
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| ext.starts_with('.') && ext.len() > 1)
+        .map(|ext| format!("{bin}{}", ext.to_ascii_lowercase()))
+        .collect()
+}
+
+/// Caminho completo de `bin` no `PATH`. Rode sempre o caminho devolvido: o
+/// `Command` do Windows só completa `.exe`, então `opencode` sozinho não
+/// acharia o `opencode.cmd`.
 pub(crate) fn find_in_path(bin: &str) -> Option<PathBuf> {
-    let name = exe_name(bin);
+    let names = exe_names(bin);
     env::split_paths(&env::var_os("PATH")?)
-        .map(|dir| dir.join(&name))
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|p| p.is_file())
+}
+
+/// `Command` para `bin`, pelo caminho encontrado no `PATH` (ou o nome, para o
+/// erro de "não encontrado" sair do próprio `spawn`).
+pub(crate) fn command(bin: &str) -> Command {
+    Command::new(find_in_path(bin).unwrap_or_else(|| PathBuf::from(bin)))
 }
 
 #[cfg(test)]
@@ -112,6 +139,20 @@ mod tests {
         );
         assert_eq!(parse_version("opencode v2.0.32"), Some("2.0.32".into()));
         assert_eq!(parse_version(""), None);
+    }
+
+    #[test]
+    fn pathext_gives_one_name_per_extension() {
+        assert_eq!(
+            exe_names_with("opencode", ".COM;.EXE;;.CMD; .Bat "),
+            [
+                "opencode.com",
+                "opencode.exe",
+                "opencode.cmd",
+                "opencode.bat"
+            ]
+        );
+        assert!(exe_names_with("opencode", "").is_empty());
     }
 
     #[test]

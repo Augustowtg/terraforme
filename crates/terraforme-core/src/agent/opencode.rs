@@ -201,7 +201,7 @@ struct StatsMeta {
 }
 
 fn fetch_stats(cwd: &Path, days: &str, project_only: bool) -> Result<(Summary, StatsMeta)> {
-    let mut command = Command::new("opencode");
+    let mut command = crate::status::command("opencode");
     command
         .args(["stats", "--json", "--days", days, "--models", "--cost"])
         .current_dir(cwd);

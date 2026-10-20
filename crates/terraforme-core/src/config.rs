@@ -89,7 +89,7 @@ impl Config {
             env::var_os("XDG_CONFIG_HOME")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
-                .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+                .or_else(|| crate::agent::home().ok().map(|h| h.join(".config")))
         };
         Ok(base
             .context("não foi possível descobrir a pasta de configuração do usuário")?

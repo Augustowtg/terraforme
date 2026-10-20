@@ -5,6 +5,46 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.20.1 - 2026-10-20
+
+### Alterado
+
+- Ajuda dos comandos mais clara: títulos em português (`Uso`, `Comandos`, `Opções`), opções de
+  cada comando agrupadas (ex.: `Sessão`, `Modo`, `Sandbox` no `cli`; `Ações` e `Preferências do
+  space` no `space`; `Agente e modo`, `Orçamento de tokens`, `UI web` e `Contas do Claude Code` no
+  `config`), exemplos de uso no fim de cada ajuda e comandos ordenados pelo fluxo de uso (`setup`,
+  `cli`, `space`, `config`…). Os valores de agente, modo, preset e extensão ganharam descrição, e o
+  Cursor, ainda não implementado, saiu da lista.
+- `terraforme help <comando>` mostra a ajuda completa do comando; `greet` saiu da lista de comandos.
+- CI (`ci.yml`): `cargo fmt`, `clippy` e `cargo test` no Linux e no Windows a cada push/PR (#15).
+
+### Corrigido
+
+- Windows: agentes instalados pelo npm (`opencode.cmd`, inclusive o que o `terraforme setup`
+  instala) são encontrados — a busca no `PATH` segue o `PATHEXT` e roda o caminho completo (#4).
+- Windows: caracteres digitados com AltGr (`@`, `\`, `{`, `[`, `/` e `?` no ABNT2…) chegam ao
+  agente como o próprio caractere, não como `Ctrl+Alt` (#5).
+- Windows: `Ctrl+C` no agente do `--plain`, no shell do `space` ou no `upgrade` não derruba mais o
+  terraforme deixando o filho disputando o console (#6).
+- Windows: o `terraforme-mcp` encerra depois que o último `terraforme cli` sai — a checagem de PID
+  vivo existia só no Linux (#7).
+- O `terraforme-mcp` não cai mais junto com a janela/terminal que o iniciou (sem console no
+  Windows, grupo de processos próprio no Linux) e é procurado primeiro ao lado do `terraforme` (#8).
+- Windows: um `.ai-jail` no projeto (ou `jail = true` no config/space) não impede mais o
+  `terraforme cli`: o AI Jail é ignorado com um aviso; só `--jail` explícito dá erro (#9).
+- Nomes de space que não podem ser pasta no Windows (`: * ? " < > |`, `CON`, `NUL`, `COM1`…,
+  final com ponto) são recusados (#10).
+- Windows: o space é reconhecido mesmo com a caixa do caminho diferente (`c:\proj` = `C:\Proj`)
+  (#11).
+- Windows: `terraforme space` abre o PowerShell (`pwsh`, depois `powershell`) em vez do `cmd.exe`
+  quando ele existe; a ajuda mostra o `cd` do PowerShell (#12).
+- Windows: copiar na TUI também usa o `clip.exe`, para o console clássico, que ignora o OSC 52
+  (#13).
+- Caminhos do AI Jail, do lock do MCP e do config usam a pasta do usuário certa em cada sistema
+  (não leem `HOME` direto) (#14).
+- O exemplo de `config --account` usava `~/.claude-work`, que o shell não expande depois do `=`:
+  agora é `work=$HOME/.claude-work`.
+
 ## 0.20.0 - 2026-10-20
 
 ### Adicionado

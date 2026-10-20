@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::SystemTime;
 
 use super::{Adapter, Mode, Setup, home};
@@ -250,7 +249,7 @@ fn collect_usage(cwd: &Path, launched: SystemTime) -> Result<Usage> {
 /// Limites da conta segundo o próprio agente: `agy -p "/usage" --output-format
 /// json` é o `/usage` da interface do `agy` e responde sem chamar o modelo.
 fn fetch_quota() -> Result<Vec<Quota>> {
-    let out = Command::new("agy")
+    let out = crate::status::command("agy")
         .args([
             "-p",
             "/usage",
