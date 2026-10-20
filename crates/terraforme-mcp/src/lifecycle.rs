@@ -7,6 +7,8 @@ use std::time::Instant;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
+use crate::hub::Hub;
+
 pub struct ClientInfo {
     pub pid: u32,
     pub control_addr: String,
@@ -18,14 +20,17 @@ pub struct ClientRegistry {
     clients: Arc<Mutex<HashMap<String, ClientInfo>>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     grace_seconds: u64,
+    /// Instâncias dos clientes, removidas junto com eles.
+    hub: Hub,
 }
 
 impl ClientRegistry {
-    pub fn new(grace_seconds: u64, shutdown_tx: Arc<watch::Sender<bool>>) -> Self {
+    pub fn new(grace_seconds: u64, shutdown_tx: Arc<watch::Sender<bool>>, hub: Hub) -> Self {
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
             shutdown_tx,
             grace_seconds,
+            hub,
         }
     }
 
@@ -47,6 +52,7 @@ impl ClientRegistry {
         if map.remove(client_id).is_some() {
             info!(client_id, "cliente desconectado");
         }
+        self.hub.drop_client(client_id);
         let count = map.len();
         drop(map);
         if count == 0 {
@@ -92,6 +98,7 @@ impl ClientRegistry {
         let clients = self.clients.clone();
         let shutdown_tx = self.shutdown_tx.clone();
         let grace = self.grace_seconds;
+        let hub = self.hub.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -109,6 +116,7 @@ impl ClientRegistry {
                 for id in &dead {
                     warn!(client_id = id, "PID morto — removendo cliente");
                     map.remove(id);
+                    hub.drop_client(id);
                 }
                 let count = map.len();
                 drop(map);

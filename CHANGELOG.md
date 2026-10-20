@@ -5,6 +5,29 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.19.0 - 2026-10-20
+
+### Adicionado
+
+- `install.windows.ps1`: instala, atualiza (`-Update`), compila com o perfil `dist` (`-Dist`) e
+  remove (`-Uninstall`) o terraforme no Windows, em `%LOCALAPPDATA%\Programs\terraforme\bin`
+  (ou `$env:PREFIX\bin`), adicionando a pasta ao `PATH` do usuário. O binário em uso é renomeado
+  para `.old` antes da troca, já que o Windows não deixa sobrescrever um `.exe` em execução.
+- `terraforme upgrade` também funciona no Windows (roda o `install.windows.ps1 -Update`).
+- Conversa entre instâncias: toda instância do `terraforme cli`, em qualquer space, se registra no
+  daemon `terraforme-mcp` (apelido `<space>/<agente>-<n>`), e o Claude Code ganha o MCP `terraforme`
+  com `list_instances` e `send_message` — a mensagem chega como prompt na instância de destino.
+- UI web das instâncias e mensagens em `http://127.0.0.1:<porta do daemon>/ui`, ligada com
+  `terraforme config --mcp-ui true` ou na aba Config (`[mcp] ui`); permite mandar mensagem a
+  qualquer instância.
+
+### Corrigido
+
+- O servidor de controle da TUI lê o pedido inteiro (antes, um corpo grande podia ser cortado) e o
+  resultado de um subagente com quebras de linha vira JSON válido.
+- Com o AI Jail, a porta do daemon MCP é liberada para o agente.
+- O `install.linux.sh` também instala o `terraforme-mcp`; sem ele no PATH o daemon nunca subia.
+
 ## 0.18.0 - 2026-10-20
 
 ### Removido

@@ -290,6 +290,24 @@ terraforme space api --reset          # apaga as preferências
 
 Aba **Config** da TUI: dentro de um space, agente, modo e AI Jail gravam nas preferências do space (criando o `preferences.toml` se não existir) em vez do `config.toml` global — os valores exibidos são os efetivos da sessão e o rodapé diz onde cada campo vale; orçamento, TUI e MCP continuam no `config.toml`. `Delete` num campo tira o override do space e volta ao valor global.
 
+### Conversa entre instâncias
+
+Todas as instâncias abertas pelo `terraforme cli`, em qualquer space, se registram no daemon `terraforme-mcp` com um apelido `<space ou pasta>/<agente>-<n>` (ex.: `api/claude-2`). O Claude Code de cada instância recebe o MCP `terraforme` com as ferramentas:
+
+- `list_instances` — instâncias abertas (apelido, agente, space, pasta; a própria vem com `you=true`);
+- `send_message(to, text)` — a mensagem é digitada como prompt na instância de destino, com o apelido de quem mandou para a resposta (`to="web"` escreve só na UI).
+
+Basta pedir a uma instância algo como "pergunte à `api/claude-1` qual é o formato do endpoint X". As duas ferramentas já vêm liberadas na sessão (não pedem confirmação).
+
+**UI web** (desligada por padrão): instâncias agrupadas por space, histórico de mensagens e um formulário para mandar mensagem a qualquer instância.
+
+```bash
+terraforme config --mcp-ui true    # ou: aba Config → "UI web das instâncias"
+terraforme config                  # mostra o endereço: http://127.0.0.1:<porta>/ui
+```
+
+A porta é a do daemon (muda quando ele reinicia). Ligar/desligar vale na hora, sem reiniciar o daemon.
+
 ---
 
 ## 8. Atualização do próprio terraforme
@@ -322,6 +340,7 @@ O perfil `release` (padrão) omite LTO para compilação mais rápida; o perfil 
 │   └── terraforme-cli/       # binário terraforme: clap (main.rs) + TUI (term.rs)
 ├── docs/                     # esta documentação
 ├── install.linux.sh          # instala/atualiza/remove o binário em ~/.local/bin
+├── install.windows.ps1       # o mesmo no Windows (%LOCALAPPDATA%\Programs\terraforme\bin)
 ├── rust-toolchain.toml       # Rust 1.98.0 + rustfmt + clippy
 ├── Cargo.toml                # workspace (version 0.9.0)
 ├── CHANGELOG.md              # changelog

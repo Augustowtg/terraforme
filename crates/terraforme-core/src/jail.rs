@@ -288,6 +288,10 @@ pub(crate) fn wrap(
             }
         }
     }
+    // O daemon MCP do terraforme (conversa entre instâncias, subagentes).
+    if let Ok(Some(lock)) = crate::mcp::LockFile::read() {
+        ports.push(lock.port);
+    }
     ports.sort_unstable();
     ports.dedup();
     for port in ports {

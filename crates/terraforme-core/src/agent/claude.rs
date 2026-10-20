@@ -9,6 +9,7 @@
 //! sessão (`deniedMcpServers`) e o plugin traz uma cópia quando o modo o usa.
 
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -24,6 +25,8 @@ use crate::usage::{Usage, parse_timestamp};
 
 /// Nome do servidor MCP que o `ai-memory setup` registra no Claude.
 const AI_MEMORY_MCP: &str = "ai-memory";
+/// Nome do servidor do daemon MCP do terraforme nas sessões.
+const TERRAFORME_MCP: &str = "terraforme";
 /// Uso do plano do usuário, o mesmo dado do `/usage` (assinaturas Pro/Max/Team).
 const PLAN_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// Espera pela resposta da API de uso do plano.
@@ -83,9 +86,16 @@ impl Adapter for Claude {
         // O MCP global do AI Memory valeria em todos os modos; o do plugin o substitui.
         setup.args.push("--settings".into());
         setup.args.push(
-            json!({ "deniedMcpServers": [{ "serverName": AI_MEMORY_MCP }] })
-                .to_string()
-                .into(),
+            json!({
+                "deniedMcpServers": [{ "serverName": AI_MEMORY_MCP }],
+                // A conversa entre instâncias não pede confirmação a cada mensagem.
+                "permissions": { "allow": [
+                    format!("mcp__{TERRAFORME_MCP}__list_instances"),
+                    format!("mcp__{TERRAFORME_MCP}__send_message"),
+                ] },
+            })
+            .to_string()
+            .into(),
         );
 
         // Repassa CLAUDE_CONFIG_DIR ao AI Jail quando foi definida (conta por space).
@@ -93,6 +103,19 @@ impl Adapter for Claude {
             setup.env.push(("CLAUDE_CONFIG_DIR", dir));
         }
         Ok(setup)
+    }
+
+    fn mcp_args(&self, url: &str, headers: &[(&str, &str)]) -> Option<Vec<OsString>> {
+        let headers: Map<String, Value> = headers
+            .iter()
+            .map(|(name, value)| ((*name).into(), (*value).into()))
+            .collect();
+        let config = json!({ "mcpServers": { TERRAFORME_MCP: {
+            "type": "http",
+            "url": url,
+            "headers": headers,
+        } } });
+        Some(vec!["--mcp-config".into(), config.to_string().into()])
     }
 
     fn session_args(&self, session: &str) -> Option<Vec<String>> {

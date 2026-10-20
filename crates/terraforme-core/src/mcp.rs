@@ -22,6 +22,8 @@ pub struct McpConfig {
     pub subagent_timeout_seconds: u64,
     /// Máximo de subagentes simultâneos.
     pub max_simultaneous_subagents: usize,
+    /// Serve a UI web das instâncias e mensagens em `http://127.0.0.1:<porta>/ui`.
+    pub ui: bool,
 }
 
 impl Default for McpConfig {
@@ -30,6 +32,7 @@ impl Default for McpConfig {
             grace_seconds: 5,
             subagent_timeout_seconds: 300,
             max_simultaneous_subagents: 3,
+            ui: false,
         }
     }
 }
@@ -114,6 +117,11 @@ impl LockFile {
             true
         }
     }
+}
+
+/// Endereço da UI web do daemon que está rodando.
+pub fn ui_url(lock: &LockFile) -> String {
+    format!("http://127.0.0.1:{}/ui", lock.port)
 }
 
 /// `true` se o daemon está rodando e aceitando conexões.

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instâncias terraforme</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --border: #e2e2dc; --accent: #2f6f4f; --accent-soft: #e3f0e8;
+    --error: #b3261e; --error-soft: #fbe9e7; --web: #6a4fb3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --panel: #1f1f1d; --text: #ececea; --muted: #9a9a94;
+      --border: #33332f; --accent: #6fcf97; --accent-soft: #1f3a2b;
+      --error: #f28b82; --error-soft: #3b1f1d; --web: #b39ddb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 16px; border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0; font-size: 18px; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  main {
+    display: grid; grid-template-columns: minmax(240px, 320px) 1fr;
+    gap: 16px; padding: 16px; max-width: 1200px; margin: 0 auto;
+  }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+  section {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; min-width: 0;
+  }
+  h2 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase;
+       letter-spacing: .04em; color: var(--muted); }
+  .space { margin: 12px 0 4px; font-weight: 600; }
+  .space:first-of-type { margin-top: 0; }
+  .instance {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    background: none; border: 1px solid transparent; border-radius: 6px;
+    padding: 6px 8px; color: inherit; font: inherit;
+  }
+  .instance:hover, .instance.selected { border-color: var(--accent); background: var(--accent-soft); }
+  .instance code { font-size: 13px; }
+  .instance small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+  .empty { color: var(--muted); }
+  #messages { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+  .message { border-left: 3px solid var(--accent); padding: 4px 10px; }
+  .message.web { border-color: var(--web); }
+  .message.failed { border-color: var(--error); background: var(--error-soft); }
+  .message .route { font-size: 12px; color: var(--muted); }
+  .message .route code { color: var(--text); }
+  .message pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+  .message .error { color: var(--error); font-size: 12px; }
+  form { display: grid; gap: 8px; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+  select, textarea, button {
+    font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+  }
+  textarea { min-height: 72px; resize: vertical; }
+  button[type=submit] { background: var(--accent); color: var(--panel); border-color: var(--accent); cursor: pointer; justify-self: start; }
+  button[disabled] { opacity: .5; cursor: default; }
+  #feedback { font-size: 12px; color: var(--muted); min-height: 1em; }
+  #feedback.error { color: var(--error); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Instâncias terraforme</h1>
+  <span class="meta" id="meta">carregando…</span>
+</header>
+<main>
+  <section>
+    <h2>Instâncias</h2>
+    <div id="instances"><p class="empty">Nenhuma instância aberta.</p></div>
+  </section>
+  <section>
+    <h2>Mensagens</h2>
+    <div id="messages"><p class="empty">Nenhuma mensagem ainda.</p></div>
+    <form id="send">
+      <select id="to" required aria-label="Destino"></select>
+      <textarea id="text" required placeholder="Mensagem para a instância (chega como prompt)"></textarea>
+      <button type="submit">Enviar</button>
+      <div id="feedback"></div>
+    </form>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...children) => {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+};
+const time = (secs) => new Date(secs * 1000).toLocaleTimeString();
+let lastMessages = -1;
+let lastInstances = "";
+
+function renderInstances(instances) {
+  const key = JSON.stringify(instances.map((i) => i.handle));
+  if (key === lastInstances) return;
+  lastInstances = key;
+  const box = $("instances");
+  const to = $("to");
+  const chosen = to.value;
+  box.replaceChildren();
+  to.replaceChildren();
+  if (!instances.length) {
+    box.append(el("p", { className: "empty", textContent: "Nenhuma instância aberta." }));
+  }
+  const groups = new Map();
+  for (const i of instances) {
+    const name = i.space || "(fora de space)";
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(i);
+  }
+  for (const [space, list] of groups) {
+    box.append(el("div", { className: "space", textContent: space }));
+    for (const i of list) {
+      const button = el("button", { type: "button", className: "instance" },
+        el("code", { textContent: i.handle }),
+        el("small", { textContent: `${i.agent} · ${i.cwd} · desde ${time(i.since)}` }));
+      button.addEventListener("click", () => { to.value = i.handle; highlight(); $("text").focus(); });
+      button.dataset.handle = i.handle;
+      box.append(button);
+      to.append(el("option", { value: i.handle, textContent: i.handle }));
+    }
+  }
+  if ([...to.options].some((o) => o.value === chosen)) to.value = chosen;
+  $("send").querySelector("button").disabled = !instances.length;
+  highlight();
+}
+
+function highlight() {
+  for (const b of document.querySelectorAll(".instance")) {
+    b.classList.toggle("selected", b.dataset.handle === $("to").value);
+  }
+}
+
+function renderMessages(messages) {
+  if (messages.length === lastMessages) return;
+  lastMessages = messages.length;
+  const box = $("messages");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.replaceChildren();
+  if (!messages.length) {
+    box.append(el("p", { className: "empty", textContent: "Nenhuma mensagem ainda." }));
+  }
+  for (const m of messages) {
+    const web = m.from === "web" || m.to === "web";
+    const item = el("div", { className: "message" + (web ? " web" : "") + (m.error ? " failed" : "") },
+      el("div", { className: "route" },
+        `${time(m.at)} · `, el("code", { textContent: m.from === "web" ? "você (UI)" : m.from }),
+        " → ", el("code", { textContent: m.to === "web" ? "UI" : m.to })),
+      el("pre", { textContent: m.text }));
+    if (m.error) item.append(el("div", { className: "error", textContent: m.error }));
+    box.append(item);
+  }
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("/api/state");
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json();
+    $("meta").textContent = `terraforme-mcp v${data.version} · ${data.instances.length} instância(s) · atualiza a cada 2s`;
+    renderInstances(data.instances);
+    renderMessages(data.messages);
+  } catch (err) {
+    $("meta").textContent = `sem conexão com o daemon: ${err.message}`;
+  }
+}
+
+$("to").addEventListener("change", highlight);
+$("send").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const feedback = $("feedback");
+  feedback.className = "";
+  feedback.textContent = "enviando…";
+  try {
+    const response = await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: $("to").value, text: $("text").value }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || response.statusText);
+    feedback.textContent = `entregue para ${data.to}`;
+    $("text").value = "";
+  } catch (err) {
+    feedback.className = "error";
+    feedback.textContent = err.message;
+  }
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

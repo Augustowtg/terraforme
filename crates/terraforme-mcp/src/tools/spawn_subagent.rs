@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::server::AppState;
+use crate::tools::http_post_json;
 
 pub struct SpawnResult {
     pub output: String,
@@ -119,24 +120,4 @@ pub async fn handle(client_id: &str, params: &Value, state: &AppState) -> Result
         "output": result.output,
         "exit_code": result.exit_code
     }))
-}
-
-/// POST JSON para `http://{addr}{path}` usando TCP cru (sem dependência extra).
-async fn http_post_json(addr: &str, path: &str, body: &Value) -> anyhow::Result<()> {
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpStream;
-
-    let body_str = serde_json::to_string(body)?;
-    let request = format!(
-        "POST {} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        path,
-        addr,
-        body_str.len(),
-        body_str
-    );
-
-    let mut stream = TcpStream::connect(addr).await?;
-    stream.write_all(request.as_bytes()).await?;
-    stream.shutdown().await?;
-    Ok(())
 }

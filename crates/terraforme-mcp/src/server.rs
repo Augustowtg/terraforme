@@ -6,19 +6,23 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
 
 use terraforme_core::mcp::McpConfig;
 
+use crate::hub::{Hub, Registration};
 use crate::lifecycle::ClientRegistry;
+use crate::tools::messaging;
 use crate::tools::spawn_subagent::{self, PendingSpawns, SpawnResult};
 
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Arc<ClientRegistry>,
+    /// Instâncias de todos os terminais e as mensagens entre elas.
+    pub hub: Hub,
     pub pending_spawns: PendingSpawns,
     pub config: McpConfig,
 }
@@ -31,6 +35,11 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/heartbeat", post(heartbeat_handler))
         .route("/unregister", post(unregister_handler))
         .route("/spawn-result", post(spawn_result_handler))
+        .route("/instances/register", post(register_instance_handler))
+        .route("/instances/unregister", post(unregister_instance_handler))
+        .route("/ui", get(crate::ui::page))
+        .route("/api/state", get(crate::ui::state))
+        .route("/api/send", post(crate::ui::send))
         .with_state(state)
 }
 
@@ -90,11 +99,15 @@ async fn mcp_handler(
     headers: HeaderMap,
     Json(req): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
-    let client_id = headers
-        .get("x-client-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
+    let client_id = header("x-client-id");
+    let instance_id = header("x-instance-id");
 
     let id = req.id.unwrap_or(Value::Null);
     let params = req.params.unwrap_or(Value::Null);
@@ -103,7 +116,11 @@ async fn mcp_handler(
         "initialize" => JsonRpcResponse::ok(
             id,
             json!({
-                "protocolVersion": "2024-11-05",
+                // Ecoa a versão pedida pelo cliente: o daemon só usa tools.
+                "protocolVersion": params
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or("2024-11-05"),
                 "capabilities": { "tools": {} },
                 "serverInfo": {
                     "name": "terraforme-mcp",
@@ -111,32 +128,40 @@ async fn mcp_handler(
                 }
             }),
         ),
-        "notifications/initialized" => {
-            return (StatusCode::NO_CONTENT, axum::body::Body::empty()).into_response();
+        "ping" => JsonRpcResponse::ok(id, json!({})),
+        method if method.starts_with("notifications/") => {
+            return (StatusCode::ACCEPTED, axum::body::Body::empty()).into_response();
         }
-        "tools/list" => JsonRpcResponse::ok(id, json!({ "tools": [spawn_subagent::definition()] })),
+        "tools/list" => {
+            let mut tools = messaging::definitions();
+            tools.push(spawn_subagent::definition());
+            JsonRpcResponse::ok(id, json!({ "tools": tools }))
+        }
         "tools/call" => {
             let name = params
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let args = params.get("arguments").unwrap_or(&Value::Null);
-            match name {
-                "spawn_subagent" => match spawn_subagent::handle(&client_id, args, &state).await {
-                    Ok(result) => JsonRpcResponse::ok(
-                        id,
-                        json!({
-                            "content": [{
-                                "type": "text",
-                                "text": result.to_string()
-                            }]
-                        }),
-                    ),
-                    Err(e) => JsonRpcResponse::err(id, -32000, e),
-                },
+            let result = match name {
+                "spawn_subagent" => spawn_subagent::handle(&client_id, args, &state).await,
+                "list_instances" => Ok(messaging::list_instances(&instance_id, &state)),
+                "send_message" => messaging::send_message(&instance_id, args, &state).await,
                 other => {
-                    JsonRpcResponse::err(id, -32601, format!("ferramenta '{other}' não encontrada"))
+                    let message = format!("ferramenta '{other}' não encontrada");
+                    return Json(JsonRpcResponse::err(id, -32601, message)).into_response();
                 }
+            };
+            match result {
+                Ok(result) => JsonRpcResponse::ok(
+                    id,
+                    json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
+                ),
+                // Erro da ferramenta: o agente vê o motivo e pode corrigir a chamada.
+                Err(e) => JsonRpcResponse::ok(
+                    id,
+                    json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
+                ),
             }
         }
         other => {
@@ -211,5 +236,26 @@ async fn spawn_result_handler(
             exit_code: body.exit_code,
         });
     }
+    StatusCode::OK
+}
+
+async fn register_instance_handler(
+    State(state): State<AppState>,
+    Json(body): Json<Registration>,
+) -> StatusCode {
+    state.hub.register(body);
+    StatusCode::OK
+}
+
+#[derive(Deserialize)]
+struct UnregisterInstanceBody {
+    instance_id: String,
+}
+
+async fn unregister_instance_handler(
+    State(state): State<AppState>,
+    Json(body): Json<UnregisterInstanceBody>,
+) -> StatusCode {
+    state.hub.unregister(&body.instance_id);
     StatusCode::OK
 }

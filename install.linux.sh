@@ -14,6 +14,9 @@ BIN_NAME="terraforme"
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="$PREFIX/bin"
 TARGET="$BIN_DIR/$BIN_NAME"
+# Daemon MCP compartilhado (conversa entre instâncias, subagentes), iniciado
+# pelo `terraforme cli` a partir do PATH.
+MCP_TARGET="$BIN_DIR/terraforme-mcp"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -54,7 +57,7 @@ run() {
 
 if $uninstall; then
     [[ -e "$TARGET" ]] || die "$TARGET não existe — nada a remover."
-    run rm -f "$TARGET"
+    run rm -f "$TARGET" "$MCP_TARGET"
     ok "Removido $TARGET"
     exit 0
 fi
@@ -79,7 +82,7 @@ if [[ -x "$TARGET" ]]; then
 fi
 
 info "Compilando $BIN_NAME (perfil $profile)…"
-cargo build --profile "$profile" --locked -p terraforme-cli --manifest-path "$REPO_DIR/Cargo.toml"
+cargo build --profile "$profile" --locked -p terraforme-cli -p terraforme-mcp --manifest-path "$REPO_DIR/Cargo.toml"
 
 # Copia para um arquivo temporário e troca com `mv`: substituir o binário no
 # lugar falha ("Text file busy") se houver um `terraforme` rodando.
@@ -87,6 +90,11 @@ info "Instalando em $TARGET"
 run mkdir -p "$BIN_DIR"
 run install -m 755 "$REPO_DIR/target/$profile/$BIN_NAME" "$TARGET.new"
 run mv -f "$TARGET.new" "$TARGET"
+run install -m 755 "$REPO_DIR/target/$profile/terraforme-mcp" "$MCP_TARGET.new"
+run mv -f "$MCP_TARGET.new" "$MCP_TARGET"
+if pgrep -x terraforme-mcp >/dev/null 2>&1; then
+    printf '\033[1;33m!\033[0m terraforme-mcp antigo ainda rodando: feche os `terraforme cli` abertos (ou `pkill -x terraforme-mcp`) para o novo subir.\n'
+fi
 
 current="$("$TARGET" version)"
 if [[ "$previous" == "$current" ]]; then

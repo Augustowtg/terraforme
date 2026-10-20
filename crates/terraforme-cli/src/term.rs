@@ -98,6 +98,19 @@ pub struct Options {
     pub mcp_lock: Option<terraforme_core::mcp::LockFile>,
     /// Id único desta instância da CLI para o registro no MCP.
     pub client_id: String,
+    /// Space da pasta atual, mostrado no apelido das instâncias no MCP.
+    pub space: Option<String>,
+}
+
+/// Ligação do terminal com o daemon MCP: cada instância se registra nele (e
+/// some ao fechar) e recebe as mensagens das outras pelo servidor de controle.
+struct Link {
+    port: u16,
+    client_id: String,
+    /// Endereço do servidor de controle deste terminal.
+    control_addr: String,
+    agent: String,
+    space: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +302,12 @@ enum Msg {
     },
     /// Pedido de spawn de subagente vindo do MCP via servidor de controle.
     SpawnSubagent(SpawnRequest),
+    /// Mensagem de outra instância (ou da UI web) para uma instância daqui.
+    Message {
+        instance_id: String,
+        from: String,
+        text: String,
+    },
 }
 
 enum Content {
@@ -363,9 +382,10 @@ enum Field {
     McpGrace,
     McpTimeout,
     McpMax,
+    McpUi,
 }
 
-const FIELDS: [Field; 11] = [
+const FIELDS: [Field; 12] = [
     Field::Provider,
     Field::Mode,
     Field::Jail,
@@ -377,6 +397,7 @@ const FIELDS: [Field; 11] = [
     Field::McpGrace,
     Field::McpTimeout,
     Field::McpMax,
+    Field::McpUi,
 ];
 
 const MODES: [Mode; 4] = [Mode::None, Mode::Eco, Mode::High, Mode::Hybrid];
@@ -390,7 +411,7 @@ impl Field {
             }
             Field::BudgetFiveHours | Field::BudgetWeek => "Orçamento de tokens (aba Consumo)",
             Field::Mouse | Field::CopyOnSelect => "TUI",
-            Field::McpGrace | Field::McpTimeout | Field::McpMax => "Daemon MCP",
+            Field::McpGrace | Field::McpTimeout | Field::McpMax | Field::McpUi => "Daemon MCP",
         }
     }
 
@@ -407,6 +428,7 @@ impl Field {
             Field::McpGrace => "Carência ao sair (s)",
             Field::McpTimeout => "Timeout do subagente (s)",
             Field::McpMax => "Subagentes simultâneos",
+            Field::McpUi => "UI web das instâncias",
         }
     }
 
@@ -447,6 +469,13 @@ impl Field {
             Field::McpGrace => config.mcp.grace_seconds.to_string(),
             Field::McpTimeout => config.mcp.subagent_timeout_seconds.to_string(),
             Field::McpMax => config.mcp.max_simultaneous_subagents.to_string(),
+            // Ligada com o daemon no ar: mostra o endereço.
+            Field::McpUi => match terraforme_core::mcp::LockFile::read() {
+                Ok(Some(lock)) if config.mcp.ui => {
+                    format!("sim · {}", terraforme_core::mcp::ui_url(&lock))
+                }
+                _ => yes(config.mcp.ui),
+            },
         }
     }
 
@@ -468,6 +497,7 @@ impl Field {
             Field::Jail => config.jail = !config.jail,
             Field::Mouse => config.tui.mouse = !config.tui.mouse,
             Field::CopyOnSelect => config.tui.copy_on_select = !config.tui.copy_on_select,
+            Field::McpUi => config.mcp.ui = !config.mcp.ui,
             _ => {}
         }
     }
@@ -553,6 +583,7 @@ impl Field {
             Field::McpMax => {
                 config.mcp.max_simultaneous_subagents = default.mcp.max_simultaneous_subagents
             }
+            Field::McpUi => config.mcp.ui = default.mcp.ui,
         }
     }
 }
@@ -880,9 +911,12 @@ struct Agent {
     output_buf: Vec<u8>,
     /// Porta do MCP para enviar o resultado quando terminar.
     mcp_port: Option<u16>,
+    /// Id da instância no registro do MCP (`None`: não registrada).
+    instance_id: Option<String>,
 }
 
 impl Agent {
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         id: usize,
         adapter: &dyn Adapter,
@@ -890,6 +924,7 @@ impl Agent {
         cwd: &Path,
         body: Rect,
         session_ids: bool,
+        link: Option<&Link>,
         tx: &Sender<Msg>,
     ) -> Result<Agent> {
         let pty = native_pty_system()
@@ -903,6 +938,17 @@ impl Agent {
             if let Some(args) = adapter.session_args(&id) {
                 builder.args(args);
                 session = Some(id);
+            }
+        }
+        let instance_id = link.map(|_| uuid::Uuid::new_v4().to_string());
+        if let (Some(link), Some(instance_id)) = (link, &instance_id) {
+            let url = format!("http://127.0.0.1:{}/", link.port);
+            let headers = [
+                ("x-client-id", link.client_id.as_str()),
+                ("x-instance-id", instance_id.as_str()),
+            ];
+            if let Some(args) = adapter.mcp_args(&url, &headers) {
+                builder.args(args);
             }
         }
         let launched = SystemTime::now();
@@ -930,6 +976,20 @@ impl Agent {
             let _ = tx.send(Msg::Exited(id));
         });
 
+        if let (Some(link), Some(instance_id)) = (link, &instance_id) {
+            let body = serde_json::json!({
+                "instance_id": instance_id,
+                "client_id": link.client_id,
+                "control_addr": link.control_addr,
+                "agent": link.agent,
+                "number": id,
+                "space": link.space,
+                "cwd": cwd.display().to_string(),
+            });
+            let addr = format!("127.0.0.1:{}", link.port);
+            thread::spawn(move || http_post_fire(&addr, "/instances/register", &body.to_string()));
+        }
+
         Ok(Agent {
             id,
             parser: vt100::Parser::new(body.height, body.width, SCROLLBACK),
@@ -943,7 +1003,8 @@ impl Agent {
             booted: Instant::now(),
             spawn_id: None,
             output_buf: Vec::new(),
-            mcp_port: None,
+            mcp_port: link.map(|l| l.port),
+            instance_id,
         })
     }
 
@@ -951,6 +1012,16 @@ impl Agent {
         self.writer.write_all(bytes)?;
         self.writer.flush()?;
         Ok(())
+    }
+
+    /// Põe uma mensagem na fila do prompt pendente (entregue por
+    /// [`Agent::deliver_pending`]).
+    fn queue(&mut self, text: &str) {
+        self.pending = Some(match self.pending.take() {
+            Some(prev) => format!("{prev}\n\n{text}"),
+            None => text.to_string(),
+        });
+        self.deliver_pending();
     }
 
     /// Entrega o prompt pendente ao agente quando ele já
@@ -991,6 +1062,10 @@ impl Agent {
 
 impl Drop for Agent {
     fn drop(&mut self) {
+        if let (Some(port), Some(instance_id)) = (self.mcp_port, &self.instance_id) {
+            let body = serde_json::json!({ "instance_id": instance_id }).to_string();
+            http_post_fire(&format!("127.0.0.1:{port}"), "/instances/unregister", &body);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -1020,6 +1095,8 @@ struct App {
     quit: bool,
     /// Porta do daemon MCP para envio de resultados de subagentes.
     mcp_port: Option<u16>,
+    /// Registro das instâncias no MCP; `None` sem o daemon.
+    link: Option<Link>,
     /// Protocolo de teclado do kitty ligado: `Ctrl+Shift`/`Ctrl+Alt` chegam
     /// distintos e `Shift+Tab` pode seguir para o agente.
     enhanced: bool,
@@ -1044,7 +1121,52 @@ pub fn run(options: Options) -> Result<()> {
 
     let mcp_port = options.mcp_lock.as_ref().map(|l| l.port);
     let client_id = options.client_id.clone();
-    let tui = Config::load().map(|c| c.tui).unwrap_or_default();
+    let config = Config::load().unwrap_or_default();
+    let tui = config.tui;
+
+    // Servidor de controle e registro no MCP, antes das instâncias, que se
+    // registram com o endereço dele.
+    let mut link = None;
+    if let Some(mcp) = mcp_port {
+        let control_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let control_port = control_listener.local_addr()?.port();
+        let control_addr = format!("127.0.0.1:{control_port}");
+
+        let reg_body = serde_json::json!({
+            "client_id": client_id,
+            "pid": std::process::id(),
+            "control_addr": control_addr,
+        });
+        http_post_fire(
+            &format!("127.0.0.1:{mcp}"),
+            "/register",
+            &reg_body.to_string(),
+        );
+
+        // Heartbeat a cada 2s.
+        let hb_client = client_id.clone();
+        thread::spawn(move || {
+            let body = serde_json::json!({ "client_id": hb_client }).to_string();
+            loop {
+                thread::sleep(Duration::from_secs(2));
+                http_post_fire(&format!("127.0.0.1:{mcp}"), "/heartbeat", &body);
+            }
+        });
+
+        // Recebe `POST /spawn` e `POST /message` do MCP.
+        let ctrl_tx = tx.clone();
+        thread::spawn(move || {
+            control_server(control_listener, ctrl_tx);
+        });
+
+        link = Some(Link {
+            port: mcp,
+            client_id: client_id.clone(),
+            control_addr,
+            agent: options.agent.clone(),
+            space: options.space.clone().unwrap_or_default(),
+        });
+    }
 
     let mut app = App {
         agent: options.agent,
@@ -1065,6 +1187,7 @@ pub fn run(options: Options) -> Result<()> {
         tx: tx.clone(),
         quit: false,
         mcp_port,
+        link,
         enhanced: false,
         mouse: tui.mouse,
         copy_on_select: tui.copy_on_select,
@@ -1075,36 +1198,13 @@ pub fn run(options: Options) -> Result<()> {
         app.spawn()?;
     }
 
-    // Inicia servidor de controle e registro no MCP, se disponível.
-    if let Some(mcp) = mcp_port {
-        let control_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let control_port = control_listener.local_addr()?.port();
-        let control_addr = format!("127.0.0.1:{control_port}");
-
-        // Registra no MCP.
-        let reg_body = format!(
-            r#"{{"client_id":"{}","pid":{},"control_addr":"{}"}}"#,
-            client_id,
-            std::process::id(),
-            control_addr
-        );
-        http_post_fire(&format!("127.0.0.1:{mcp}"), "/register", &reg_body);
-
-        // Heartbeat a cada 2s.
-        let hb_client = client_id.clone();
-        thread::spawn(move || {
-            let body = format!(r#"{{"client_id":"{}"}}"#, hb_client);
-            loop {
-                thread::sleep(Duration::from_secs(2));
-                http_post_fire(&format!("127.0.0.1:{mcp}"), "/heartbeat", &body);
-            }
-        });
-
-        // Servidor de controle: recebe POST /spawn do MCP.
-        let ctrl_tx = tx.clone();
-        thread::spawn(move || {
-            control_server(control_listener, ctrl_tx);
-        });
+    if config.mcp.ui
+        && let Some(lock) = &options.mcp_lock
+    {
+        app.flash(format!(
+            "UI das instâncias: {}",
+            terraforme_core::mcp::ui_url(lock)
+        ));
     }
 
     let mut terminal = ratatui::init();
@@ -1172,6 +1272,7 @@ impl App {
             &self.cwd,
             self.body,
             self.session_ids,
+            self.link.as_ref(),
             &self.tx,
         )?;
         self.agents.push(agent);
@@ -1226,7 +1327,17 @@ impl App {
         if !req.model.is_empty() && req.model != "claude-haiku-4-5" {
             command.arg("--model").arg(&req.model);
         }
-        match Agent::spawn(id, self.adapter, &command, &cwd, self.body, false, &self.tx) {
+        // Subagente roda com `--print`: não conversa, então não se registra.
+        match Agent::spawn(
+            id,
+            self.adapter,
+            &command,
+            &cwd,
+            self.body,
+            false,
+            None,
+            &self.tx,
+        ) {
             Ok(mut agent) => {
                 agent.spawn_id = Some(req.spawn_id);
                 agent.mcp_port = self.mcp_port;
@@ -1294,6 +1405,7 @@ impl App {
             &self.cwd,
             self.body,
             self.session_ids,
+            self.link.as_ref(),
             &self.tx,
         ) {
             Ok(agent) => {
@@ -1373,6 +1485,10 @@ impl App {
             // visões do consumo, não os relatórios do RTK).
             if self.deve_atualizar() {
                 self.load(false);
+            }
+            // Mensagens para um agente ocioso (sem saída que dispare a entrega).
+            for agent in &mut self.agents {
+                agent.deliver_pending();
             }
             if self
                 .status
@@ -1480,6 +1596,22 @@ impl App {
                 }
             }
             Msg::SpawnSubagent(req) => self.spawn_subagent(req),
+            Msg::Message {
+                instance_id,
+                from,
+                text,
+            } => {
+                let label = self.agent.clone();
+                if let Some(agent) = self
+                    .agents
+                    .iter_mut()
+                    .find(|a| a.instance_id.as_deref() == Some(instance_id.as_str()))
+                {
+                    agent.queue(&text);
+                    let id = agent.id;
+                    self.flash(format!("✉ {from} → {label} {id}"));
+                }
+            }
         }
     }
 
@@ -2588,44 +2720,75 @@ fn prompt_bytes(instructions: &str) -> Vec<u8> {
     bytes
 }
 
-/// Servidor de controle: recebe `POST /spawn` do MCP e envia `SpawnSubagent`
-/// ao loop da TUI via channel.
+/// Servidor de controle: recebe do MCP `POST /spawn` (subagente) e
+/// `POST /message` (mensagem para uma instância) e os repassa ao loop da TUI.
 fn control_server(listener: std::net::TcpListener, tx: Sender<Msg>) {
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else {
             continue;
         };
-        let mut buf = vec![0u8; 16384];
-        let Ok(n) = stream.read(&mut buf) else {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let Some((path, body)) = read_request(&mut stream) else {
             continue;
         };
-        buf.truncate(n);
-        let raw = match std::str::from_utf8(&buf) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let _ = stream.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else {
+            continue;
         };
-        let body = match raw.find("\r\n\r\n") {
-            Some(pos) => &raw[pos + 4..],
-            None => continue,
-        };
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-            let req = SpawnRequest {
-                spawn_id: v["spawn_id"].as_str().unwrap_or("").to_string(),
-                task: v["task"].as_str().unwrap_or("").to_string(),
-                cwd: v["cwd"].as_str().unwrap_or("").to_string(),
+        let text = |key: &str| v[key].as_str().unwrap_or("").to_string();
+        let msg = match path.as_str() {
+            "/spawn" => Msg::SpawnSubagent(SpawnRequest {
+                spawn_id: text("spawn_id"),
+                task: text("task"),
+                cwd: text("cwd"),
                 model: v
                     .get("model")
                     .and_then(|m| m.as_str())
                     .unwrap_or("claude-haiku-4-5")
                     .to_string(),
-            };
-            if tx.send(Msg::SpawnSubagent(req)).is_err() {
-                break;
-            }
+            }),
+            "/message" => Msg::Message {
+                instance_id: text("instance_id"),
+                from: text("from"),
+                text: text("text"),
+            },
+            _ => continue,
+        };
+        if tx.send(msg).is_err() {
+            break;
         }
-        let _ = stream.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+    }
+}
+
+/// Lê um pedido HTTP/1.0 inteiro: o caminho e o corpo (até o `Content-Length`).
+fn read_request(stream: &mut impl std::io::Read) -> Option<(String, String)> {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut buf).ok()?;
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = std::str::from_utf8(&raw[..end]).ok()?;
+            let path = head.split_whitespace().nth(1)?.to_string();
+            let length = head
+                .lines()
+                .filter_map(|l| l.split_once(':'))
+                .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, v)| v.trim().parse::<usize>().ok());
+            let start = end + 4;
+            match length {
+                Some(len) if raw.len() - start < len && n > 0 => continue,
+                Some(len) => raw.truncate((start + len).min(raw.len())),
+                None if n > 0 => continue,
+                None => {}
+            }
+            return Some((path, String::from_utf8_lossy(&raw[start..]).into_owned()));
+        }
+        if n == 0 {
+            return None;
+        }
     }
 }
 
@@ -2648,11 +2811,12 @@ fn http_post_fire(addr: &str, path: &str, body: &str) {
 
 /// Envia o resultado de um subagente de volta ao daemon MCP.
 fn send_spawn_result(mcp_port: u16, spawn_id: &str, output: &str, exit_code: i32) {
-    let escaped_output = output.replace('\\', "\\\\").replace('"', "\\\"");
-    let body = format!(
-        r#"{{"spawn_id":"{}","output":"{}","exit_code":{}}}"#,
-        spawn_id, escaped_output, exit_code
-    );
+    let body = serde_json::json!({
+        "spawn_id": spawn_id,
+        "output": output,
+        "exit_code": exit_code,
+    })
+    .to_string();
     let addr = format!("127.0.0.1:{mcp_port}");
     // Envia em thread separada para não bloquear o loop da TUI.
     thread::spawn(move || {
@@ -3100,6 +3264,22 @@ mod tests {
     fn body_leaves_room_for_the_menu_and_instances() {
         assert_eq!(body_size(Rect::new(0, 0, 80, 24)), Rect::new(0, 0, 80, 22));
         assert_eq!(body_size(Rect::new(0, 0, 0, 0)), Rect::new(0, 0, 1, 1));
+    }
+
+    #[test]
+    fn reads_the_whole_control_request() {
+        let body = r#"{"instance_id":"i1","text":"oi"}"#;
+        let raw = format!(
+            "POST /message HTTP/1.0\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        // Chega em pedaços pequenos, como num socket.
+        let mut chunks = std::io::Cursor::new(raw.into_bytes());
+        let mut slow = std::io::Read::take(&mut chunks, u64::MAX);
+        let (path, read) = read_request(&mut slow).unwrap();
+        assert_eq!(path, "/message");
+        assert_eq!(read, body);
+        assert!(read_request(&mut std::io::Cursor::new(b"lixo".to_vec())).is_none());
     }
 
     #[test]

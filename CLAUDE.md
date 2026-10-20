@@ -12,7 +12,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo run -p terraforme-cli -- --help        # or: pnpm cli --help
 cargo build -p terraforme-cli --release      # target/release/terraforme
 ./install.linux.sh                           # release build + install to ~/.local/bin (--update: git pull first; --dist; --uninstall)
-terraforme upgrade                           # execs <repo>/install.linux.sh --update (repo = CARGO_MANIFEST_DIR/../.. at build time, or --repo / TERRAFORME_REPO)
+.\install.windows.ps1                        # same on Windows (-Update/-Dist/-Uninstall), into %LOCALAPPDATA%\Programs\terraforme\bin + user PATH; UTF-8 BOM required (PowerShell 5.1)
+terraforme upgrade                           # execs <repo>/install.linux.sh --update (install.windows.ps1 -Update on Windows) (repo = CARGO_MANIFEST_DIR/../.. at build time, or --repo / TERRAFORME_REPO)
 
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
@@ -34,10 +35,11 @@ Conventional Commits, `<type>(<scope>): <subject>`. Rules in `commitlint.config.
 
 ## Architecture
 
-Cargo workspace with two crates:
+Cargo workspace with three crates:
 
 - **`crates/terraforme-core`** — all logic. The CLI is just a shell around it. The optional `clap` feature derives `clap::ValueEnum` on public enums (`Extension`, `Provider`, `Mode`) so the CLI can use them directly as arguments.
 - **`crates/terraforme-cli`** — the `terraforme` binary: clap definitions and output formatting in `main.rs`, plus the TUI in `term.rs`.
+- **`crates/terraforme-mcp`** — the shared `terraforme-mcp` daemon (axum, JSON-RPC over HTTP on `127.0.0.1`), started on demand by `terraforme cli` (`mcp::ensure_running`, lock file `<data dir>/terraforme/mcp.lock`) and shut down after the last client leaves. Every TUI registers itself (`/register` + heartbeat, with its control server address) and each agent instance (`/instances/register`, unregistered on `Agent` drop); the `hub` keeps instances from all spaces with a handle `<space or dir>/<agent>-<n>` and the message log. Tools: `list_instances`, `send_message` (delivered as `POST /message` to the target TUI's control server, which types it as a prompt via `Agent::queue`) and `spawn_subagent`. Each instance gets the server through `Adapter::mcp_args` (Claude: `--mcp-config` with `x-client-id`/`x-instance-id` headers; the two messaging tools are pre-allowed in the session `--settings`); with AI Jail, `jail::wrap` forwards the daemon port, so `run_term` starts the daemon before building the command. `[mcp] ui` enables the web UI at `/ui` (+ `/api/state`, `/api/send`), read from `config.toml` on every request and limited to local `Host`/`Origin`.
 
 Core modules:
 

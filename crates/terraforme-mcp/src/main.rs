@@ -1,9 +1,11 @@
 //! `terraforme-mcp` — daemon MCP compartilhado. Inicia sob demanda pela CLI,
 //! aceita múltiplos clientes `terraforme-cli` e encerra quando o último sai.
 
+mod hub;
 mod lifecycle;
 mod server;
 mod tools;
+mod ui;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -17,6 +19,7 @@ use tracing_subscriber::EnvFilter;
 
 use terraforme_core::mcp::{LockFile, McpConfig};
 
+use crate::hub::Hub;
 use crate::lifecycle::ClientRegistry;
 use crate::server::AppState;
 
@@ -94,13 +97,20 @@ async fn main() -> Result<()> {
         grace_seconds: args.grace_seconds,
         subagent_timeout_seconds: args.subagent_timeout,
         max_simultaneous_subagents: args.max_subagents,
+        ..McpConfig::default()
     };
 
-    let registry = Arc::new(ClientRegistry::new(args.grace_seconds, shutdown_tx.clone()));
+    let hub = Hub::default();
+    let registry = Arc::new(ClientRegistry::new(
+        args.grace_seconds,
+        shutdown_tx.clone(),
+        hub.clone(),
+    ));
     registry.spawn_watchdog();
 
     let state = AppState {
         registry,
+        hub,
         pending_spawns: Arc::new(Mutex::new(HashMap::new())),
         config,
     };

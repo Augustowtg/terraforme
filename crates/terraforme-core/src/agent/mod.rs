@@ -84,6 +84,13 @@ pub trait Adapter: Sync {
     fn skills_dir(&self) -> Option<PathBuf> {
         None
     }
+
+    /// Argumentos que ligam uma instância ao daemon MCP do terraforme
+    /// (`url`), com os cabeçalhos HTTP que a identificam. `None` se o agente
+    /// não tem como receber um servidor MCP pela linha de comando.
+    fn mcp_args(&self, _url: &str, _headers: &[(&str, &str)]) -> Option<Vec<OsString>> {
+        None
+    }
 }
 
 /// O que [`Adapter::setup`] devolve.

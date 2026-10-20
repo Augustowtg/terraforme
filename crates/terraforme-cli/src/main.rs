@@ -92,6 +92,9 @@ enum Command {
         /// Orçamento de tokens nos últimos 7 dias (0 remove)
         #[arg(long = "budget-week", value_name = "TOKENS")]
         budget_week: Option<u64>,
+        /// Liga a UI web do daemon MCP (instâncias de todos os spaces e mensagens entre elas)
+        #[arg(long = "mcp-ui", value_name = "BOOL", action = clap::ArgAction::Set)]
+        mcp_ui: Option<bool>,
         /// Claude Code: lista as contas (sem valor) ou registra/atualiza uma conta
         /// (`NOME=PASTA`, ex.: `--account work=~/.claude-work`).
         /// A pasta é o `CLAUDE_CONFIG_DIR` da conta (credenciais, configurações, sessões).
@@ -302,7 +305,7 @@ fn run(cli: Cli) -> Result<()> {
             } else if project {
                 jail_project()?;
             } else if let Some(on) = default {
-                config(None, None, Some(on), None, None, None, None, None)?;
+                config(None, None, Some(on), None, None, None, None, None, None)?;
             } else if delete {
                 let ext = targets[0];
                 if yes || confirm(&format!("Remover {}?", ext.name()))? {
@@ -321,6 +324,7 @@ fn run(cli: Cli) -> Result<()> {
             jail,
             budget_five_hours,
             budget_week,
+            mcp_ui,
             account,
             remove_account,
         } => config(
@@ -330,6 +334,7 @@ fn run(cli: Cli) -> Result<()> {
             cli,
             budget_five_hours,
             budget_week,
+            mcp_ui,
             account,
             remove_account,
         )?,
@@ -424,6 +429,7 @@ fn config(
     cli: Option<Option<CliMode>>,
     budget_five_hours: Option<u64>,
     budget_week: Option<u64>,
+    mcp_ui: Option<bool>,
     account: Option<Option<String>>,
     remove_account: Option<String>,
 ) -> Result<()> {
@@ -526,6 +532,10 @@ fn config(
         config.jail = jail;
         changed = true;
     }
+    if let Some(ui) = mcp_ui {
+        config.mcp.ui = ui;
+        changed = true;
+    }
     for (value, field) in [
         (budget_five_hours, &mut config.budget.five_hours),
         (budget_week, &mut config.budget.week),
@@ -562,6 +572,12 @@ fn config(
     let budget = |value: Option<u64>| value.map_or("—".to_string(), |v| format!("{v} tokens"));
     println!("  orçamento 5h {}", budget(config.budget.five_hours));
     println!("  orçamento 7d {}", budget(config.budget.week));
+    let ui = match mcp::LockFile::read() {
+        Ok(Some(lock)) if config.mcp.ui => format!("ligada · {}", mcp::ui_url(&lock)),
+        _ if config.mcp.ui => "ligada (abre com o terraforme cli)".into(),
+        _ => "desligada (--mcp-ui true liga)".into(),
+    };
+    println!("  UI web    {ui}");
     Ok(())
 }
 
@@ -815,14 +831,8 @@ impl Choice {
 }
 
 fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
-    let Resolved {
-        provider,
-        mode,
-        jail,
-        launch,
-    } = choice.resolve(args)?;
-    let adapter = provider.adapter().context("agente sem adapter")?;
-
+    // O daemon sobe antes do comando do agente: com o AI Jail, a porta dele
+    // entra no `--forward-port`.
     let config = Config::load()?;
     let mcp_lock = match mcp::ensure_running(&config.mcp) {
         Ok(lock) => Some(lock),
@@ -832,6 +842,18 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
         }
     };
     let client_id = uuid::Uuid::new_v4().to_string();
+
+    let Resolved {
+        provider,
+        mode,
+        jail,
+        launch,
+    } = choice.resolve(args)?;
+    let adapter = provider.adapter().context("agente sem adapter")?;
+    let space = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| Preferences::find(&cwd).ok().flatten())
+        .map(|(name, _)| name);
 
     let notices = launch
         .notices
@@ -855,6 +877,7 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
         extensions,
         mcp_lock,
         client_id,
+        space,
     })
 }
 
