@@ -31,7 +31,7 @@ Toda a lógica de negócio fica no crate `terraforme-core`; o crate `terraforme-
 | `terraforme setup` | Configura a máquina do zero: identifica os agentes, instala e configura as extensões neles e instala as skills embutidas |
 | `terraforme extension …` | Instala, atualiza, configura, remove ou mostra o status das extensões |
 | `terraforme config …` | Mostra ou altera a configuração (agente, modo de início, sandbox, orçamento de tokens) |
-| `terraforme cli …` | Abre o agente de IA no terminal do terraforme (aba Consumo) |
+| `terraforme cli …` | Abre o agente de IA no terminal do terraforme (abas Consumo e Extensões) |
 | `terraforme space …` | Gerencia pastas de trabalho salvas com um nome (*spaces*) |
 | `terraforme upgrade …` | Atualiza o próprio terraforme (git pull + compila + reinstala) |
 | `terraforme greet <nome>` | Exibe uma saudação |
@@ -119,7 +119,7 @@ Tudo o que depende do agente fica atrás deste trait:
 - `session_args(session)` — fixa um id de sessão por instância (para o consumo).
 - `picks_session(args)` — detecta quando os argumentos do usuário já escolhem a sessão (ex.: `--continue`, `--session-id`).
 - `usage(cwd, launched, session)` — consumo de tokens (aba Consumo).
-- `plan_limits()` — limites do plano do usuário (API OAuth do Claude).
+- `quota()` — limites de uso no formato `Quota` (porcentagem já usada, tokens e quando a janela zera) — a API OAuth do Claude, o `agy -p /usage` do Antigravity; sem eles, vale o orçamento do `config.toml`.
 - `forget(ext)` — desfaz o que `setup` criou ao remover uma extensão.
 
 ### Claude Code
@@ -196,27 +196,41 @@ Interface em ratatui com barra de abas no topo:
 | Aba | Conteúdo |
 | --- | --- |
 | **Agente** | O agente (claude/opencode), uma sub-aba por instância |
-| **Consumo** | Limites, Tokens, Subagentes (atualiza a cada 5s) |
+| **Consumo** | Limites, Tokens, Subagentes (atualiza a cada 5s) e, com o RTK no modo, os relatórios dele |
+| **Extensões** | Relatórios do AI Memory e do AI Jail (se ligado), um por sub-aba; só aparece quando há algum |
+| **Config** | Configuração geral (`config.toml`) editável: agente, modo, jail, orçamento, TUI e MCP |
 
 ### Atalhos
 
+`Ctrl+Alt+K` lista todos dentro da TUI.
+
 | Tecla | Ação |
 | --- | --- |
-| `Shift+Tab` | próxima aba |
-| `Shift+F1`…`Shift+F2` | vai direto para a aba |
-| `Alt+1`…`Alt+9` / `Shift+Alt+1`…`9` | vai direto para a sub-aba da aba aberta |
-| `Ctrl+←→` / `Ctrl+PgUp/PgDn` | sub-aba vizinha, em volta |
-| `F12` | abre outra instância do agente |
-| `Shift+F12` | fecha a instância aberta |
+| `Ctrl+Shift+F1` | abre a aba Agente |
+| `Ctrl+Shift+F2` | abre a aba Consumo |
+| `Ctrl+Shift+F3` | abre a aba Extensões (só quando o modo tem alguma além do RTK) |
+| `Ctrl+Shift+F4` | abre a aba Config |
+| `Ctrl+Alt+Tab` / `Ctrl+Alt+Shift+Tab` | próxima / anterior sub-aba |
+| `Ctrl+Alt+1`…`9` / `Alt+1`…`9` | vai direto para a sub-aba; na aba do agente, além da última abre outra instância |
+| `Ctrl+PgUp/PgDn` | sub-aba vizinha, em volta |
+| `Ctrl+Alt+N` / `F12` | abre outra instância do agente |
+| `Ctrl+Alt+W` / `Shift+F12` | fecha a instância aberta |
+| `Ctrl+Alt+R` | reinicia a instância aberta |
+| arrastar com o mouse | seleciona texto do agente e copia ao soltar |
+| `Ctrl+Alt+C` | copia a seleção, a tela do agente ou o conteúdo da aba |
+| `Ctrl+Alt+S` | liga/desliga a captura do mouse (seleção nativa do terminal) |
+| `Shift+PgUp/PgDn` / `Shift+Home/End` | rola o histórico do agente / início e volta ao vivo |
+| roda do mouse | rola o histórico do agente e as outras abas |
+| `↑↓` / `PgUp/PgDn` · `r` · `Esc` | rola · recarrega · volta para o agente (abas de conteúdo) |
 | `F10` | sai (encerra todas as instâncias) |
-| `Shift+PgUp/PgDn` | rola o histórico do agente |
-| `↑↓` / `PgUp/PgDn` | rola na aba Consumo |
-| `r` | recarrega o conteúdo da aba aberta |
-| `Esc` | volta para o agente |
+
+`Ctrl+Shift`/`Ctrl+Alt` + dígito precisam do protocolo de teclado do kitty, que a TUI liga quando o
+terminal suporta; sem ele valem as alternativas (`Alt+1`…`9` e `Shift+Alt+1`…`9`) e `Shift+Tab`
+segue para o agente.
 
 ### Aba Consumo
 
-- **Limites:** quanto foi usado e quanto falta. Com login OAuth no Claude Code (Pro/Max/Team), usa os limites do plano (`api.anthropic.com/api/oauth/usage`, cache 60s); sem login, compara transcripts com o orçamento `[budget]` do `config.toml`. No OpenCode, não há limites de plano nem janela de 5h: valem o orçamento semanal e a contagem local.
+- **Limites:** quanto foi usado e quanto falta. Com login OAuth no Claude Code (Pro/Max/Team), usa os limites do plano (`api.anthropic.com/api/oauth/usage`, cache 60s); sem login, compara transcripts com o orçamento `[budget]` do `config.toml`. No OpenCode, não há limites de plano nem janela de 5h: valem o orçamento semanal e a contagem local. No Antigravity, os limites vêm do próprio agente (`agy -p /usage`): um grupo de modelos por janela semanal, com o quanto resta e quando a janela zera.
 - **Tokens:** entrada, saída, raciocínio, cache (grava/le), total e respostas da sessão atual, projeto (24h) e todos os projetos (5h/24h/7 dias), por modelo.
 - **Subagentes:** sessão atual dividida entre o agente principal e cada subagente (tipo e descrição do `.meta.json`).
 
@@ -242,6 +256,7 @@ terraforme config --provider claude        # define o agente padrão
 terraforme config --cli                    # lista os modos de início e pergunta o padrão
 terraforme config --cli custom             # escolhe as extensões do modo customizado
 terraforme config --mode eco               # define o modo padrão
+terraforme config --mode custom            # o mesmo que --cli custom: pergunta as extensões
 terraforme config --jail true              # sandbox por padrão
 terraforme config --budget-5h 20000000     # orçamento 5h (0 remove)
 terraforme config --budget-week 300000000  # orçamento 7d (0 remove)
@@ -272,6 +287,8 @@ Abrir um space inicia um shell novo (`$SHELL` / `%COMSPEC%`) na pasta, com `TERR
 terraforme space api --agent opencode --mode eco --jail false
 terraforme space api --reset          # apaga as preferências
 ```
+
+Aba **Config** da TUI: dentro de um space, agente, modo e AI Jail gravam nas preferências do space (criando o `preferences.toml` se não existir) em vez do `config.toml` global — os valores exibidos são os efetivos da sessão e o rodapé diz onde cada campo vale; preset doc, orçamento, TUI e MCP continuam no `config.toml`. `Delete` num campo tira o override do space e volta ao valor global.
 
 ---
 
@@ -327,7 +344,7 @@ O perfil `release` (padrão) omite LTO para compilação mais rápida; o perfil 
 | `agent/opencode.rs` | Adapter do OpenCode (v2+) |
 | `jail` | Integração com o AI Jail: configuração padrão em `~/.ai-jail` e `wrap()` (envolve o comando do agente) |
 | `usage` | Consumo de tokens por agente (transcripts do Claude Code ou `opencode stats --json`) |
-| `limits` | Quanto resta dos limites do plano (API OAuth) ou do orçamento configurado |
+| `limits` | Quanto resta dos limites do plano/conta (API OAuth do Claude, `/usage` do `agy`) ou do orçamento configurado |
 | `config` | `Config { provider, mode, jail, budget }` em `config.toml` |
 | `space` | Pastas de trabalho nomeadas (*spaces*) em `spaces.toml` |
 

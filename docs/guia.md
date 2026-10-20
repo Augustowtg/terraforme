@@ -68,6 +68,7 @@ terraforme config --provider claude  # define o provider
 terraforme config --cli              # lista os modos de início e pergunta o padrão
 terraforme config --cli eco          # define o modo de início (eco, custom, security, high)
 terraforme config --mode eco         # define o modo padrão
+terraforme config --mode custom      # escolhe as extensões (RTK, AI Memory e/ou AI Jail)
 terraforme config --jail true        # roda o agente dentro do AI Jail por padrão (false desliga)
 terraforme config --budget-5h <tokens> --budget-week <tokens>   # orçamento sem login OAuth
 
@@ -90,6 +91,10 @@ terraforme cli --jail                # dentro do AI Jail (sandbox), em qualquer 
 | `security` | AI Jail (sandbox), sem extensões |
 | `custom` | você escolhe as extensões (RTK, AI Memory e/ou AI Jail) |
 
+Se uma extensão do modo precisa de algo no projeto, o `terraforme cli` confere e configura ao iniciar:
+com o AI Jail ligado numa pasta sem `.ai-jail`, ele cria o arquivo (`ai-jail --init <agente>`) — exceto
+na sua pasta pessoal, onde o `~/.ai-jail` é a configuração global.
+
 Como os modos são aplicados ao Claude Code está em [arquitetura](arquitetura.md#como-os-modos-funcionam-no-claude-code).
 
 ## Terminal do `terraforme cli`
@@ -97,38 +102,72 @@ Como os modos são aplicados ao Claude Code está em [arquitetura](arquitetura.m
 O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no topo:
 
 ```
-  terraforme   ⇧F1 claude   ⇧F2 Consumo   F10 sair   ⇧Tab alterna · …
+  terraforme   ⌃⇧1 claude   ⌃⇧2 Consumo   ⌃⇧3 Extensões   ⌃⇧4 Config   F10 sair   ⌃⇧Tab alterna · ⌃⌥K atalhos · …
 ```
 
 - **claude** — o agente. Cada instância é uma sub-aba (`claude 1`, `claude 2`…), todas rodando ao
-  mesmo tempo; `F12` abre outra, `Shift+F12` fecha a aberta e `Alt+1`…`Alt+9` ou `Ctrl+←→`
-  trocam de instância, como as sub-abas de qualquer aba. A sub-aba some quando a instância termina,
+  mesmo tempo; `Ctrl+Alt+N` (ou `F12`) abre outra, `Ctrl+Alt+W` (ou `Shift+F12`) fecha a aberta,
+  `Ctrl+Alt+R` reinicia e `Ctrl+Alt+1`…`9` troca de instância — um número além da última abre uma
+  nova (com uma instância, `Ctrl+Alt+2` abre a segunda). A sub-aba some quando a instância termina,
   e o terraforme sai quando a última termina.
-- **Consumo** — três sub-abas, atualizadas a cada 5s:
+- **Consumo** — o consumo de tokens, atualizado a cada 5s, e a economia do RTK:
   - **Limites** — quanto já foi usado e quanto falta. Com login OAuth no Claude Code
     (Pro/Max/Team), usa os limites do plano (sessão de 5h e semana, os mesmos do `/usage`); sem
     login, compara os transcripts com o orçamento configurado. Com o OpenCode, não há limites de
     plano nem janela de 5h (o `opencode stats` não os expõe): valem o orçamento semanal e a
-    contagem de tokens/5h da sessão local.
+    contagem de tokens/5h da sessão local. Com o Antigravity, os limites são os que o `agy` informa
+    (`agy -p /usage`): um grupo de modelos por janela semanal, com o quanto resta e quando ela
+    zera.
   - **Tokens** — entrada, saída, raciocínio e cache da sessão atual (a da instância aberta), do
     projeto nas últimas 24h e de todos os projetos em 5h/24h/7 dias; com o OpenCode, o total do
     projeto hoje e de todos hoje/7 dias, com custo e tokens por modelo.
   - **Subagentes** — a sessão atual dividida entre o agente principal e cada subagente; com o
     OpenCode, a contagem de sessões, prompts e subagentes.
+  - **RTK** (quando o modo usa o RTK) — Economia, Neste projeto, Por dia e Histórico, os
+    relatórios de `terraforme extension rtk --status`.
+- **Extensões** — só aparece quando o modo usa o AI Memory ou o AI Jail está ligado: os relatórios
+  de cada um, um por sub-aba — AI Memory (Status, Projetos, Handoffs) e AI Jail (Status, Sandbox).
+  São os mesmos de `terraforme extension <nome> --status`, carregados quando a sub-aba é aberta.
+- **Config** — a configuração geral (`config.toml`), editável: agente, modo, AI Jail e preset doc
+  (valem no próximo `terraforme cli`), orçamento de tokens, preferências da TUI (capturar o mouse,
+  copiar ao selecionar — aplicadas na hora) e o daemon MCP. Cada alteração é gravada na hora.
+  Dentro de um space, agente, modo e AI Jail gravam nas preferências do space
+  (`<pasta do space>/.terraforme/preferences.toml`) em vez do `config.toml` global — é o arquivo
+  que o `terraforme cli` passa a usar ali — e o rodapé diz onde cada campo vale; os outros campos
+  continuam no `config.toml`. Apagar um valor com `Delete` tira o override e volta ao `config.toml`.
 
 | Tecla | Ação |
 | --- | --- |
-| `Shift+Tab` | próxima aba |
-| `Shift+F1`…`Shift+F2` | vai direto para a aba |
-| `Alt+1`…`Alt+9` | vai direto para a sub-aba da aba aberta (instância do agente ou visão do consumo) |
-| `Ctrl+←→` / `Ctrl+PgUp/PgDn` | vai para a sub-aba vizinha, em volta (o mesmo em todas as abas) |
-| `F12` / `Shift+F12` | abre outra instância do agente / fecha a aberta |
+| `Ctrl+Shift+F1` | abre a aba Agente |
+| `Ctrl+Shift+F2` | abre a aba Consumo |
+| `Ctrl+Shift+F3` | abre a aba Extensões (só quando o modo tem alguma além do RTK) |
+| `Ctrl+Shift+F4` | abre a aba Config |
+| `Ctrl+Alt+Tab` / `Ctrl+Alt+Shift+Tab` | próxima / anterior sub-aba (o mesmo em todas as abas) |
+| `Ctrl+Alt+1`…`9` (ou `Alt+1`…`9`) | vai direto para a sub-aba (instância do agente, visão do consumo ou relatório) |
+| `Ctrl+PgUp/PgDn` | sub-aba vizinha, em volta |
+| `Ctrl+Alt+N` / `F12` | abre outra instância do agente |
+| `Ctrl+Alt+W` / `Shift+F12` | fecha a instância aberta |
+| `Ctrl+Alt+R` | reinicia a instância aberta |
+| arrastar com o mouse | seleciona texto do agente e copia ao soltar (clique desfaz) |
+| `Ctrl+Alt+C` | copia a seleção, a tela do agente ou o conteúdo da aba aberta |
+| `Ctrl+Alt+S` | devolve o mouse ao terminal (seleção nativa) e de volta |
+| `Shift+PgUp/PgDn` · `Shift+Home/End` | rola o histórico do agente · início / volta ao vivo |
+| roda do mouse | rola o histórico do agente e o conteúdo das outras abas |
+| `Ctrl+Alt+K` | lista todos os atalhos |
 | `F10` | sai (encerra todas as instâncias) |
-| `Shift+PgUp/PgDn` | rola o histórico do agente |
 
-Na aba Consumo: `↑↓`/`PgUp/PgDn` rolam, `r` recarrega e `Esc` volta para o agente. Na aba do
-agente, `Tab` e `F1`–`F9` chegam ao Claude, mas `Shift+Tab` não (troca de aba). O agente continua
-rodando enquanto outra aba está aberta.
+A cópia vai para a área de transferência pelo terminal (OSC 52) e, no Linux, também por
+`wl-copy`, `xclip` ou `xsel`, se algum estiver instalado — o GNOME Terminal ignora o OSC 52, então
+nele instale um deles. `Ctrl+Alt` + dígito só chega distinto em terminais com o
+protocolo de teclado do kitty (kitty, WezTerm, foot, Ghostty, Alacritty…), que a TUI liga quando
+existe; sem ele, use `Alt+1`…`9` ou `Shift+Alt+1`…`9`. `Shift+Tab` segue para o agente (Claude Code
+o usa para trocar de modo). Os atalhos evitam os do ambiente Linux (`Ctrl+Alt+T/L/D/Del`,
+`Ctrl+Alt+F1`…`F12`, `Ctrl+Alt+setas`).
+
+Nas abas de conteúdo: `↑↓`/`PgUp/PgDn` rolam, `r` recarrega e `Esc` volta para o agente. Na aba
+Config: `↑↓` escolhe o campo, `←→`/`Enter` altera, dígitos editam números (vazio tira o orçamento),
+`Del` volta ao padrão. Na aba do agente, `Tab`, `F1`–`F9` e `Ctrl+←→` chegam ao Claude. O agente
+continua rodando enquanto outra aba está aberta.
 
 ## Spaces
 

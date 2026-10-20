@@ -25,7 +25,7 @@ opcional `clap`, o core deriva `clap::ValueEnum` nos enums públicos (`Extension
 | `agent` | `Provider`, `Mode` (`none` = nenhuma, `eco` = RTK, `high` = AI Memory, `hybrid` = os dois) e `CliMode` (presets de início do `config --cli`: eco/custom/security/high), o trait `Adapter` e `agent::prepare()`, que monta o comando do agente igual para todos. Cada agente é um adapter (`agent/claude.rs` para o Claude Code). |
 | `jail` | Integração com o AI Jail: configuração padrão em `~/.ai-jail` e `wrap()`, que envolve o comando do agente. |
 | `usage` | Consumo de tokens por agente: transcripts do Claude Code, ou `opencode stats --json` no OpenCode. |
-| `limits` | Quanto resta dos limites do plano (API OAuth) ou do orçamento configurado. |
+| `limits` | Quanto resta dos limites do plano/conta (API OAuth do Claude, `/usage` do `agy`) ou do orçamento configurado. |
 | `config` | `Config { provider, mode, jail, budget }` em `~/.config/terraforme/config.toml` (`%APPDATA%\terraforme` no Windows; respeita `XDG_CONFIG_HOME`). |
 | `skill` | Skills de agente embutidas no binário (pasta `skills/`, embutidas pelo `build.rs`): lista e instala na pasta global de skills de cada agente (`Adapter::skills_dir`). |
 | `space` | Pastas de trabalho com nome, em `<config>/spaces.toml`. |
@@ -41,7 +41,7 @@ Tudo o que depende do agente de IA fica atrás do trait `agent::Adapter`, e o re
 | `setup(mode)` | prepara a configuração do agente para as extensões do modo e devolve os argumentos que as ligam, as pastas que o AI Jail deve montar e avisos |
 | `session_args` / `picks_session` | fixar um id de sessão por instância (para o consumo) e saber quando os argumentos do usuário já escolhem a sessão |
 | `usage` | consumo de tokens (aba Consumo) |
-| `plan_limits` | limites do plano do usuário; sem eles, vale o orçamento do config.toml |
+| `quota` | limites de uso no formato `Quota` (porcentagem usada, tokens e quando a janela zera); sem eles, vale o orçamento do config.toml |
 | `forget(ext)` | desfaz o que o `setup` criou quando a extensão é removida |
 
 Só `bin` e `setup` são obrigatórios; os outros têm um padrão "não suportado". `Provider::adapter()`
@@ -107,16 +107,21 @@ Exige ai-jail 2.9+ (`--forward-port`) e, no Linux, o `bwrap` (pacote bubblewrap)
   `<sessão>/subagents/agent-<id>.jsonl`, com tipo e descrição no `.meta.json` ao lado. No OpenCode,
   `opencode stats --json` (`agent/opencode.rs`): totais do projeto hoje e de todos hoje/7 dias, com
   custo e tokens por modelo, mais contagem de sessões/prompts/subagentes — sem janela de 5h, total
-  da sessão atual nem detalhe por subagente.
+  da sessão atual nem detalhe por subagente. No Antigravity, os transcripts que o `agy` grava em
+  `~/.gemini/antigravity-cli/brain/<conversa>/.system_generated/logs/transcript.jsonl`
+  (`agent/antigravity.rs`), com a conversa corrente saindo do `cache/last_conversations.json`.
 - **`limits`** consulta `api.anthropic.com/api/oauth/usage` com o token OAuth de
   `<claude>/.credentials.json` (nunca renovado pelo terraforme; cache de 60s). Sem login, compara os
   totais dos transcripts com o `[budget]` da configuração. No OpenCode não há limites de plano nem
-  janela de 5h: valem o orçamento semanal e a contagem de tokens da sessão local.
+  janela de 5h: valem o orçamento semanal e a contagem de tokens da sessão local. No Antigravity, os
+  limites são os que o próprio agente informa (`agy -p "/usage" --output-format json`): um grupo de
+  modelos por janela semanal, com o quanto resta e quando ela zera.
 
 ## Terminal do `terraforme cli` (`term.rs`)
 
 TUI em ratatui com barra de abas: a aba do agente (`claude`), cujas sub-abas são as instâncias, e
-`Consumo` (Limites / Tokens / Subagentes, atualizada a cada 5s).
+`Consumo` (Limites / Tokens / Subagentes, atualizada a cada 5s), `Extensões` (quando o modo tem
+relatórios fora do RTK) e `Config`.
 
 - Cada instância roda no seu próprio pseudoterminal (`portable-pty`), redimensionado para a tela
   real antes de cada desenho (`App::fit`), e é renderizada com `vt100` + `tui-term` (5000 linhas de
@@ -125,8 +130,14 @@ TUI em ratatui com barra de abas: a aba do agente (`claude`), cujas sub-abas sã
   (`--continue`/`--resume`/`--session-id`, ver `agent::picks_session`), para o consumo saber qual
   transcript é dela.
 - As abas que não são do agente carregam o conteúdo numa thread em segundo plano.
+- As abas são construídas pelo padrão de projeto **Registro**: cada uma é uma entrada única
+  (`TabSpec` em `TABS`) com o nome, o atalho `Ctrl+Shift+F<n>`, as sub-abas próprias e o
+  comportamento (`TabKind`), e o menu, os atalhos, a ajuda e a ordem leem essa lista.
 - As teclas viram sequências xterm em `key_bytes` (respeitando o modo de cursor de aplicação).
-  `Shift+Tab` sempre troca de aba e nunca chega ao agente.
+  Com o protocolo de teclado do kitty (ligado quando o terminal suporta), `Ctrl+Shift`/`Ctrl+Alt`
+  chegam distintos; `Shift+Tab` segue para o agente (não é atalho de aba).
+- O mouse é capturado (`[tui] mouse`): arrastar seleciona células do `vt100` e copia por OSC 52 e
+  `wl-copy`/`xclip`/`xsel`.
 - Avisos do `prepare()` aparecem num popup inicial, porque a tela alternativa esconderia o que foi
   impresso antes dela.
 
