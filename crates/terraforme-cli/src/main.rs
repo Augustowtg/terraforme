@@ -894,15 +894,23 @@ fn exec(mut command: std::process::Command) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-/// Roda o `install.linux.sh` do repositório no lugar do terraforme (`exec`),
-/// para que o binário em uso possa ser substituído.
+/// Roda o script de instalação do repositório (`install.linux.sh`, ou
+/// `install.windows.ps1` no Windows) no lugar do terraforme (`exec`), para que
+/// o binário em uso possa ser substituído.
 fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Result<()> {
-    if !cfg!(target_os = "linux") {
-        bail!("o upgrade automático só existe no Linux; recompile com `cargo build --release`");
+    let windows = cfg!(windows);
+    if !windows && !cfg!(target_os = "linux") {
+        bail!(
+            "o upgrade automático só existe no Linux e no Windows; recompile com `cargo build --release`"
+        );
     }
     let repo =
         repo.unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    let script = repo.join("install.linux.sh");
+    let script = repo.join(if windows {
+        "install.windows.ps1"
+    } else {
+        "install.linux.sh"
+    });
     if !script.is_file() {
         bail!(
             "{} não encontrado; informe o repositório com --repo ou TERRAFORME_REPO",
@@ -910,13 +918,19 @@ fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Resul
         );
     }
 
-    let mut command = std::process::Command::new("bash");
+    let mut command;
+    if windows {
+        command = std::process::Command::new("powershell");
+        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+    } else {
+        command = std::process::Command::new("bash");
+    }
     command.arg(&script);
     if !no_pull {
-        command.arg("--update");
+        command.arg(if windows { "-Update" } else { "--update" });
     }
     if dist {
-        command.arg("--dist");
+        command.arg(if windows { "-Dist" } else { "--dist" });
     }
     // Reinstala no mesmo prefixo do binário atual (<prefixo>/bin/terraforme).
     if std::env::var_os("PREFIX").is_none()

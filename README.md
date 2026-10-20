@@ -48,6 +48,11 @@ cd terraforme
 Confira se `~/.local/bin` está no seu `PATH` e teste com `terraforme --version`. Para atualizar
 depois, basta `terraforme upgrade`.
 
+No Windows (PowerShell, com `git` e Rust + Visual Studio Build Tools), rode
+`.\install.windows.ps1` na pasta do repositório: ele instala em
+`%LOCALAPPDATA%\Programs\terraforme\bin` e adiciona a pasta ao `PATH` do usuário. Veja o
+[guia](docs/guia.md#instalação-e-atualização-windows).
+
 ## Primeiros passos
 
 ```bash

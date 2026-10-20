@@ -9,6 +9,7 @@
 │   └── terraforme-cli/       # binário `terraforme`: clap (main.rs) e terminal com abas (term.rs)
 ├── docs/                     # esta documentação
 ├── install.linux.sh          # instala/atualiza/remove o binário em ~/.local/bin
+├── install.windows.ps1       # o mesmo no Windows (%LOCALAPPDATA%\Programs\terraforme\bin)
 └── rust-toolchain.toml       # Rust 1.98.0 + alvos Linux/Windows
 ```
 

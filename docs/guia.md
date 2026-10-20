@@ -19,6 +19,24 @@ terraforme status                        # extensões (RTK, AI Memory, AI Jail)
 
 Depois de uma atualização, o script mostra as novidades do [`CHANGELOG.md`](../CHANGELOG.md).
 
+## Instalação e atualização (Windows)
+
+Pré-requisitos: `git` e Rust ([rustup](https://rustup.rs), com o "Desktop development with C++"
+do Visual Studio Build Tools). No PowerShell, na pasta do repositório:
+
+```powershell
+.\install.windows.ps1                    # compila e instala em %LOCALAPPDATA%\Programs\terraforme\bin
+.\install.windows.ps1 -Update            # git pull (fast-forward) + compila + instala
+.\install.windows.ps1 -Dist              # build otimizada (LTO)
+$env:PREFIX='C:\tools'; .\install.windows.ps1   # em C:\tools\bin
+.\install.windows.ps1 -Uninstall         # remove (e tira a pasta do PATH do usuário)
+```
+
+Se a execução de scripts estiver bloqueada, use
+`powershell -ExecutionPolicy Bypass -File .\install.windows.ps1`. A pasta de instalação é
+adicionada ao `PATH` do usuário (abra um novo terminal depois). `terraforme upgrade` também
+funciona no Windows.
+
 ## Extensões
 
 [RTK](https://github.com/rtk-ai/rtk), [AI Memory](https://github.com/akitaonrails/ai-memory) e
