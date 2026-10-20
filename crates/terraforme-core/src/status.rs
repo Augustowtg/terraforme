@@ -113,8 +113,13 @@ fn exe_names_with(bin: &str, pathext: &str) -> Vec<String> {
 /// `Command` do Windows só completa `.exe`, então `opencode` sozinho não
 /// acharia o `opencode.cmd`.
 pub(crate) fn find_in_path(bin: &str) -> Option<PathBuf> {
+    find_in(env::split_paths(&env::var_os("PATH")?), bin)
+}
+
+/// Caminho completo de `bin` na primeira das pastas `dirs` que o tiver.
+pub(crate) fn find_in(dirs: impl IntoIterator<Item = PathBuf>, bin: &str) -> Option<PathBuf> {
     let names = exe_names(bin);
-    env::split_paths(&env::var_os("PATH")?)
+    dirs.into_iter()
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|p| p.is_file())
 }
@@ -158,6 +163,21 @@ mod tests {
     #[test]
     fn missing_binary_is_not_found() {
         assert_eq!(find_in_path("terraforme-binario-inexistente"), None);
+    }
+
+    #[test]
+    fn finds_binary_in_extra_dirs() {
+        let dir = env::temp_dir().join(format!("terraforme-find-in-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = if cfg!(windows) {
+            "agente.exe"
+        } else {
+            "agente"
+        };
+        std::fs::write(dir.join(name), b"").unwrap();
+        let found = find_in([PathBuf::from("inexistente"), dir.clone()], "agente");
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, Some(dir.join(name)));
     }
 
     #[test]

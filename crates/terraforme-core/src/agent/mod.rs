@@ -30,7 +30,7 @@ use serde_json::{Map, Value};
 
 use crate::extension::Extension;
 use crate::limits::Quota;
-use crate::status::{Component, State, find_in_path, version_of};
+use crate::status::{Component, State, find_in, find_in_path, version_of};
 use crate::usage::Usage;
 
 pub use antigravity::Antigravity;
@@ -256,8 +256,17 @@ impl Provider {
             .find(|p| p.id() == choice || p.name().to_lowercase() == choice)
     }
 
+    /// Caminho do executável do agente: o do `PATH` ou, sem ele, o de uma das
+    /// [`Provider::install_dirs`]. No Windows o instalador oficial do Claude
+    /// Code põe o `claude.exe` em `%USERPROFILE%\.local\bin` e só sugere
+    /// incluir a pasta no `PATH`.
+    pub fn locate(self) -> Option<PathBuf> {
+        let bin = self.adapter()?.bin();
+        find_in_path(bin).or_else(|| find_in(self.install_dirs(), bin))
+    }
+
     pub fn check(self) -> Component {
-        let path = self.adapter().and_then(|a| find_in_path(a.bin()));
+        let path = self.locate();
         Component {
             name: self.name(),
             url: self.url(),
@@ -403,7 +412,7 @@ pub fn prepare(provider: Provider, mode: Mode, jail: bool, args: &[String]) -> R
     let Some(adapter) = provider.adapter() else {
         bail!("o provider {} ainda não foi implementado", provider.name());
     };
-    let Some(bin) = find_in_path(adapter.bin()) else {
+    let Some(bin) = provider.locate() else {
         bail!("`{}` não encontrado no PATH", adapter.bin());
     };
 

@@ -5,6 +5,20 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.20.2 - 2026-10-20
+
+### Corrigido
+
+- Windows: o agente ficava com a tela em branco no `terraforme cli`. O ConPTY pergunta a posição do
+  cursor (`ESC[6n`) ao iniciar e trava o agente até receber a resposta; o terminal do terraforme
+  agora responde.
+- Windows: a instância não fechava quando o agente saía (a leitura do ConPTY não chega ao fim), então
+  a TUI não encerrava com a última instância e o `spawn_subagent` só voltava pelo timeout. A saída do
+  processo agora é vista direto nele.
+- O agente é achado também na pasta do instalador oficial quando ela não está no `PATH` (no
+  Windows, o Claude Code fica em `%USERPROFILE%\.local\bin`), e os subagentes do MCP usam esse mesmo
+  caminho em vez do nome solto.
+
 ## 0.20.1 - 2026-10-20
 
 ### Alterado
