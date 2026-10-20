@@ -122,11 +122,16 @@ pub struct Setup {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
+    /// Claude Code (`claude`).
     #[default]
     Claude,
+    /// OpenCode (`opencode`).
     #[cfg_attr(feature = "clap", value(name = "opencode"))]
     OpenCode,
+    /// Cursor — ainda não implementado, por isso fica fora da ajuda.
+    #[cfg_attr(feature = "clap", value(hide = true))]
     Cursor,
+    /// Antigravity (`agy`).
     Antigravity,
 }
 
@@ -271,11 +276,11 @@ impl Provider {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    /// Nenhuma extensão: o agente roda puro (é o modo do preset `security`).
+    /// Sem RTK nem AI Memory: o agente roda puro.
     None,
-    /// Só RTK: economia de tokens.
+    /// Só RTK (economia de tokens).
     Eco,
-    /// Só AI Memory: memória entre sessões.
+    /// Só AI Memory (memória entre sessões).
     High,
     /// RTK + AI Memory.
     #[default]
@@ -313,13 +318,13 @@ impl Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum CliMode {
-    /// Eco: só RTK.
+    /// Só RTK (economia de tokens).
     Eco,
-    /// Custom: o usuário escolhe quais extensões usar.
+    /// Pergunta quais extensões usar (RTK, AI Memory, AI Jail).
     Custom,
-    /// Security: roda o agente dentro do AI Jail, sem extensões.
+    /// Dentro do AI Jail (sandbox), sem RTK nem AI Memory.
     Security,
-    /// High: só AI Memory.
+    /// Só AI Memory (memória entre sessões).
     High,
 }
 

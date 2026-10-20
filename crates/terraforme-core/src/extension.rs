@@ -19,9 +19,11 @@ use crate::status::{Component, State, find_in_path, run_ok, version_of};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum Extension {
-    /// RTK — Rust Token Killer.
+    /// RTK — economia de tokens.
     Rtk,
+    /// AI Memory — memória entre sessões.
     AiMemory,
+    /// AI Jail — sandbox do sistema para o agente.
     AiJail,
 }
 

@@ -5,6 +5,23 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.20.1 - 2026-10-20
+
+### Alterado
+
+- Ajuda dos comandos mais clara: títulos em português (`Uso`, `Comandos`, `Opções`), opções de
+  cada comando agrupadas (ex.: `Sessão`, `Modo`, `Sandbox` no `cli`; `Ações` e `Preferências do
+  space` no `space`; `Agente e modo`, `Orçamento de tokens`, `UI web` e `Contas do Claude Code` no
+  `config`), exemplos de uso no fim de cada ajuda e comandos ordenados pelo fluxo de uso (`setup`,
+  `cli`, `space`, `config`…). Os valores de agente, modo, preset e extensão ganharam descrição, e o
+  Cursor, ainda não implementado, saiu da lista.
+- `terraforme help <comando>` mostra a ajuda completa do comando; `greet` saiu da lista de comandos.
+
+### Corrigido
+
+- O exemplo de `config --account` usava `~/.claude-work`, que o shell não expande depois do `=`:
+  agora é `work=$HOME/.claude-work`.
+
 ## 0.20.0 - 2026-10-20
 
 ### Adicionado
