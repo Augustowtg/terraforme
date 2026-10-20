@@ -1,26 +1,39 @@
 //! Terminal do terraforme (`terraforme cli`): o agente roda num pseudoterminal
 //! dentro de uma TUI com abas no topo — o agente (com uma sub-aba por
-//! instância) e o consumo de tokens. `Shift+Tab` alterna as abas e
-//! `Shift+F1`–`F9` pulam para uma aba.
-//! As sub-abas trocam do mesmo jeito em todas as abas: `Shift+Alt+1`–`9` vai
-//! direto e `Ctrl+←→` / `Ctrl+PgUp/PgDn` passam para a vizinha (`Shift+dígito`
-//! sem Alt não serve: na aba do agente chega ao Claude como `!@#$`…). `F12` abre
-//! outra instância do agente e `Shift+F12` fecha a aberta. As instâncias continuam
+//! instância), o consumo de tokens (com os relatórios do RTK), as outras
+//! extensões do modo e a configuração geral.
+//!
+//! Abas: `Ctrl+Shift+Tab` passa para a próxima e `Ctrl+Shift+1`–`9` vai direto
+//! (`Shift+F1`–`F9` também). Sub-abas, iguais em todas as abas: `Ctrl+Alt+Tab`
+//! passa para a próxima e `Ctrl+Alt+1`–`9` vai direto (`Alt+1`–`9`,
+//! `Shift+Alt+1`–`9`, `Ctrl+PgUp/PgDn` e `←`/`→` nas visões também); na aba
+//! do agente, um número além da última abre
+//! outra instância. Os atalhos próprios da TUI usam `Ctrl+Alt`, que o agente não
+//! usa (`Ctrl+Alt+K` lista todos). Para distinguir `Ctrl+Shift`/`Ctrl+Alt` de
+//! teclas comuns, a TUI liga o protocolo de teclado do kitty quando o terminal
+//! o suporta; sem ele, `Shift+Tab` alterna as abas. As instâncias continuam
 //! rodando enquanto outra aba ou sub-aba está aberta.
+//!
+//! Mouse: a roda rola o histórico do agente e o conteúdo das outras abas;
+//! arrastar seleciona texto do agente e copia ao soltar (OSC 52 e, no Linux,
+//! `wl-copy`/`xclip`/`xsel`). `Ctrl+Alt+S` devolve o mouse ao terminal, para a
+//! seleção nativa.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
+use base64::Engine;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
@@ -28,10 +41,12 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, crossterm};
-use terraforme_core::agent::Adapter;
+use terraforme_core::agent::{Adapter, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::doc;
+use terraforme_core::extension::{Extension, Report};
 use terraforme_core::limits::{self, Limit, Source};
+use terraforme_core::space::Preferences;
 use terraforme_core::usage::{self, Summary, Tokens, UsageSource};
 use tui_term::widget::PseudoTerminal;
 
@@ -50,6 +65,12 @@ pub const MAX_INSTANCES: usize = 9;
 const PROMPT_DELAY: Duration = Duration::from_secs(2);
 /// Intervalo de verificação do pedido de documentação.
 const DOC_POLL: Duration = Duration::from_millis(500);
+/// Linhas roladas por passo da roda do mouse.
+const WHEEL_LINES: u16 = 3;
+/// Linhas acima do pseudoterminal do agente: o menu e as sub-abas.
+const AGENT_TOP: u16 = 2;
+/// Tempo que a mensagem de status (ex.: "copiado") fica na tela.
+const STATUS_TTL: Duration = Duration::from_secs(3);
 
 /// O que `run` precisa para montar o terminal.
 pub struct Options {
@@ -69,14 +90,24 @@ pub struct Options {
     /// Aparecem num aviso inicial, já que a tela alternativa esconderia o
     /// que fosse impresso antes.
     pub notices: Vec<String>,
+    /// Extensões do modo; os relatórios delas ficam na aba Extensões.
+    pub extensions: Vec<Extension>,
+    /// Lock file do daemon MCP; `None` se o MCP não está disponível.
+    pub mcp_lock: Option<terraforme_core::mcp::LockFile>,
+    /// Id único desta instância da CLI para o registro no MCP.
+    pub client_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     /// O agente, com uma sub-aba por instância.
     Agent,
-    /// Consumo de tokens do agente.
+    /// Consumo de tokens do agente e, se o modo usa o RTK, a economia dele.
     Usage,
+    /// Relatórios das outras extensões do modo, um por sub-aba.
+    Extensions,
+    /// Configuração geral (`config.toml`), editável.
+    Config,
 }
 
 impl Tab {
@@ -84,17 +115,50 @@ impl Tab {
         match self {
             Tab::Agent => agent.to_string(),
             Tab::Usage => "Consumo".into(),
+            Tab::Extensions => "Extensões".into(),
+            Tab::Config => "Config".into(),
         }
     }
 
-    /// Sub-abas como (grupo, rótulo). As instâncias do agente ficam à parte,
-    /// porque não carregam conteúdo.
-    fn views(self) -> Vec<(&'static str, &'static str)> {
-        match self {
-            Tab::Agent => Vec::new(),
-            Tab::Usage => USAGE_VIEWS.iter().map(|&v| ("", v)).collect(),
-        }
+    /// Sub-abas como (grupo, rótulo): as visões do consumo (sem grupo) e os
+    /// relatórios, agrupados pela extensão. As instâncias do agente ficam à
+    /// parte, porque não carregam conteúdo.
+    fn views(self, extensions: &[Extension]) -> Vec<(&'static str, &'static str)> {
+        let base: &[&'static str] = match self {
+            Tab::Usage => &USAGE_VIEWS,
+            _ => &[],
+        };
+        base.iter()
+            .map(|&v| ("", v))
+            .chain(
+                reports(self, extensions)
+                    .into_iter()
+                    .map(|(ext, report)| (ext.name(), report.label)),
+            )
+            .collect()
     }
+}
+
+/// Relatórios das extensões mostrados na aba, na ordem das sub-abas: os do
+/// RTK (economia de tokens) ficam no Consumo, os demais em Extensões.
+fn reports(tab: Tab, extensions: &[Extension]) -> Vec<(Extension, Report)> {
+    extensions
+        .iter()
+        .filter(|&&ext| match tab {
+            Tab::Usage => ext == Extension::Rtk,
+            Tab::Extensions => ext != Extension::Rtk,
+            _ => false,
+        })
+        .flat_map(|&ext| ext.reports().iter().map(move |&report| (ext, report)))
+        .collect()
+}
+
+/// Pedido de spawn de subagente recebido do servidor de controle MCP.
+struct SpawnRequest {
+    spawn_id: String,
+    task: String,
+    cwd: String,
+    model: String,
 }
 
 enum Msg {
@@ -107,6 +171,8 @@ enum Msg {
         index: usize,
         result: Result<Text<'static>, String>,
     },
+    /// Pedido de spawn de subagente vindo do MCP via servidor de controle.
+    SpawnSubagent(SpawnRequest),
 }
 
 enum Content {
@@ -124,6 +190,497 @@ struct View {
     scroll: u16,
     loaded_at: Instant,
     loading: bool,
+}
+
+/// Janela por cima da tela (avisos, atalhos); qualquer tecla fecha.
+struct Popup {
+    title: &'static str,
+    text: String,
+    scroll: u16,
+}
+
+/// Seleção de texto feita com o mouse numa instância: posições
+/// (linha, coluna) na tela visível do pseudoterminal dela.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Selection {
+    agent: usize,
+    anchor: (u16, u16),
+    head: (u16, u16),
+    /// Botão ainda pressionado.
+    dragging: bool,
+}
+
+impl Selection {
+    /// Início e fim, na ordem da leitura.
+    fn range(&self) -> ((u16, u16), (u16, u16)) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+
+    fn contains(&self, row: u16, col: u16) -> bool {
+        let ((r0, c0), (r1, c1)) = self.range();
+        (r0..=r1).contains(&row) && (row != r0 || col >= c0) && (row != r1 || col <= c1)
+    }
+
+    fn text(&self, screen: &vt100::Screen) -> String {
+        let ((r0, c0), (r1, c1)) = self.range();
+        screen.contents_between(r0, c0, r1, c1 + 1)
+    }
+}
+
+/// Campos da aba Config, na ordem da tela.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Provider,
+    Mode,
+    Jail,
+    Doc,
+    BudgetFiveHours,
+    BudgetWeek,
+    Mouse,
+    CopyOnSelect,
+    McpGrace,
+    McpTimeout,
+    McpMax,
+}
+
+const FIELDS: [Field; 11] = [
+    Field::Provider,
+    Field::Mode,
+    Field::Jail,
+    Field::Doc,
+    Field::BudgetFiveHours,
+    Field::BudgetWeek,
+    Field::Mouse,
+    Field::CopyOnSelect,
+    Field::McpGrace,
+    Field::McpTimeout,
+    Field::McpMax,
+];
+
+const MODES: [Mode; 4] = [Mode::None, Mode::Eco, Mode::High, Mode::Hybrid];
+
+impl Field {
+    /// Seção da tela em que o campo aparece.
+    fn group(self) -> &'static str {
+        match self {
+            Field::Provider | Field::Mode | Field::Jail | Field::Doc => {
+                "Início do agente (vale no próximo terraforme cli)"
+            }
+            Field::BudgetFiveHours | Field::BudgetWeek => "Orçamento de tokens (aba Consumo)",
+            Field::Mouse | Field::CopyOnSelect => "TUI",
+            Field::McpGrace | Field::McpTimeout | Field::McpMax => "Daemon MCP",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Field::Provider => "Agente",
+            Field::Mode => "Modo",
+            Field::Jail => "AI Jail (sandbox)",
+            Field::Doc => "Preset doc",
+            Field::BudgetFiveHours => "Tokens em 5h",
+            Field::BudgetWeek => "Tokens em 7 dias",
+            Field::Mouse => "Capturar o mouse",
+            Field::CopyOnSelect => "Copiar ao selecionar",
+            Field::McpGrace => "Carência ao sair (s)",
+            Field::McpTimeout => "Timeout do subagente (s)",
+            Field::McpMax => "Subagentes simultâneos",
+        }
+    }
+
+    /// Campo editado digitando um número (os outros alternam valores).
+    fn numeric(self) -> bool {
+        matches!(
+            self,
+            Field::BudgetFiveHours
+                | Field::BudgetWeek
+                | Field::McpGrace
+                | Field::McpTimeout
+                | Field::McpMax
+        )
+    }
+
+    fn value(self, config: &Config) -> String {
+        let yes = |on: bool| if on { "sim" } else { "não" }.to_string();
+        let tokens = |n: Option<u64>| n.map_or("sem orçamento".into(), thousands);
+        match self {
+            Field::Provider => config.provider.name().into(),
+            Field::Mode => format!(
+                "{} ({})",
+                config.mode.id(),
+                match config.mode {
+                    Mode::None => "sem extensões",
+                    Mode::Eco => "RTK",
+                    Mode::High => "AI Memory",
+                    Mode::Hybrid => "RTK + AI Memory",
+                }
+            ),
+            Field::Jail => yes(config.jail),
+            Field::Doc => yes(config.doc),
+            Field::BudgetFiveHours => tokens(config.budget.five_hours),
+            Field::BudgetWeek => tokens(config.budget.week),
+            Field::Mouse => yes(config.tui.mouse),
+            Field::CopyOnSelect => yes(config.tui.copy_on_select),
+            Field::McpGrace => config.mcp.grace_seconds.to_string(),
+            Field::McpTimeout => config.mcp.subagent_timeout_seconds.to_string(),
+            Field::McpMax => config.mcp.max_simultaneous_subagents.to_string(),
+        }
+    }
+
+    /// Passa ao valor seguinte (ou anterior) dos campos que não são números.
+    fn step(self, config: &mut Config, delta: isize) {
+        match self {
+            Field::Provider => {
+                let providers = implemented_providers();
+                let i = providers
+                    .iter()
+                    .position(|&p| p == config.provider)
+                    .unwrap_or(0);
+                config.provider = providers[step_index(providers.len(), i, delta)];
+            }
+            Field::Mode => {
+                let i = MODES.iter().position(|&m| m == config.mode).unwrap_or(0);
+                config.mode = MODES[step_index(MODES.len(), i, delta)];
+            }
+            Field::Jail => config.jail = !config.jail,
+            Field::Doc => config.doc = !config.doc,
+            Field::Mouse => config.tui.mouse = !config.tui.mouse,
+            Field::CopyOnSelect => config.tui.copy_on_select = !config.tui.copy_on_select,
+            _ => {}
+        }
+    }
+
+    /// Passa ao valor seguinte nas preferências do space. `current` são os
+    /// valores efetivos, para a sequência continuar de onde a tela mostra.
+    fn step_prefs(self, prefs: &mut Preferences, current: &Config, delta: isize) {
+        match self {
+            Field::Provider => {
+                let providers = implemented_providers();
+                let i = providers
+                    .iter()
+                    .position(|&p| p == current.provider)
+                    .unwrap_or(0);
+                prefs.agent = Some(providers[step_index(providers.len(), i, delta)]);
+            }
+            Field::Mode => {
+                let i = MODES.iter().position(|&m| m == current.mode).unwrap_or(0);
+                prefs.mode = Some(MODES[step_index(MODES.len(), i, delta)]);
+            }
+            Field::Jail => prefs.jail = Some(!current.jail),
+            _ => {}
+        }
+    }
+
+    /// Tira o campo das preferências do space: ele volta a valer o que está
+    /// no `config.toml`.
+    fn reset_prefs(self, prefs: &mut Preferences) {
+        match self {
+            Field::Provider => prefs.agent = None,
+            Field::Mode => prefs.mode = None,
+            Field::Jail => prefs.jail = None,
+            _ => {}
+        }
+    }
+
+    /// Grava o número digitado; vazio tira o orçamento (ou volta ao padrão
+    /// nos campos do MCP).
+    fn set(self, config: &mut Config, text: &str) -> Result<(), String> {
+        let n = match text.trim() {
+            "" => None,
+            t => Some(
+                t.replace('.', "")
+                    .parse::<u64>()
+                    .map_err(|_| format!("número inválido: {t}"))?,
+            ),
+        };
+        let mcp = terraforme_core::mcp::McpConfig::default();
+        match self {
+            Field::BudgetFiveHours => config.budget.five_hours = n,
+            Field::BudgetWeek => config.budget.week = n,
+            Field::McpGrace => config.mcp.grace_seconds = n.unwrap_or(mcp.grace_seconds),
+            Field::McpTimeout => {
+                config.mcp.subagent_timeout_seconds = n.unwrap_or(mcp.subagent_timeout_seconds)
+            }
+            Field::McpMax => {
+                config.mcp.max_simultaneous_subagents =
+                    n.map_or(mcp.max_simultaneous_subagents, |n| n.max(1) as usize)
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Volta o campo ao valor padrão.
+    fn reset(self, config: &mut Config) {
+        let default = Config::default();
+        match self {
+            Field::Provider => config.provider = default.provider,
+            Field::Mode => config.mode = default.mode,
+            Field::Jail => config.jail = default.jail,
+            Field::Doc => config.doc = default.doc,
+            Field::BudgetFiveHours => config.budget.five_hours = None,
+            Field::BudgetWeek => config.budget.week = None,
+            Field::Mouse => config.tui.mouse = default.tui.mouse,
+            Field::CopyOnSelect => config.tui.copy_on_select = default.tui.copy_on_select,
+            Field::McpGrace => config.mcp.grace_seconds = default.mcp.grace_seconds,
+            Field::McpTimeout => {
+                config.mcp.subagent_timeout_seconds = default.mcp.subagent_timeout_seconds
+            }
+            Field::McpMax => {
+                config.mcp.max_simultaneous_subagents = default.mcp.max_simultaneous_subagents
+            }
+        }
+    }
+}
+
+/// Agentes implementados, na ordem em que a aba os alterna.
+fn implemented_providers() -> Vec<Provider> {
+    Provider::ALL
+        .into_iter()
+        .filter(|p| p.is_implemented())
+        .collect()
+}
+
+/// Índice seguinte (ou anterior) da sequência, com volta ao fim.
+fn step_index(len: usize, i: usize, delta: isize) -> usize {
+    (i as isize + delta).rem_euclid(len as isize) as usize
+}
+
+/// Estado da aba Config.
+struct Form {
+    config: Config,
+    /// Pasta do space quando agente, modo e jail gravam nas preferências
+    /// dele (`None`: tudo fica no `config.toml`).
+    space: Option<PathBuf>,
+    /// Preferências do space (vazias fora dele: tudo vem do `config.toml`).
+    prefs: Preferences,
+    /// Campo escolhido em [`FIELDS`].
+    index: usize,
+    /// Número sendo digitado no campo escolhido.
+    editing: Option<String>,
+    /// Resultado da última alteração (gravada ou não).
+    message: Option<Result<String, String>>,
+}
+
+/// Pasta do space da pasta atual e as preferências dele; `None` fora de
+/// space, quando o `config.toml` é que vale.
+fn space_prefs() -> Result<(Option<PathBuf>, Preferences)> {
+    let cwd = std::env::current_dir().context("pasta atual")?;
+    let Some(dir) = Preferences::dir_for(&cwd)? else {
+        return Ok((None, Preferences::default()));
+    };
+    let prefs = Preferences::load(&dir)?;
+    Ok((Some(dir), prefs))
+}
+
+impl Form {
+    fn load() -> Form {
+        let (config, mut message) = match Config::load() {
+            Ok(config) => (config, None),
+            Err(err) => (Config::default(), Some(Err(format!("{err:#}")))),
+        };
+        let (space, prefs) = match space_prefs() {
+            Ok(found) => found,
+            Err(err) => {
+                if message.is_none() {
+                    message = Some(Err(format!("{err:#}")));
+                }
+                (None, Preferences::default())
+            }
+        };
+        Form {
+            config,
+            space,
+            prefs,
+            index: 0,
+            editing: None,
+            message,
+        }
+    }
+
+    fn field(&self) -> Field {
+        FIELDS[self.index]
+    }
+
+    /// Agente, modo e jail gravam nas preferências do space quando há um;
+    /// os outros campos são sempre do `config.toml`.
+    fn in_space(&self, field: Field) -> bool {
+        self.space.is_some() && matches!(field, Field::Provider | Field::Mode | Field::Jail)
+    }
+
+    /// Valores que a sessão vai usar: as preferências do space vencem o
+    /// `config.toml`, como em `Choice::resolve`.
+    fn effective(&self) -> Config {
+        let mut config = self.config;
+        if let Some(agent) = self.prefs.agent {
+            config.provider = agent;
+        }
+        if let Some(mode) = self.prefs.mode {
+            config.mode = mode;
+        }
+        if let Some(jail) = self.prefs.jail {
+            config.jail = jail;
+        }
+        config
+    }
+
+    fn save(&mut self) {
+        self.message = Some(match self.config.save() {
+            Ok(()) => Ok(Config::path()
+                .map_or_else(|_| "salvo".into(), |p| format!("salvo em {}", p.display()))),
+            Err(err) => Err(format!("{err:#}")),
+        });
+    }
+
+    /// Grava as preferências do space; vazias, o `Preferences::save` apaga
+    /// o arquivo e o space volta a seguir só o `config.toml`.
+    fn save_prefs(&mut self) {
+        let Some(dir) = &self.space else {
+            return;
+        };
+        self.message = Some(match self.prefs.save(dir) {
+            Ok(()) if self.prefs.is_empty() => {
+                Ok("space sem preferências (vale o config.toml)".into())
+            }
+            Ok(()) => Ok(format!("salvo em {}", Preferences::path(dir).display())),
+            Err(err) => Err(format!("{err:#}")),
+        });
+    }
+
+    /// Alterna o valor do campo: nas preferências do space quando elas valem
+    /// para ele, senão no `config.toml`.
+    fn step(&mut self, field: Field, delta: isize) {
+        if self.in_space(field) {
+            let current = self.effective();
+            field.step_prefs(&mut self.prefs, &current, delta);
+            self.save_prefs();
+        } else {
+            field.step(&mut self.config, delta);
+            self.save();
+        }
+    }
+
+    /// Tira o campo do seu alvo: nas preferências do space, remove o
+    /// override (volta a valer o `config.toml`); nos outros, volta ao
+    /// padrão.
+    fn reset(&mut self, field: Field) {
+        if self.in_space(field) {
+            field.reset_prefs(&mut self.prefs);
+            self.save_prefs();
+        } else {
+            field.reset(&mut self.config);
+            self.save();
+        }
+    }
+
+    /// Trata a tecla; devolve o campo alterado e gravado, se houver.
+    fn key(&mut self, key: KeyEvent) -> Option<Field> {
+        let field = self.field();
+        if let Some(text) = &mut self.editing {
+            match key.code {
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => text.push(c),
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Enter => {
+                    let text = self.editing.take().unwrap_or_default();
+                    return match field.set(&mut self.config, &text) {
+                        Ok(()) => {
+                            self.save();
+                            Some(field)
+                        }
+                        Err(err) => {
+                            self.message = Some(Err(err));
+                            None
+                        }
+                    };
+                }
+                KeyCode::Esc => self.editing = None,
+                _ => {}
+            }
+            return None;
+        }
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.index = self.index.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.index = (self.index + 1).min(FIELDS.len() - 1)
+            }
+            KeyCode::Home | KeyCode::Char('g') => self.index = 0,
+            KeyCode::End | KeyCode::Char('G') => self.index = FIELDS.len() - 1,
+            KeyCode::Enter if field.numeric() => self.editing = Some(String::new()),
+            KeyCode::Char(c) if field.numeric() && c.is_ascii_digit() => {
+                self.editing = Some(c.to_string())
+            }
+            KeyCode::Left | KeyCode::Char('h') if !field.numeric() => {
+                self.step(field, -1);
+                return Some(field);
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') | KeyCode::Enter
+                if !field.numeric() =>
+            {
+                self.step(field, 1);
+                return Some(field);
+            }
+            KeyCode::Delete | KeyCode::Char('d') => {
+                self.reset(field);
+                return Some(field);
+            }
+            KeyCode::Char('r') => *self = Form::load(),
+            _ => {}
+        }
+        None
+    }
+
+    fn text(&self) -> Text<'static> {
+        let effective = self.effective();
+        let mut lines = Vec::new();
+        for (i, &field) in FIELDS.iter().enumerate() {
+            if i == 0 || FIELDS[i - 1].group() != field.group() {
+                if i > 0 {
+                    lines.push(Line::default());
+                }
+                lines.push(Line::raw(field.group()).bold());
+            }
+            let selected = i == self.index;
+            let value = match (&self.editing, selected) {
+                (Some(text), true) => format!("{text}▏"),
+                _ => field.value(&effective),
+            };
+            let style = if selected {
+                Style::new().black().on_cyan().bold()
+            } else {
+                Style::new()
+            };
+            lines.push(Line::from(vec![
+                Span::raw(if selected { " › " } else { "   " }),
+                Span::styled(format!("{:<26}", field.label()), style),
+                Span::raw("  "),
+                Span::raw(value).cyan(),
+            ]));
+        }
+        lines.push(Line::default());
+        match &self.message {
+            Some(Ok(text)) => lines.push(Line::raw(format!("✔ {text}")).green()),
+            Some(Err(err)) => lines.push(Line::raw(format!("✘ {err}")).red()),
+            None => {}
+        }
+        let footer = match &self.space {
+            Some(dir) => format!(
+                "Agente, modo e jail valem em {} (preferências do space); \
+                 os outros campos valem no config.toml. As flags do terraforme cli têm prioridade.",
+                Preferences::path(dir).display()
+            ),
+            None => "As flags do terraforme cli e as preferências do space têm prioridade \
+                     sobre o agente, o modo e o jail."
+                .to_string(),
+        };
+        lines.push(Line::raw(footer).dark_gray());
+        Text::from(lines)
+    }
 }
 
 /// Uma instância do agente, no próprio pseudoterminal.
@@ -145,6 +702,12 @@ struct Agent {
     pending: Option<String>,
     /// Momento da abertura, para o atraso de entregar o prompt.
     booted: Instant,
+    /// Id do spawn MCP (Some = este é um subagente MCP).
+    spawn_id: Option<String>,
+    /// Saída acumulada do subagente para devolver ao MCP.
+    output_buf: Vec<u8>,
+    /// Porta do MCP para enviar o resultado quando terminar.
+    mcp_port: Option<u16>,
 }
 
 impl Agent {
@@ -207,6 +770,9 @@ impl Agent {
             doc: false,
             pending: None,
             booted: Instant::now(),
+            spawn_id: None,
+            output_buf: Vec::new(),
+            mcp_port: None,
         })
     }
 
@@ -262,6 +828,7 @@ impl Drop for Agent {
 struct App {
     agent: String,
     title: String,
+    extensions: Vec<Extension>,
     adapter: &'static dyn Adapter,
     command: Command,
     cwd: PathBuf,
@@ -273,11 +840,25 @@ struct App {
     /// consumo.
     focused: usize,
     view: Option<View>,
-    notices: Option<(String, u16)>,
+    /// Estado da aba Config, enquanto ela está aberta.
+    form: Option<Form>,
+    popup: Option<Popup>,
     /// Área do agente (a tela menos o menu e as sub-abas).
     body: Rect,
     tx: Sender<Msg>,
     quit: bool,
+    /// Porta do daemon MCP para envio de resultados de subagentes.
+    mcp_port: Option<u16>,
+    /// Protocolo de teclado do kitty ligado: `Ctrl+Shift`/`Ctrl+Alt` chegam
+    /// distintos e `Shift+Tab` pode seguir para o agente.
+    enhanced: bool,
+    /// A TUI captura o mouse (roda e seleção próprias).
+    mouse: bool,
+    /// Copia a seleção ao soltar o botão do mouse.
+    copy_on_select: bool,
+    selection: Option<Selection>,
+    /// Mensagem curta no canto da tela, até [`STATUS_TTL`].
+    status: Option<(String, Instant)>,
 }
 
 /// Abre a TUI com o agente dentro e só volta quando todas as instâncias
@@ -290,9 +871,14 @@ pub fn run(options: Options) -> Result<()> {
     };
     let (tx, rx) = mpsc::channel();
 
+    let mcp_port = options.mcp_lock.as_ref().map(|l| l.port);
+    let client_id = options.client_id.clone();
+    let tui = Config::load().map(|c| c.tui).unwrap_or_default();
+
     let mut app = App {
         agent: options.agent,
         title: options.title,
+        extensions: options.extensions,
         adapter: options.adapter,
         command: options.command,
         cwd,
@@ -302,13 +888,52 @@ pub fn run(options: Options) -> Result<()> {
         active: Tab::Agent,
         focused: 1,
         view: None,
-        notices: (!options.notices.is_empty()).then(|| (options.notices.join("\n"), 0)),
+        form: None,
+        popup: (!options.notices.is_empty()).then(|| notices(options.notices.join("\n"))),
         body: body_size(Rect::new(0, 0, cols, rows)),
         tx: tx.clone(),
         quit: false,
+        mcp_port,
+        enhanced: false,
+        mouse: tui.mouse,
+        copy_on_select: tui.copy_on_select,
+        selection: None,
+        status: None,
     };
     for _ in 0..options.instances.clamp(1, MAX_INSTANCES) {
         app.spawn()?;
+    }
+
+    // Inicia servidor de controle e registro no MCP, se disponível.
+    if let Some(mcp) = mcp_port {
+        let control_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let control_port = control_listener.local_addr()?.port();
+        let control_addr = format!("127.0.0.1:{control_port}");
+
+        // Registra no MCP.
+        let reg_body = format!(
+            r#"{{"client_id":"{}","pid":{},"control_addr":"{}"}}"#,
+            client_id,
+            std::process::id(),
+            control_addr
+        );
+        http_post_fire(&format!("127.0.0.1:{mcp}"), "/register", &reg_body);
+
+        // Heartbeat a cada 2s.
+        let hb_client = client_id.clone();
+        thread::spawn(move || {
+            let body = format!(r#"{{"client_id":"{}"}}"#, hb_client);
+            loop {
+                thread::sleep(Duration::from_secs(2));
+                http_post_fire(&format!("127.0.0.1:{mcp}"), "/heartbeat", &body);
+            }
+        });
+
+        // Servidor de controle: recebe POST /spawn do MCP.
+        let ctrl_tx = tx.clone();
+        thread::spawn(move || {
+            control_server(control_listener, ctrl_tx);
+        });
     }
 
     // Assiste o pedido de documentação: o agente grava o arquivo, o
@@ -326,24 +951,59 @@ pub fn run(options: Options) -> Result<()> {
     });
 
     let mut terminal = ratatui::init();
-    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    let mut stdout = std::io::stdout();
+    let _ = execute!(stdout, EnableBracketedPaste);
+    if app.mouse {
+        let _ = execute!(stdout, EnableMouseCapture);
+    }
+    app.enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+        && execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .is_ok();
     let result = app.event_loop(&mut terminal, &rx);
-    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    if app.enhanced {
+        let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+    }
+    let _ = execute!(stdout, DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
 
     // Encerra as instâncias que ainda estiverem rodando.
     drop(app);
+
+    // Desregistra do MCP.
+    if let Some(mcp) = mcp_port {
+        let body = format!(r#"{{"client_id":"{}"}}"#, client_id);
+        http_post_fire(&format!("127.0.0.1:{mcp}"), "/unregister", &body);
+    }
+
     result
 }
 
-/// Abas na ordem do menu: o agente e o consumo.
-fn tabs() -> [Tab; 2] {
+/// Abas na ordem do menu: o agente, o consumo, as extensões (se o modo usa
+/// alguma além do RTK, que fica no consumo) e a configuração.
+fn tabs(extensions: &[Extension]) -> Vec<Tab> {
+    let others = !reports(Tab::Extensions, extensions).is_empty();
     [Tab::Agent, Tab::Usage]
+        .into_iter()
+        .chain(others.then_some(Tab::Extensions))
+        .chain([Tab::Config])
+        .collect()
+}
+
+/// Janela de avisos.
+fn notices(text: String) -> Popup {
+    Popup {
+        title: " Avisos ",
+        text,
+        scroll: 0,
+    }
 }
 
 impl App {
-    fn tabs(&self) -> [Tab; 2] {
-        tabs()
+    fn tabs(&self) -> Vec<Tab> {
+        tabs(&self.extensions)
     }
 
     /// Abre mais uma instância do agente e devolve o número dela.
@@ -363,14 +1023,68 @@ impl App {
         Ok(id)
     }
 
+    fn notify(&mut self, text: impl Into<String>) {
+        self.popup = Some(notices(text.into()));
+    }
+
+    /// Mensagem curta no canto da tela, que some sozinha.
+    fn flash(&mut self, text: impl Into<String>) {
+        self.status = Some((text.into(), Instant::now()));
+    }
+
     fn new_instance(&mut self) {
         if self.agents.len() >= MAX_INSTANCES {
-            self.notices = Some((format!("⚠ no máximo {MAX_INSTANCES} instâncias"), 0));
+            self.notify(format!("⚠ no máximo {MAX_INSTANCES} instâncias"));
             return;
         }
         match self.spawn() {
             Ok(id) => self.focus(id),
-            Err(err) => self.notices = Some((format!("⚠ {err:#}"), 0)),
+            Err(err) => self.notify(format!("⚠ {err:#}")),
+        }
+    }
+
+    /// Abre uma instância de subagente para um pedido MCP.
+    fn spawn_subagent(&mut self, req: SpawnRequest) {
+        if self.agents.len() >= MAX_INSTANCES {
+            if let Some(port) = self.mcp_port {
+                send_spawn_result(
+                    port,
+                    &req.spawn_id,
+                    &format!("⚠ no máximo {MAX_INSTANCES} instâncias"),
+                    1,
+                );
+            }
+            return;
+        }
+        let cwd = if req.cwd.is_empty() {
+            self.cwd.clone()
+        } else {
+            PathBuf::from(&req.cwd)
+        };
+        let id = self.next_id;
+        let mut command = Command::new(self.adapter.bin());
+        command.arg("--print");
+        command.arg("--dangerously-skip-permissions");
+        command.arg("-p");
+        command.arg(&req.task);
+        if !req.model.is_empty() && req.model != "claude-haiku-4-5" {
+            command.arg("--model").arg(&req.model);
+        }
+        match Agent::spawn(id, self.adapter, &command, &cwd, self.body, false, &self.tx) {
+            Ok(mut agent) => {
+                agent.spawn_id = Some(req.spawn_id);
+                agent.mcp_port = self.mcp_port;
+                self.agents.push(agent);
+                self.next_id += 1;
+                self.focus(id);
+                self.notify("ℹ subagente MCP aberto · ⌃⌥W fecha");
+            }
+            Err(err) => {
+                if let Some(port) = self.mcp_port {
+                    send_spawn_result(port, &req.spawn_id, &err.to_string(), 1);
+                }
+                self.notify(format!("⚠ subagente: {err:#}"));
+            }
         }
     }
 
@@ -378,7 +1092,7 @@ impl App {
     /// agente; fica aberta até o usuário fechá-la (`Shift+F12`).
     fn spawn_doc(&mut self, instructions: String) {
         if self.agents.len() >= MAX_INSTANCES {
-            self.notices = Some((format!("⚠ no máximo {MAX_INSTANCES} instâncias"), 0));
+            self.notify(format!("⚠ no máximo {MAX_INSTANCES} instâncias"));
             return;
         }
         match self.spawn() {
@@ -388,12 +1102,9 @@ impl App {
                     agent.pending = Some(instructions);
                 }
                 self.focus(id);
-                self.notices = Some((
-                    "ℹ instância de documentação aberta · ⇧F12 fecha quando terminar".to_string(),
-                    0,
-                ));
+                self.notify("ℹ instância de documentação aberta · ⌃⌥W fecha quando terminar");
             }
-            Err(err) => self.notices = Some((format!("⚠ {err:#}"), 0)),
+            Err(err) => self.notify(format!("⚠ {err:#}")),
         }
     }
 
@@ -416,14 +1127,58 @@ impl App {
     /// Abre a aba do agente na sub-aba da instância.
     fn focus(&mut self, id: usize) {
         self.focused = id;
+        self.selection = None;
         self.select(Tab::Agent);
+    }
+
+    /// Sub-aba `n` (1–9) da aba aberta; na aba do agente, um número além da
+    /// última abre outra instância.
+    fn open_sub(&mut self, n: usize) {
+        if self.view.is_none() && n > self.agents.len() {
+            self.new_instance();
+        } else {
+            self.pick(n - 1);
+        }
+    }
+
+    /// Troca a instância aberta por uma nova, no mesmo lugar das sub-abas.
+    fn restart_active(&mut self) {
+        if self.active != Tab::Agent {
+            return;
+        }
+        let Some(i) = self.agents.iter().position(|a| a.id == self.focused) else {
+            return;
+        };
+        let id = self.next_id;
+        match Agent::spawn(
+            id,
+            self.adapter,
+            &self.command,
+            &self.cwd,
+            self.body,
+            self.session_ids,
+            &self.tx,
+        ) {
+            Ok(agent) => {
+                self.next_id += 1;
+                self.agents.insert(i + 1, agent);
+                // Encerra a antiga (o `Drop` mata o processo).
+                self.agents.remove(i);
+                self.focus(id);
+                self.flash(format!(
+                    "↻ {} reiniciado",
+                    instance_label(&self.agent, id, false)
+                ));
+            }
+            Err(err) => self.notify(format!("⚠ {err:#}")),
+        }
     }
 
     /// Sub-abas da aba aberta (instâncias do agente ou visões) e qual está
     /// aberta.
     fn sub_tabs(&self) -> (usize, usize) {
         match &self.view {
-            Some(view) => (view.tab.views().len(), view.index),
+            Some(view) => (view.tab.views(&self.extensions).len(), view.index),
             None => (
                 self.agents.len(),
                 self.agents
@@ -480,12 +1235,22 @@ impl App {
                 self.handle_msg(msg);
                 dirty = true;
             }
+            // Só as visões do consumo se atualizam sozinhas (não os relatórios do RTK).
             if let Some(view) = &self.view
                 && !view.loading
                 && view.tab == Tab::Usage
+                && view.index < USAGE_VIEWS.len()
                 && view.loaded_at.elapsed() >= USAGE_REFRESH
             {
                 self.load(false);
+            }
+            if self
+                .status
+                .as_ref()
+                .is_some_and(|(_, at)| at.elapsed() >= STATUS_TTL)
+            {
+                self.status = None;
+                dirty = true;
             }
             if dirty {
                 self.fit(terminal)?;
@@ -516,6 +1281,7 @@ impl App {
         let body = body_size(Rect::new(0, 0, size.width, size.height));
         if body != self.body {
             self.body = body;
+            self.selection = None;
             for agent in &mut self.agents {
                 agent.resize(body)?;
             }
@@ -527,14 +1293,38 @@ impl App {
         match msg {
             Msg::Output(id, bytes) => {
                 if let Some(agent) = self.agent_mut(id) {
+                    if agent.spawn_id.is_some() {
+                        agent.output_buf.extend_from_slice(&bytes);
+                    }
                     agent.parser.process(&bytes);
                     agent.deliver_pending();
                 }
             }
-            Msg::Exited(id) => self.closed(id),
+            Msg::Exited(id) => {
+                // Se era subagente MCP: envia resultado e, se saiu com sucesso, fecha a aba.
+                if let Some(agent) = self.agent_mut(id)
+                    && let (Some(spawn_id), Some(mcp_port)) =
+                        (agent.spawn_id.clone(), agent.mcp_port)
+                {
+                    let output = String::from_utf8_lossy(&agent.output_buf).into_owned();
+                    let exit_code = agent
+                        .child
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .map(|s| s.exit_code() as i32)
+                        .unwrap_or(0);
+                    send_spawn_result(mcp_port, &spawn_id, &output, exit_code);
+                    if exit_code == 0 {
+                        self.closed(id);
+                        return;
+                    }
+                }
+                self.closed(id);
+            }
             Msg::Doc(result) => match result {
                 Ok(instructions) => self.spawn_doc(instructions),
-                Err(err) => self.notices = Some((format!("⚠ {err}"), 0)),
+                Err(err) => self.notify(format!("⚠ {err}")),
             },
             Msg::Loaded { tab, index, result } => {
                 if let Some(view) = &mut self.view
@@ -549,6 +1339,7 @@ impl App {
                     view.loaded_at = Instant::now();
                 }
             }
+            Msg::SpawnSubagent(req) => self.spawn_subagent(req),
         }
     }
 
@@ -556,7 +1347,14 @@ impl App {
     fn handle_event(&mut self, event: Event) -> Result<bool> {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => return self.handle_key(key),
-            Event::Paste(text) if self.notices.is_none() => {
+            Event::Paste(text) if self.popup.is_none() => {
+                if let Some(form) = &mut self.form {
+                    if let Some(editing) = &mut form.editing {
+                        editing.extend(text.chars().filter(|c| c.is_ascii_digit()));
+                    }
+                    return Ok(false);
+                }
+                self.selection = None;
                 if let Some(agent) = self.active_agent() {
                     if agent.parser.screen().bracketed_paste() {
                         agent.send(format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
@@ -565,43 +1363,240 @@ impl App {
                     }
                 }
             }
+            Event::Mouse(mouse) => self.handle_mouse(mouse)?,
             // O redesenho seguinte ajusta as instâncias ao novo tamanho (`fit`).
             _ => {}
         }
         Ok(false)
     }
 
+    /// Roda do mouse e seleção de texto. Sem a captura do mouse o terminal
+    /// converte a roda em setas, que no agente navegam o histórico de prompts
+    /// em vez de rolar a tela.
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        let up = match mouse.kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            MouseEventKind::Down(MouseButton::Left)
+            | MouseEventKind::Drag(MouseButton::Left)
+            | MouseEventKind::Up(MouseButton::Left) => {
+                self.select_text(mouse);
+                return Ok(());
+            }
+            _ => return Ok(()),
+        };
+        if let Some(popup) = &mut self.popup {
+            popup.scroll = wheel(popup.scroll, up);
+            return Ok(());
+        }
+        if let Some(form) = &mut self.form {
+            if form.editing.is_none() {
+                form.index = if up {
+                    form.index.saturating_sub(1)
+                } else {
+                    (form.index + 1).min(FIELDS.len() - 1)
+                };
+            }
+            return Ok(());
+        }
+        if let Some(view) = &mut self.view {
+            view.scroll = wheel(view.scroll, up);
+            return Ok(());
+        }
+        self.selection = None;
+        let Some(agent) = self.active_agent() else {
+            return Ok(());
+        };
+        let screen = agent.parser.screen();
+        if screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None {
+            // O agente pediu o mouse: ele mesmo rola.
+            let col = mouse.column;
+            let row = mouse.row.saturating_sub(AGENT_TOP);
+            let bytes = wheel_bytes(up, col, row, screen.mouse_protocol_encoding());
+            agent.send(&bytes)?;
+        } else if screen.alternate_screen() {
+            // Tela alternativa não tem histórico: vira setas, como no xterm.
+            let arrow = if up { KeyCode::Up } else { KeyCode::Down };
+            let bytes = key_bytes(
+                KeyEvent::new(arrow, KeyModifiers::NONE),
+                screen.application_cursor(),
+            );
+            agent.send(&bytes.repeat(WHEEL_LINES as usize))?;
+        } else {
+            let lines = WHEEL_LINES as isize;
+            agent.scroll_history(if up { lines } else { -lines });
+        }
+        Ok(())
+    }
+
+    /// Arrastar com o botão esquerdo seleciona texto da instância aberta e,
+    /// ao soltar, copia (se [`App::copy_on_select`]). Um clique sem arrastar
+    /// desfaz a seleção.
+    fn select_text(&mut self, mouse: MouseEvent) {
+        if self.popup.is_some() || self.view.is_some() {
+            return;
+        }
+        let Some(agent) = self.agent(self.focused) else {
+            return;
+        };
+        let (rows, cols) = agent.parser.screen().size();
+        let pos = (
+            mouse
+                .row
+                .saturating_sub(AGENT_TOP)
+                .min(rows.saturating_sub(1)),
+            mouse.column.min(cols.saturating_sub(1)),
+        );
+        match mouse.kind {
+            MouseEventKind::Down(_) => {
+                self.selection = (mouse.row >= AGENT_TOP).then_some(Selection {
+                    agent: self.focused,
+                    anchor: pos,
+                    head: pos,
+                    dragging: true,
+                });
+            }
+            MouseEventKind::Drag(_) => {
+                if let Some(selection) = &mut self.selection
+                    && selection.dragging
+                {
+                    selection.head = pos;
+                }
+            }
+            _ => {
+                let Some(selection) = &mut self.selection else {
+                    return;
+                };
+                selection.dragging = false;
+                if selection.anchor == selection.head {
+                    self.selection = None;
+                } else if self.copy_on_select {
+                    self.copy_selection();
+                }
+            }
+        }
+    }
+
+    /// `Ctrl+Alt+C`: a seleção ou, sem ela, a tela visível da instância; nas
+    /// outras abas, o conteúdo delas.
+    fn copy(&mut self) {
+        let text = match (&self.view, &self.form) {
+            (_, Some(form)) => plain(&form.text()),
+            (Some(view), None) => match &view.content {
+                Content::Ready(text) => plain(text),
+                Content::Failed(err) => err.clone(),
+                Content::Loading => String::new(),
+            },
+            (None, None) => match self.agent(self.focused) {
+                Some(agent) => match self.selection.filter(|s| s.agent == agent.id) {
+                    Some(selection) => selection.text(agent.parser.screen()),
+                    None => agent.parser.screen().contents(),
+                },
+                None => String::new(),
+            },
+        };
+        self.copy_text(&text);
+    }
+
+    fn copy_selection(&mut self) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let Some(agent) = self.agent(selection.agent) else {
+            return;
+        };
+        let text = selection.text(agent.parser.screen());
+        self.copy_text(&text);
+    }
+
+    fn copy_text(&mut self, text: &str) {
+        let text = text.trim_end();
+        if text.is_empty() {
+            self.flash("nada para copiar");
+            return;
+        }
+        let chars = text.chars().count();
+        self.flash(if clipboard(text) {
+            format!("✔ copiado · {chars} caracteres")
+        } else {
+            format!("✔ copiado pelo terminal (OSC 52) · {chars} caracteres")
+        });
+    }
+
+    /// Liga ou desliga a captura do mouse; desligada, o terminal faz a
+    /// seleção nativa (e a roda vira setas).
+    fn set_mouse(&mut self, on: bool) {
+        self.mouse = on;
+        self.selection = None;
+        let mut stdout = std::io::stdout();
+        let _ = if on {
+            execute!(stdout, EnableMouseCapture)
+        } else {
+            execute!(stdout, DisableMouseCapture)
+        };
+        self.flash(if on {
+            "🖱 mouse na TUI: arrastar seleciona e copia · ⌃⌥S devolve ao terminal"
+        } else {
+            "🖱 mouse no terminal: seleção nativa · ⌃⌥S volta para a TUI"
+        });
+    }
+
+    fn help(&mut self) {
+        self.popup = Some(Popup {
+            title: " Atalhos ",
+            text: shortcuts(self.enhanced),
+            scroll: 0,
+        });
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Result<bool> {
         let tabs = self.tabs();
-        if let Some(n) = shift_function(key)
-            && n <= tabs.len()
-        {
+        if let Some(n) = tab_number(key).filter(|&n| n <= tabs.len()) {
             self.select(tabs[n - 1]);
             return Ok(false);
         }
-        if let Some(n) = shift_alt_digit(key) {
-            self.pick(n - 1);
+        if let Some(n) = sub_tab_number(key) {
+            self.open_sub(n);
             return Ok(false);
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let back = key.code == KeyCode::BackTab || shift;
+        let current = tabs.iter().position(|&t| t == self.active).unwrap_or(0);
+        let next_tab = tabs[(current + 1) % tabs.len()];
         match key.code {
             KeyCode::F(10) => return Ok(true),
-            // Sub-abas da aba aberta, igual em todas: Ctrl+←→ / Ctrl+PgUp/PgDn
-            // passam para a vizinha (Shift+Alt+1–9 vai direto, acima).
-            KeyCode::Left | KeyCode::PageUp if ctrl => self.cycle(-1),
-            KeyCode::Right | KeyCode::PageDown if ctrl => self.cycle(1),
+            // Ctrl+Alt+Tab: próxima sub-aba (com Shift, a anterior). Sem o
+            // protocolo do kitty chega como Alt+Tab.
+            KeyCode::Tab | KeyCode::BackTab if alt => self.cycle(if back { -1 } else { 1 }),
+            // Ctrl+Shift+Tab: próxima aba.
+            KeyCode::Tab | KeyCode::BackTab if ctrl && back => self.select(next_tab),
+            // Sem o protocolo do kitty, Ctrl+Shift+Tab chega igual a Shift+Tab,
+            // que então também alterna as abas; com ele, Shift+Tab segue para
+            // o agente (troca de modo do Claude Code).
+            KeyCode::BackTab if !self.enhanced || self.active != Tab::Agent => {
+                self.select(next_tab)
+            }
+            KeyCode::PageUp if ctrl => self.cycle(-1),
+            KeyCode::PageDown if ctrl => self.cycle(1),
+            // Comandos da TUI: Ctrl+Alt+letra, que o agente não usa.
+            KeyCode::Char(c) if ctrl && alt && "nwrcsk".contains(c.to_ascii_lowercase()) => {
+                match c.to_ascii_lowercase() {
+                    'n' => self.new_instance(),
+                    'w' => self.close_active(),
+                    'r' => self.restart_active(),
+                    'c' => self.copy(),
+                    's' => self.set_mouse(!self.mouse),
+                    _ => self.help(),
+                }
+            }
             // Alguns terminais mandam Shift+F12 como F24.
             KeyCode::F(12) if shift => self.close_active(),
             KeyCode::F(24) => self.close_active(),
             KeyCode::F(12) => self.new_instance(),
-            // Tab e F1–F9 sem Shift seguem para o agente.
-            KeyCode::BackTab => {
-                let i = tabs.iter().position(|&t| t == self.active).unwrap_or(0);
-                self.select(tabs[(i + 1) % tabs.len()]);
-            }
+            _ if self.popup.is_some() => self.popup_key(key),
             _ if self.view.is_some() => self.view_key(key),
-            _ if self.notices.is_some() => self.notices_key(key),
             _ => {
                 let Some(agent) = self.active_agent() else {
                     return Ok(false);
@@ -610,6 +1605,8 @@ impl App {
                 match key.code {
                     KeyCode::PageUp if shift => agent.scroll_history(half),
                     KeyCode::PageDown if shift => agent.scroll_history(-half),
+                    KeyCode::Home if shift => agent.scroll_history(isize::MAX),
+                    KeyCode::End if shift => agent.scroll_history(isize::MIN),
                     _ => {
                         let bytes = key_bytes(key, agent.parser.screen().application_cursor());
                         if !bytes.is_empty() {
@@ -618,6 +1615,7 @@ impl App {
                         }
                     }
                 }
+                self.selection = None;
             }
         }
         Ok(false)
@@ -630,18 +1628,32 @@ impl App {
         }
     }
 
-    fn notices_key(&mut self, key: KeyEvent) {
-        let Some((_, scroll)) = &mut self.notices else {
+    fn popup_key(&mut self, key: KeyEvent) {
+        let Some(popup) = &mut self.popup else {
             return;
         };
         match key.code {
-            KeyCode::Up => *scroll = scroll.saturating_sub(1),
-            KeyCode::Down => *scroll = scroll.saturating_add(1),
-            _ => self.notices = None,
+            KeyCode::Up => popup.scroll = popup.scroll.saturating_sub(1),
+            KeyCode::Down => popup.scroll = popup.scroll.saturating_add(1),
+            _ => self.popup = None,
         }
     }
 
     fn view_key(&mut self, key: KeyEvent) {
+        if let Some(form) = &mut self.form {
+            if form.editing.is_none() && matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                self.select(Tab::Agent);
+                return;
+            }
+            // A TUI aplica na hora as preferências dela.
+            let tui = form.config.tui;
+            match form.key(key) {
+                Some(Field::Mouse) if tui.mouse != self.mouse => self.set_mouse(tui.mouse),
+                Some(Field::CopyOnSelect) => self.copy_on_select = tui.copy_on_select,
+                _ => {}
+            }
+            return;
+        }
         let Some(view) = &mut self.view else {
             return;
         };
@@ -655,6 +1667,9 @@ impl App {
             KeyCode::PageDown => view.scroll = view.scroll.saturating_add(10),
             KeyCode::Home | KeyCode::Char('g') => view.scroll = 0,
             KeyCode::Char('r') => self.load(true),
+            // ←/→: sub-aba anterior/próxima (nas visões, não chega ao agente).
+            KeyCode::Left => self.cycle(-1),
+            KeyCode::Right => self.cycle(1),
             _ => {}
         }
     }
@@ -662,6 +1677,7 @@ impl App {
     /// Abre a aba; as que não são do agente recarregam o conteúdo.
     fn select(&mut self, tab: Tab) {
         self.active = tab;
+        self.form = (tab == Tab::Config).then(Form::load);
         self.view = match tab {
             Tab::Agent => None,
             tab => Some(View {
@@ -673,7 +1689,7 @@ impl App {
                 loading: false,
             }),
         };
-        if self.view.is_some() {
+        if self.view.is_some() && self.form.is_none() {
             self.load(true);
         }
     }
@@ -694,13 +1710,19 @@ impl App {
         }
         view.loading = true;
         let (tab, index) = (view.tab, view.index);
+        // No consumo, os relatórios do RTK vêm depois das visões próprias.
+        let report = match tab {
+            Tab::Usage => index.checked_sub(USAGE_VIEWS.len()),
+            _ => Some(index),
+        }
+        .and_then(|i| reports(tab, &self.extensions).get(i).copied());
         let tx = self.tx.clone();
         let cwd = self.cwd.clone();
         let adapter = self.adapter;
         thread::spawn(move || {
-            let result = match tab {
-                Tab::Agent => return,
-                Tab::Usage => {
+            let result = match (tab, report) {
+                (_, Some((ext, report))) => ext.report(report, adapter.bin()).map(Text::from),
+                (Tab::Usage, None) => {
                     adapter
                         .usage(&cwd, launched, session.as_deref())
                         .map(|u| match index {
@@ -709,10 +1731,16 @@ impl App {
                             _ => format_agents(&u),
                         })
                 }
+                _ => return,
             };
             let result = result.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::Loaded { tab, index, result });
         });
+    }
+
+    /// Prefixo das teclas das sub-abas mostrado nas barras.
+    fn sub_key(&self) -> &'static str {
+        if self.enhanced { "⌃⌥" } else { "⌥" }
     }
 
     fn draw(&self, frame: &mut Frame) {
@@ -723,26 +1751,36 @@ impl App {
 
         if let Some(view) = &self.view {
             self.draw_view(frame, view, body);
-            return;
-        }
-
-        if self.active == Tab::Agent
-            && let Some(agent) = self.agent(self.focused)
-        {
+        } else if let Some(agent) = self.agent(self.focused) {
             let [instances, body] =
                 Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
             frame.render_widget(self.instances(), instances);
 
             let mut term = PseudoTerminal::new(agent.parser.screen());
-            if self.notices.is_some() || agent.scrollback > 0 {
+            if self.popup.is_some() || agent.scrollback > 0 {
                 let mut cursor = tui_term::widget::Cursor::default();
                 cursor.hide();
                 term = term.cursor(cursor);
             }
             frame.render_widget(term, body);
 
+            if let Some(selection) = self.selection.filter(|s| s.agent == agent.id) {
+                let buf = frame.buffer_mut();
+                for row in 0..body.height {
+                    for col in 0..body.width {
+                        if selection.contains(row, col) {
+                            buf[(body.x + col, body.y + row)]
+                                .set_style(Style::new().black().on_light_cyan());
+                        }
+                    }
+                }
+            }
+
             if agent.scrollback > 0 {
-                let hint = format!(" histórico −{} · Shift+PgDn volta ", agent.scrollback);
+                let hint = format!(
+                    " histórico −{} · Shift+PgDn/Shift+End volta ",
+                    agent.scrollback
+                );
                 let width = hint.chars().count() as u16;
                 let area = Rect::new(body.right().saturating_sub(width), body.y, width, 1)
                     .intersection(body);
@@ -750,23 +1788,37 @@ impl App {
             }
         }
 
-        if let Some((text, scroll)) = &self.notices {
+        if let Some(popup) = &self.popup {
             let area = body.inner(Margin::new(
                 (body.width / 12).max(1),
                 (body.height / 4).max(1),
             ));
             frame.render_widget(Clear, area);
             let block = Block::bordered()
-                .title(Line::from(" Avisos ").bold().cyan())
-                .title_bottom(Line::from(" qualquer tecla fecha ").dark_gray())
+                .title(Line::from(popup.title).bold().cyan())
+                .title_bottom(Line::from(" ↑↓ rolar · qualquer tecla fecha ").dark_gray())
                 .border_style(Style::new().cyan());
             frame.render_widget(
-                Paragraph::new(text.as_str())
+                Paragraph::new(popup.text.as_str())
                     .wrap(Wrap { trim: false })
-                    .scroll((*scroll, 0))
+                    .scroll((popup.scroll, 0))
                     .block(block),
                 area,
             );
+        }
+
+        if let Some((text, _)) = &self.status {
+            let span = Span::raw(format!(" {text} ")).black().on_green();
+            let full = frame.area();
+            let width = (span.width() as u16).min(full.width);
+            let area = Rect::new(
+                full.right().saturating_sub(width),
+                full.bottom().saturating_sub(1),
+                width,
+                1,
+            );
+            frame.render_widget(Clear, area);
+            frame.render_widget(span, area);
         }
     }
 
@@ -781,16 +1833,30 @@ impl App {
             } else {
                 Style::new().white().on_dark_gray()
             };
-            spans.push(Span::styled(
-                format!(" ⇧F{} ", i + 1),
-                style.add_modifier(Modifier::BOLD),
-            ));
+            let key = if self.enhanced {
+                format!(" ⌃⇧{} ", i + 1)
+            } else {
+                format!(" ⇧F{} ", i + 1)
+            };
+            spans.push(Span::styled(key, style.add_modifier(Modifier::BOLD)));
             spans.push(Span::styled(format!("{} ", tab.label(&self.agent)), style));
             spans.push(Span::raw(" "));
         }
         spans.push(Span::styled(" F10 ", Style::new().white().on_red().bold()));
         spans.push(Span::styled("sair ", Style::new().white().on_red()));
-        spans.push(Span::raw(format!("  ⇧Tab alterna · {}", self.title)).dark_gray());
+        let switch = if self.enhanced { "⌃⇧Tab" } else { "⇧Tab" };
+        let mouse = if self.mouse {
+            ""
+        } else {
+            " · 🖱 seleção nativa"
+        };
+        spans.push(
+            Span::raw(format!(
+                "  {switch} alterna · ⌃⌥K atalhos{mouse} · {}",
+                self.title
+            ))
+            .dark_gray(),
+        );
         Line::from(spans).style(Style::new().bg(Color::Reset))
     }
 
@@ -803,28 +1869,48 @@ impl App {
             .collect();
         let (_, current) = self.sub_tabs();
         let mut spans = vec![Span::raw(" ")];
-        spans.extend(sub_tab_spans(&labels, current));
+        spans.extend(sub_tab_spans(&labels, current, self.sub_key()));
         let hint = if self.agents.len() > 1 {
-            " ⇧⌥1-9/Ctrl+←→ sub-aba · F12 nova · ⇧F12 fecha"
+            format!(
+                " {k}Tab/{k}1-9 instância · ⌃⌥N nova · ⌃⌥W fecha · ⌃⌥R reinicia",
+                k = self.sub_key()
+            )
         } else {
-            " F12 nova instância · ⇧F12 fecha"
+            format!(
+                " {}{} ou ⌃⌥N nova instância · ⌃⌥W fecha · arraste para copiar",
+                self.sub_key(),
+                self.agents.len() + 1
+            )
         };
         spans.push(Span::raw(hint).dark_gray());
         Line::from(spans)
     }
 
     fn draw_view(&self, frame: &mut Frame, view: &View, area: Rect) {
-        let views = view.tab.views();
-        let (title, hint) = if self.agents.len() > 1 {
-            (
-                format!("Consumo de tokens · {} {}", self.agent, self.focused),
-                " ⇧⌥1-9/Ctrl+←→ sub-aba · ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente ",
-            )
-        } else {
-            (
-                "Consumo de tokens".to_string(),
-                " ↑↓ rolar · r recarregar · ⇧Tab próxima aba · Esc agente ",
-            )
+        let views = view.tab.views(&self.extensions);
+        let title = match (view.tab, views.get(view.index)) {
+            (Tab::Config, _) => Config::path().map_or_else(
+                |_| "Config".to_string(),
+                |p| format!("Config · {}", p.display()),
+            ),
+            (Tab::Extensions, Some((ext, _))) => format!("Extensões · {ext}"),
+            (Tab::Extensions, None) => "Extensões".to_string(),
+            (_, Some((ext, _))) if !ext.is_empty() => format!("Consumo · {ext}"),
+            _ if self.agents.len() > 1 => {
+                format!("Consumo de tokens · {} {}", self.agent, self.focused)
+            }
+            _ => "Consumo de tokens".to_string(),
+        };
+        let hint = match view.tab {
+            Tab::Config => {
+                " ↑↓ campo · ←→/Enter altera · dígitos editam · Del padrão · r relê · Esc agente "
+                    .to_string()
+            }
+            _ if views.len() > 1 => format!(
+                " {k}Tab/{k}1-9 sub-aba · ↑↓ rolar · r recarregar · ⌃⌥C copia · Esc agente ",
+                k = self.sub_key()
+            ),
+            _ => " ↑↓ rolar · r recarregar · ⌃⌥C copia · Esc agente ".to_string(),
         };
         let block = Block::bordered()
             .title(Line::from(format!(" {title} ")).bold().cyan())
@@ -838,7 +1924,7 @@ impl App {
                 .iter()
                 .map(|&(group, name)| (group, name.to_string()))
                 .collect();
-            let tabs = sub_tab_spans(&labels, view.index);
+            let tabs = sub_tab_spans(&labels, view.index, self.sub_key());
             let [header, rest] =
                 Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(inner);
             frame.render_widget(
@@ -850,10 +1936,11 @@ impl App {
             inner
         };
 
-        let paragraph = match &view.content {
-            Content::Loading => Paragraph::new("carregando…").dark_gray(),
-            Content::Ready(text) => Paragraph::new(text.clone()),
-            Content::Failed(err) => Paragraph::new(format!("✘ {err}")).red(),
+        let paragraph = match (&self.form, &view.content) {
+            (Some(form), _) => Paragraph::new(form.text()),
+            (None, Content::Loading) => Paragraph::new("carregando…").dark_gray(),
+            (None, Content::Ready(text)) => Paragraph::new(text.clone()),
+            (None, Content::Failed(err)) => Paragraph::new(format!("✘ {err}")).red(),
         };
         frame.render_widget(
             paragraph
@@ -864,9 +1951,10 @@ impl App {
     }
 }
 
-/// Barra de sub-abas, igual em todas as abas: `⇧⌥N rótulo`, a aberta em
-/// destaque e o nome do grupo (ex.: a extensão) antes do primeiro item dele.
-fn sub_tab_spans(labels: &[(&str, String)], current: usize) -> Vec<Span<'static>> {
+/// Barra de sub-abas, igual em todas as abas: `⌃⌥N rótulo` (`key` é o
+/// prefixo da tecla), a aberta em destaque e o nome do grupo (ex.: a
+/// extensão) antes do primeiro item dele.
+fn sub_tab_spans(labels: &[(&str, String)], current: usize, key: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (i, (group, name)) in labels.iter().enumerate() {
         if !group.is_empty() && (i == 0 || labels[i - 1].0 != *group) {
@@ -875,7 +1963,7 @@ fn sub_tab_spans(labels: &[(&str, String)], current: usize) -> Vec<Span<'static>
             }
             spans.push(Span::raw(format!("{group} ")).bold());
         }
-        let label = format!(" ⇧⌥{} {name} ", i + 1);
+        let label = format!(" {key}{} {name} ", i + 1);
         spans.push(if i == current {
             Span::styled(label, Style::new().black().on_cyan().bold())
         } else {
@@ -1160,37 +2248,152 @@ fn truncate(text: &str, max: usize) -> String {
     out
 }
 
-/// Shift+F1–F9 → 1–9. Alguns terminais mandam Shift+F1 como F13.
-fn shift_function(key: KeyEvent) -> Option<usize> {
+/// Aba 1–9 pedida pela tecla: `Ctrl+Shift+1`–`9` (só chega com o protocolo
+/// do kitty; o terminal pode mandar o dígito ou o símbolo do Shift) ou
+/// `Shift+F1`–`F9` (alguns terminais mandam `Shift+F1` como `F13`).
+fn tab_number(key: KeyEvent) -> Option<usize> {
+    let m = key.modifiers;
     match key.code {
-        KeyCode::F(n @ 1..=9) if key.modifiers.contains(KeyModifiers::SHIFT) => Some(n as usize),
+        KeyCode::F(n @ 1..=9) if m.contains(KeyModifiers::SHIFT) => Some(n as usize),
         KeyCode::F(n @ 13..=21) => Some(n as usize - 12),
+        KeyCode::Char(c) if m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) => {
+            match c {
+                '1'..='9' if m.contains(KeyModifiers::SHIFT) => Some(c as usize - '0' as usize),
+                // US e ABNT2 (`¨` no 6).
+                _ => "!@#$%¨&*("
+                    .chars()
+                    .position(|s| s == c)
+                    .map(|i| i + 1)
+                    .or(match c {
+                        '^' => Some(6),
+                        _ => None,
+                    }),
+            }
+        }
         _ => None,
     }
 }
 
-/// Shift+Alt+1–9 → 1–9. O teclado manda o dígito com Shift (`Alt+Shift+1`), mas
-/// muitos terminais mandam o símbolo sem o Shift (`!`, `@`…, no ABNT2 também `¨`).
-fn shift_alt_digit(key: KeyEvent) -> Option<usize> {
-    if !key.modifiers.contains(KeyModifiers::ALT) {
-        return None;
-    }
-    let KeyCode::Char(c) = key.code else {
-        return None;
-    };
-    match c {
-        '1'..='9' if key.modifiers.contains(KeyModifiers::SHIFT) => Some(c as usize - '0' as usize),
-        '!' => Some(1),
-        '@' => Some(2),
-        '#' => Some(3),
-        '$' => Some(4),
-        '%' => Some(5),
-        '^' | '¨' => Some(6),
-        '&' => Some(7),
-        '*' => Some(8),
-        '(' => Some(9),
+/// Sub-aba 1–9 pedida pela tecla: `Ctrl+Alt+1`–`9` ou `Alt+1`–`9` (sem o
+/// protocolo do kitty, `Ctrl+Alt+dígito` costuma chegar como `Alt+dígito`).
+fn sub_tab_number(key: KeyEvent) -> Option<usize> {
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char(c @ '1'..='9') if alt => Some(c as usize - '0' as usize),
+        // Shift+Alt+1–9 sem o protocolo do kitty: chega como símbolo + Alt (sem
+        // Ctrl, para não confundir com AltGr no Windows que chega como Ctrl+Alt).
+        KeyCode::Char(c) if alt && !ctrl => "!@#$%^&*(".find(c).map(|i| i + 1),
         _ => None,
     }
+}
+
+/// Texto da janela de atalhos (`Ctrl+Alt+K`).
+fn shortcuts(enhanced: bool) -> String {
+    let protocol = if enhanced {
+        "Protocolo de teclado do kitty ligado: Ctrl+Shift e Ctrl+Alt chegam distintos e Shift+Tab vai para o agente."
+    } else {
+        "Este terminal não tem o protocolo de teclado do kitty: Ctrl+Shift+1–9 não chega (use Shift+F1–F9), Ctrl+Shift+Tab chega como Shift+Tab (que então alterna as abas) e Ctrl+Alt+1–9 pode chegar como Alt+1–9."
+    };
+    format!(
+        "ABAS
+  Ctrl+Shift+Tab         próxima aba
+  Ctrl+Shift+1–9         vai para a aba (alternativa: Shift+F1–F9)
+
+SUB-ABAS (instâncias do agente, visões do consumo, relatórios)
+  Ctrl+Alt+Tab           próxima sub-aba (com Shift, a anterior)
+  Ctrl+Alt+1–9           vai para a sub-aba (alternativas: Alt+1–9, Shift+Alt+1–9)
+  Ctrl+PgUp / Ctrl+PgDn  sub-aba anterior / próxima
+  ← / →                  sub-aba anterior / próxima (nas visões: Consumo, Extensões, Config)
+  Na aba do agente, Ctrl+Alt+<número> além da última instância abre uma nova.
+
+INSTÂNCIAS DO AGENTE
+  Ctrl+Alt+N  ou  F12    nova instância (até {MAX_INSTANCES})
+  Ctrl+Alt+W  ou  ⇧F12   fecha a instância aberta
+  Ctrl+Alt+R             reinicia a instância aberta
+
+TEXTO E MOUSE
+  arrastar               seleciona e copia ao soltar (clique desfaz)
+  Ctrl+Alt+C             copia a seleção, a tela do agente ou o conteúdo da aba
+  Ctrl+Alt+S             mouse para o terminal (seleção nativa) e de volta
+  Shift+arrastar         seleção nativa do terminal, sem desligar o mouse
+
+HISTÓRICO DO AGENTE
+  roda do mouse          rola o histórico
+  Shift+PgUp / PgDn      meia tela para trás / para frente
+  Shift+Home / End       início do histórico / volta ao vivo
+
+ABAS DE CONTEÚDO
+  ↑↓ j k PgUp PgDn g     rolar · r recarregar · Esc ou q volta ao agente
+  Config: ↑↓ campo · ←→/Enter altera · dígitos editam números · Del padrão
+
+GERAL
+  Ctrl+Alt+K             esta lista
+  F10                    sair (encerra todas as instâncias)
+
+Tab, F1–F9, Ctrl+←→ e as demais teclas seguem para o agente. Os atalhos evitam
+os do ambiente Linux (Ctrl+Alt+T/L/D/Del, Ctrl+Alt+F1–F12 e Ctrl+Alt+setas).
+No kitty, Ctrl+Shift+1–9 é do próprio terminal: use Shift+F1–F9.
+
+{protocol}"
+    )
+}
+
+/// Texto sem estilos, como é copiado.
+fn plain(text: &Text) -> String {
+    text.lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Copia para a área de transferência pelo terminal (OSC 52, que funciona
+/// também por SSH) e, no Linux, por `wl-copy`/`xclip`/`xsel` quando houver
+/// (o GNOME Terminal ignora o OSC 52). Devolve se uma ferramenta copiou.
+fn clipboard(text: &str) -> bool {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    let mut stdout = std::io::stdout();
+    let _ = write!(stdout, "\x1b]52;c;{encoded}\x07");
+    let _ = stdout.flush();
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11 = std::env::var_os("DISPLAY").is_some();
+    let tools: [(&str, &[&str], bool); 3] = [
+        ("wl-copy", &[], wayland),
+        ("xclip", &["-selection", "clipboard"], x11),
+        ("xsel", &["--clipboard", "--input"], x11),
+    ];
+    for (bin, args, available) in tools {
+        if !available {
+            continue;
+        }
+        let Ok(mut child) = Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        // A ferramenta fica servindo a área de transferência: não espera.
+        thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return true;
+    }
+    false
 }
 
 /// `1234567` → `1.234.567`.
@@ -1240,6 +2443,78 @@ fn poll_doc() -> Option<Result<String, String>> {
     }
 }
 
+/// Servidor de controle: recebe `POST /spawn` do MCP e envia `SpawnSubagent`
+/// ao loop da TUI via channel.
+fn control_server(listener: std::net::TcpListener, tx: Sender<Msg>) {
+    use std::io::{Read, Write};
+
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else {
+            continue;
+        };
+        let mut buf = vec![0u8; 16384];
+        let Ok(n) = stream.read(&mut buf) else {
+            continue;
+        };
+        buf.truncate(n);
+        let raw = match std::str::from_utf8(&buf) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let body = match raw.find("\r\n\r\n") {
+            Some(pos) => &raw[pos + 4..],
+            None => continue,
+        };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+            let req = SpawnRequest {
+                spawn_id: v["spawn_id"].as_str().unwrap_or("").to_string(),
+                task: v["task"].as_str().unwrap_or("").to_string(),
+                cwd: v["cwd"].as_str().unwrap_or("").to_string(),
+                model: v
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("claude-haiku-4-5")
+                    .to_string(),
+            };
+            if tx.send(Msg::SpawnSubagent(req)).is_err() {
+                break;
+            }
+        }
+        let _ = stream.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+    }
+}
+
+/// Faz um POST HTTP simples sem esperar a resposta (fire-and-forget).
+fn http_post_fire(addr: &str, path: &str, body: &str) {
+    use std::io::Write;
+    use std::net::TcpStream;
+    if let Ok(mut stream) = TcpStream::connect(addr) {
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+        let request = format!(
+            "POST {} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            path,
+            addr,
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(request.as_bytes());
+    }
+}
+
+/// Envia o resultado de um subagente de volta ao daemon MCP.
+fn send_spawn_result(mcp_port: u16, spawn_id: &str, output: &str, exit_code: i32) {
+    let escaped_output = output.replace('\\', "\\\\").replace('"', "\\\"");
+    let body = format!(
+        r#"{{"spawn_id":"{}","output":"{}","exit_code":{}}}"#,
+        spawn_id, escaped_output, exit_code
+    );
+    let addr = format!("127.0.0.1:{mcp_port}");
+    // Envia em thread separada para não bloquear o loop da TUI.
+    thread::spawn(move || {
+        http_post_fire(&addr, "/spawn-result", &body);
+    });
+}
+
 /// Área do agente: a tela menos a linha do menu e a das sub-abas.
 fn body_size(area: Rect) -> Rect {
     Rect::new(
@@ -1248,6 +2523,38 @@ fn body_size(area: Rect) -> Rect {
         area.width.max(1),
         area.height.saturating_sub(2).max(1),
     )
+}
+
+/// Rolagem de um passo da roda do mouse.
+fn wheel(scroll: u16, up: bool) -> u16 {
+    if up {
+        scroll.saturating_sub(WHEEL_LINES)
+    } else {
+        scroll.saturating_add(WHEEL_LINES)
+    }
+}
+
+/// Evento da roda do mouse (botões 64/65) no protocolo que o agente pediu;
+/// `col`/`row` contam a partir de 0 no pseudoterminal.
+fn wheel_bytes(up: bool, col: u16, row: u16, encoding: vt100::MouseProtocolEncoding) -> Vec<u8> {
+    let button: u32 = if up { 64 } else { 65 };
+    let (x, y) = (u32::from(col) + 1, u32::from(row) + 1);
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => format!("\x1b[<{button};{x};{y}M").into_bytes(),
+        vt100::MouseProtocolEncoding::Utf8 => {
+            let mut out = b"\x1b[M".to_vec();
+            for value in [button, x, y] {
+                let c = char::from_u32(32 + value).unwrap_or(' ');
+                out.extend(c.to_string().as_bytes());
+            }
+            out
+        }
+        vt100::MouseProtocolEncoding::Default => {
+            let mut out = b"\x1b[M".to_vec();
+            out.extend([button, x, y].map(|value| (32 + value).min(255) as u8));
+            out
+        }
+    }
 }
 
 fn pty_size(body: Rect) -> PtySize {
@@ -1353,6 +2660,16 @@ fn key_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wheel_bytes_follow_the_agent_encoding() {
+        use vt100::MouseProtocolEncoding::{Default, Sgr, Utf8};
+        assert_eq!(wheel_bytes(true, 0, 0, Sgr), b"\x1b[<64;1;1M");
+        assert_eq!(wheel_bytes(false, 9, 4, Sgr), b"\x1b[<65;10;5M");
+        assert_eq!(wheel_bytes(true, 0, 0, Default), b"\x1b[M`!!");
+        assert_eq!(wheel_bytes(false, 300, 0, Default), b"\x1b[Ma\xff!");
+        assert_eq!(wheel_bytes(true, 0, 0, Utf8), b"\x1b[M`!!");
+    }
+
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
         key_bytes(KeyEvent::new(code, modifiers), false)
     }
@@ -1383,30 +2700,122 @@ mod tests {
     }
 
     #[test]
-    fn tabs_list_agent_and_usage() {
-        assert_eq!(tabs(), [Tab::Agent, Tab::Usage]);
-        assert_eq!(Tab::Usage.views().len(), USAGE_VIEWS.len());
+    fn tabs_list_agent_then_usage_and_extensions() {
+        assert_eq!(tabs(&[]), [Tab::Agent, Tab::Usage, Tab::Config]);
+        // O RTK fica no consumo: sozinho, não abre a aba Extensões.
+        assert_eq!(
+            tabs(&[Extension::Rtk]),
+            [Tab::Agent, Tab::Usage, Tab::Config]
+        );
+        assert_eq!(
+            tabs(&[Extension::Rtk, Extension::AiMemory]),
+            [Tab::Agent, Tab::Usage, Tab::Extensions, Tab::Config]
+        );
+        let both = [Extension::Rtk, Extension::AiMemory];
+        assert_eq!(Tab::Extensions.views(&both)[0], ("AI Memory", "Status"));
+        let usage = Tab::Usage.views(&both);
+        assert_eq!(
+            usage.len(),
+            USAGE_VIEWS.len() + Extension::Rtk.reports().len()
+        );
+        assert_eq!(usage[USAGE_VIEWS.len()], ("RTK", "Economia"));
+        assert_eq!(Tab::Usage.views(&[]).len(), USAGE_VIEWS.len());
+        assert!(Tab::Config.views(&both).is_empty());
         assert_eq!(Tab::Agent.label("claude"), "claude");
     }
 
     #[test]
-    fn shifted_keys_pick_tabs_and_views() {
-        let f = |n, m| shift_function(KeyEvent::new(KeyCode::F(n), m));
-        assert_eq!(f(2, KeyModifiers::SHIFT), Some(2));
-        assert_eq!(f(2, KeyModifiers::NONE), None);
-        assert_eq!(f(13, KeyModifiers::NONE), Some(1));
+    fn shortcut_keys_pick_tabs_and_sub_tabs() {
+        let t = |code, m| tab_number(KeyEvent::new(code, m));
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(t(KeyCode::F(2), KeyModifiers::SHIFT), Some(2));
+        assert_eq!(t(KeyCode::F(2), KeyModifiers::NONE), None);
+        assert_eq!(t(KeyCode::F(13), KeyModifiers::NONE), Some(1));
+        assert_eq!(t(KeyCode::Char('3'), ctrl_shift), Some(3));
+        assert_eq!(t(KeyCode::Char('#'), ctrl_shift), Some(3));
+        assert_eq!(t(KeyCode::Char('¨'), KeyModifiers::CONTROL), Some(6));
+        assert_eq!(t(KeyCode::Char('3'), KeyModifiers::CONTROL), None);
+        assert_eq!(t(KeyCode::Char('!'), KeyModifiers::NONE), None);
+
+        let s = |c, m| sub_tab_number(KeyEvent::new(KeyCode::Char(c), m));
+        let ctrl_alt = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        let shift_alt = KeyModifiers::SHIFT | KeyModifiers::ALT;
+        assert_eq!(s('2', ctrl_alt), Some(2));
+        assert_eq!(s('9', KeyModifiers::ALT), Some(9));
+        assert_eq!(s('0', KeyModifiers::ALT), None);
+        assert_eq!(s('2', KeyModifiers::NONE), None);
+        // AltGr no Windows chega como Ctrl+Alt com o símbolo: não é sub-aba.
+        assert_eq!(s('@', ctrl_alt), None);
+        // Shift+Alt+1–9 sem kitty: chega como símbolo + Alt.
+        assert_eq!(s('!', KeyModifiers::ALT), Some(1));
+        assert_eq!(s('@', KeyModifiers::ALT), Some(2));
+        assert_eq!(s('#', KeyModifiers::ALT), Some(3));
+        // Shift+Alt+1 com kitty: chega como dígito + Shift+Alt.
+        assert_eq!(s('1', shift_alt), Some(1));
+        assert_eq!(s('3', shift_alt), Some(3));
     }
 
     #[test]
-    fn shift_alt_digits_pick_sub_tabs() {
-        let k = |c, m| shift_alt_digit(KeyEvent::new(KeyCode::Char(c), m));
-        let both = KeyModifiers::SHIFT | KeyModifiers::ALT;
-        assert_eq!(k('1', both), Some(1));
-        assert_eq!(k('4', both), Some(4));
-        assert_eq!(k('!', KeyModifiers::ALT), Some(1));
-        assert_eq!(k('¨', KeyModifiers::ALT), Some(6));
-        assert_eq!(k('1', KeyModifiers::ALT), None);
-        assert_eq!(k('!', KeyModifiers::NONE), None);
+    fn selections_cover_cells_in_reading_order() {
+        let selection = Selection {
+            agent: 1,
+            anchor: (2, 5),
+            head: (0, 3),
+            dragging: false,
+        };
+        assert_eq!(selection.range(), ((0, 3), (2, 5)));
+        assert!(!selection.contains(0, 2));
+        assert!(selection.contains(0, 3));
+        assert!(selection.contains(1, 0));
+        assert!(selection.contains(2, 5));
+        assert!(!selection.contains(2, 6));
+        assert!(!selection.contains(3, 0));
+
+        let mut parser = vt100::Parser::new(3, 10, 0);
+        parser.process(b"hello\r\nworld");
+        let selection = Selection {
+            agent: 1,
+            anchor: (0, 1),
+            head: (1, 2),
+            dragging: false,
+        };
+        assert_eq!(selection.text(parser.screen()), "ello\nwor");
+    }
+
+    #[test]
+    fn config_fields_cycle_set_and_reset() {
+        let mut config = Config::default();
+        Field::Mode.step(&mut config, 1);
+        assert_eq!(config.mode, Mode::None);
+        Field::Mode.step(&mut config, -1);
+        assert_eq!(config.mode, Mode::Hybrid);
+        Field::Jail.step(&mut config, 1);
+        assert!(config.jail);
+        Field::Mouse.step(&mut config, 1);
+        assert!(!config.tui.mouse);
+
+        Field::BudgetWeek.set(&mut config, "300.000.000").unwrap();
+        assert_eq!(config.budget.week, Some(300_000_000));
+        assert_eq!(Field::BudgetWeek.value(&config), "300.000.000");
+        Field::BudgetWeek.set(&mut config, "").unwrap();
+        assert_eq!(config.budget.week, None);
+        assert!(Field::McpMax.set(&mut config, "abc").is_err());
+        Field::McpMax.set(&mut config, "0").unwrap();
+        assert_eq!(config.mcp.max_simultaneous_subagents, 1);
+
+        for field in FIELDS {
+            field.reset(&mut config);
+        }
+        assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn plain_text_drops_styles() {
+        let text = Text::from(vec![
+            Line::from(vec![Span::raw("a").bold(), Span::raw("b")]),
+            Line::raw("c"),
+        ]);
+        assert_eq!(plain(&text), "ab\nc");
     }
 
     #[test]
@@ -1419,17 +2828,17 @@ mod tests {
         };
         let instances = [("", "claude 1".to_string()), ("", "claude 2".to_string())];
         assert_eq!(
-            text(sub_tab_spans(&instances, 1)),
-            " ⇧⌥1 claude 1   ⇧⌥2 claude 2  "
+            text(sub_tab_spans(&instances, 1, "⌃⌥")),
+            " ⌃⌥1 claude 1   ⌃⌥2 claude 2  "
         );
         let reports = [
             ("RTK", "gain".to_string()),
             ("AI Memory", "Status".to_string()),
         ];
-        let spans = sub_tab_spans(&reports, 0);
+        let spans = sub_tab_spans(&reports, 0, "⌥");
         assert_eq!(
             text(spans.clone()),
-            "RTK  ⇧⌥1 gain  │ AI Memory  ⇧⌥2 Status  "
+            "RTK  ⌥1 gain  │ AI Memory  ⌥2 Status  "
         );
         assert_eq!(spans[1].style.bg, Some(Color::Cyan));
     }
@@ -1470,5 +2879,48 @@ mod tests {
         assert_eq!(instance_label("claude", 1, false), "claude 1");
         assert_eq!(instance_label("claude", 2, true), "claude 2 📄 doc");
         assert_eq!(instance_label("opencode", 3, true), "opencode 3 📄 doc");
+    }
+
+    #[test]
+    fn form_prefers_space_preferences_for_agent_fields() {
+        let form = Form {
+            config: Config {
+                provider: Provider::Claude,
+                mode: Mode::Eco,
+                jail: false,
+                ..Config::default()
+            },
+            space: Some(PathBuf::from("/space")),
+            prefs: Preferences {
+                agent: Some(Provider::OpenCode),
+                mode: None,
+                jail: Some(true),
+            },
+            index: 0,
+            editing: None,
+            message: None,
+        };
+        // As preferências do space vencem o config.toml, que completa o resto.
+        let effective = form.effective();
+        assert_eq!(effective.provider, Provider::OpenCode);
+        assert_eq!(effective.mode, Mode::Eco);
+        assert!(effective.jail);
+        // Só agente, modo e jail vão para as preferências.
+        assert!(form.in_space(Field::Provider));
+        assert!(form.in_space(Field::Mode));
+        assert!(form.in_space(Field::Jail));
+        assert!(!form.in_space(Field::Doc));
+        assert!(!form.in_space(Field::BudgetFiveHours));
+        assert!(!form.in_space(Field::Mouse));
+        // Fora de space, tudo continua no config.toml.
+        let global = Form {
+            space: None,
+            prefs: Preferences::default(),
+            ..form
+        };
+        assert!(!global.in_space(Field::Provider));
+        assert_eq!(global.effective().provider, Provider::Claude);
+        assert_eq!(global.effective().mode, Mode::Eco);
+        assert!(!global.effective().jail);
     }
 }

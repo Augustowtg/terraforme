@@ -5,6 +5,125 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.14.1 - 2026-10-19
+
+### Corrigido
+
+- Atalhos de sub-aba nas visões (Consumo, Extensões, Config): `←`/`→` agora trocam a sub-aba
+  aberta; `Shift+Alt+1`–`9` funciona sem o protocolo do kitty (terminal envia símbolo + Alt).
+
+## 0.14.0 - 2026-10-19
+
+### Adicionado
+
+- Aba **Config** na TUI do `terraforme cli`: edita o `config.toml` (agente, modo, AI Jail, preset
+  doc, orçamento de tokens, daemon MCP e as preferências da TUI) e grava a cada alteração.
+- Seção `[tui]` no `config.toml`: `mouse` (capturar o mouse ao abrir) e `copy_on_select` (copiar
+  ao soltar a seleção), ambas ligadas por padrão e aplicadas na hora pela aba Config.
+- Seleção de texto na aba do agente: arrastar com o mouse seleciona e copia ao soltar, pelo
+  terminal (OSC 52) e, no Linux, por `wl-copy`/`xclip`/`xsel`; `Ctrl+Alt+C` copia a seleção, a
+  tela do agente ou o conteúdo da aba aberta; `Ctrl+Alt+S` devolve o mouse ao terminal.
+- Atalhos novos: `Ctrl+Alt+N` abre instância, `Ctrl+Alt+W` fecha, `Ctrl+Alt+R` reinicia,
+  `Ctrl+Alt+K` lista todos os atalhos, `Shift+Home`/`Shift+End` vão ao início do histórico e de
+  volta ao vivo.
+- A TUI liga o protocolo de teclado do kitty quando o terminal suporta, para distinguir
+  `Ctrl+Shift`/`Ctrl+Alt` das teclas comuns.
+
+### Alterado
+
+- Abas: `Ctrl+Shift+Tab` passa para a próxima e `Ctrl+Shift+1`…`9` vai direto (`Shift+F1`…`F9`
+  continuam). Com o protocolo do kitty, `Shift+Tab` chega ao agente (troca de modo do Claude Code).
+- Sub-abas: `Ctrl+Alt+Tab` passa para a próxima e `Ctrl+Alt+1`…`9` vai direto (`Alt+1`…`9` e
+  `Ctrl+PgUp/PgDn` continuam); na aba do agente, um número além da última instância abre uma nova.
+- Os relatórios do RTK saíram da aba Extensões e viraram sub-abas do Consumo; Extensões só aparece
+  com AI Memory ou AI Jail.
+- Aba **Config** dentro de um space: agente, modo e AI Jail gravam nas preferências do space
+  (`<pasta do space>/.terraforme/preferences.toml`, criadas se não existirem) em vez do
+  `config.toml` global, os valores mostrados são os que a sessão realmente usa e o rodapé indica
+  onde cada campo vale; os demais campos (preset doc, orçamento, TUI, MCP) continuam no
+  `config.toml`. Fora de space, nada muda.
+
+### Removido
+
+- `Ctrl+←→` e `Shift+Alt+símbolo` não trocam mais de sub-aba: `Ctrl+←→` volta a chegar ao agente
+  (movimento por palavra).
+
+### Corrigido
+
+- Não era possível selecionar e copiar texto do agente: a captura do mouse exigia `Shift`+arrastar.
+- Avisos que chegavam com uma aba de conteúdo aberta só apareciam ao voltar para o agente.
+
+## 0.13.0 - 2026-10-19
+
+### Adicionado
+
+- **`terraforme-mcp`** — novo crate binário: daemon MCP compartilhado entre todas as
+  instâncias `terraforme-cli`. Inicia sob demanda ao lançar `terraforme cli`, registra
+  cada instância como cliente (heartbeat + watchdog de PID), e encerra automaticamente
+  após um período de carência configurável quando o último cliente desconecta.
+- **Ferramenta `spawn_subagent`** — disponível via MCP para o Claude Code: Claude 1
+  pode delegar uma tarefa a um Claude 2 em nova aba do TUI; o resultado (saída + código
+  de saída) é devolvido ao agente solicitante quando o subagente conclui.
+- **`[mcp]` em `config.toml`** — seção opcional `[mcp]` com `grace_seconds` (padrão 5),
+  `subagent_timeout_seconds` (padrão 300) e `max_simultaneous_subagents` (padrão 3).
+
+### Corrigido
+
+- **AI Jail: `bun` não encontrado** — a sandbox usa a home privada e só montava o cache do bun,
+  então `bun`/`bunx` (em `~/.bun/bin`, fora do `PATH` lá dentro) não existiam para o agente. O
+  terraforme agora os monta em modo leitura em `~/.local/bin` a cada lançamento com o jail.
+
+## 0.12.0 - 2026-10-19
+
+### Adicionado
+
+- **Renomear space** (`terraforme space <nome> --rename <novo-nome>`): muda o
+  nome de um space salvo mantendo a pasta e as preferências intactas.
+
+### Corrigido
+
+- **`.ai-jail` não é mais criado automaticamente** no projeto a cada `terraforme
+  cli`: o arquivo só é gerado explicitamente via `terraforme extension ai-jail
+  --project`. Antes, qualquer sessão com `--jail` criava um `.ai-jail` vazio na
+  pasta, fazendo o projeto entrar em modo jailed permanentemente mesmo sem o
+  usuário pedir.
+
+## 0.11.1 - 2026-10-19
+
+### Corrigido
+
+- **Rolagem com a roda do mouse no terminal do agente** (`terraforme cli`): a
+  roda não rolava a saída do agente — o terminal a convertia em setas, que
+  chegavam ao Claude como navegação no histórico de prompts. Agora a TUI captura
+  o mouse e a roda rola o histórico do agente (o mesmo do `Shift+PgUp/PgDn`;
+  qualquer tecla volta ao vivo), é repassada ao agente quando ele mesmo pede
+  eventos de mouse e rola também as abas Consumo e Extensões e o popup de
+  avisos. Com a captura, selecionar texto pede `Shift` ao arrastar.
+
+## 0.11.0 - 2026-10-19
+
+### Adicionado
+
+- **Aba Extensões de volta no `terraforme cli`** (como na 0.6): quando o modo
+  usa alguma extensão ou o AI Jail está ligado, o menu ganha a aba
+  `Extensões`, com os relatórios de cada uma numa sub-aba (RTK: Economia,
+  Neste projeto, Por dia, Histórico; AI Memory: Status, Projetos, Handoffs;
+  AI Jail: Status, Sandbox). As sub-abas trocam com `Shift+Alt+1`…`9` e
+  `Ctrl+←→`, `r` recarrega e `Esc` volta para o agente.
+- **`terraforme config --mode custom`**: pergunta quais extensões usar (RTK,
+  AI Memory e/ou AI Jail) e grava o modo e a sandbox correspondentes.
+- **Preparação do projeto no `terraforme cli`**: quando uma extensão do modo
+  precisa de algo no projeto, o `terraforme cli` confere e configura ao
+  iniciar. Hoje é o AI Jail: sem `.ai-jail` na pasta, ele é criado com
+  `ai-jail --init <agente>` (nunca na pasta do usuário, onde o `.ai-jail` é o
+  global).
+
+### Alterado
+
+- O `terraforme cli` não abre mais o aviso das preferências do space (nem o
+  de "AI Jail ligado pelo .ai-jail") a cada início; o popup inicial fica só
+  para o que mudou nesta execução e para os alertas.
+
 ## 0.10.1 - 2026-10-19
 
 ### Alterado
