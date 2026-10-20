@@ -180,7 +180,7 @@ enum Command {
         #[arg(short, long)]
         yes: bool,
     },
-    /// Atualiza o próprio terraforme: git pull no repositório, compila e reinstala
+    /// Atualiza o próprio terraforme: git pull no repositório, compila e reinstala (instalado por release: baixa a última)
     Upgrade {
         /// Repositório do terraforme (padrão: onde este binário foi compilado)
         #[arg(long, env = "TERRAFORME_REPO", value_name = "DIR")]
@@ -917,9 +917,13 @@ fn exec(mut command: std::process::Command) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
+/// Onde ficam os scripts que instalam as releases do GitHub (sem Rust).
+const RELEASE_SCRIPTS: &str = "https://raw.githubusercontent.com/Augustowtg/terraforme/main";
+
 /// Roda o script de instalação do repositório (`install.linux.sh`, ou
 /// `install.windows.ps1` no Windows) no lugar do terraforme (`exec`), para que
-/// o binário em uso possa ser substituído.
+/// o binário em uso possa ser substituído. Sem o repositório (binário de uma
+/// release), baixa a última release com o `install.sh` / `install.ps1`.
 fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Result<()> {
     let windows = cfg!(windows);
     if !windows && !cfg!(target_os = "linux") {
@@ -927,6 +931,7 @@ fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Resul
             "o upgrade automático só existe no Linux e no Windows; recompile com `cargo build --release`"
         );
     }
+    let explicit = repo.is_some();
     let repo =
         repo.unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let script = repo.join(if windows {
@@ -934,6 +939,9 @@ fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Resul
     } else {
         "install.linux.sh"
     });
+    if !script.is_file() && !explicit {
+        return upgrade_release(windows);
+    }
     if !script.is_file() {
         bail!(
             "{} não encontrado; informe o repositório com --repo ou TERRAFORME_REPO",
@@ -955,7 +963,28 @@ fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Resul
     if dist {
         command.arg(if windows { "-Dist" } else { "--dist" });
     }
-    // Reinstala no mesmo prefixo do binário atual (<prefixo>/bin/terraforme).
+    set_prefix(&mut command);
+    exec(command)
+}
+
+/// Atualiza pela última release do GitHub, com o script de instalação dela.
+fn upgrade_release(windows: bool) -> Result<()> {
+    let mut command;
+    if windows {
+        command = std::process::Command::new("powershell");
+        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]);
+        command.arg(format!("irm {RELEASE_SCRIPTS}/install.ps1 | iex"));
+    } else {
+        command = std::process::Command::new("sh");
+        command.arg("-c");
+        command.arg(format!("curl -fsSL {RELEASE_SCRIPTS}/install.sh | sh"));
+    }
+    set_prefix(&mut command);
+    exec(command)
+}
+
+/// Reinstala no mesmo prefixo do binário atual (`<prefixo>/bin/terraforme`).
+fn set_prefix(command: &mut std::process::Command) {
     if std::env::var_os("PREFIX").is_none()
         && let Ok(exe) = std::env::current_exe()
         && let Some(bin) = exe.parent()
@@ -964,7 +993,6 @@ fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Resul
     {
         command.env("PREFIX", prefix);
     }
-    exec(command)
 }
 
 #[allow(clippy::too_many_arguments)]

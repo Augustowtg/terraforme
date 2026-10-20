@@ -13,7 +13,9 @@ cargo run -p terraforme-cli -- --help        # or: pnpm cli --help
 cargo build -p terraforme-cli --release      # target/release/terraforme
 ./install.linux.sh                           # release build + install to ~/.local/bin (--update: git pull first; --dist; --uninstall)
 .\install.windows.ps1                        # same on Windows (-Update/-Dist/-Uninstall), into %LOCALAPPDATA%\Programs\terraforme\bin + user PATH; UTF-8 BOM required (PowerShell 5.1)
-terraforme upgrade                           # execs <repo>/install.linux.sh --update (install.windows.ps1 -Update on Windows) (repo = CARGO_MANIFEST_DIR/../.. at build time, or --repo / TERRAFORME_REPO)
+terraforme upgrade                           # execs <repo>/install.linux.sh --update (install.windows.ps1 -Update on Windows) (repo = CARGO_MANIFEST_DIR/../.. at build time, or --repo / TERRAFORME_REPO); without that repo (release binary) it runs the install.sh / install.ps1 below from GitHub
+curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.sh | sh    # release binaries, no Rust (Linux x86_64/aarch64 musl)
+irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex         # same on Windows; install.ps1 must stay ASCII and wrapped in `& { }` (runs in the user's session: no `exit`)
 
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
@@ -28,6 +30,10 @@ Toolchain is pinned to Rust 1.98.0 (edition 2024) via `rust-toolchain.toml`. Nod
 ## Versioning and changelog
 
 Every change that ships (feature, fix, behavior or build change — not pure refactors/docs) bumps `[workspace.package] version` in the root `Cargo.toml` (SemVer: minor for features, patch for fixes; both crates inherit it, refresh `Cargo.lock` with `cargo metadata` or a build) and adds a `## X.Y.Z - YYYY-MM-DD` section at the top of `CHANGELOG.md` (Portuguese, Keep a Changelog headings `Adicionado` / `Alterado` / `Corrigido` / `Removido`). Several changes in the same unreleased session go into the same new version. `install.linux.sh` prints the sections newer than the previously installed version after an update, so keep the `## <version>` heading format.
+
+## Releases
+
+`.github/workflows/release.yml` runs on a `v*` tag (must equal `v` + the `Cargo.toml` version): builds `terraforme` + `terraforme-mcp` with the `dist` profile for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` (`musl-gcc` for `ring`) and `x86_64-pc-windows-msvc`, packs `terraforme-<target>.tar.gz`/`.zip` + `.sha256`, and creates the GitHub Release with that version's `CHANGELOG.md` section. `install.sh`/`install.ps1` download from it, so keep the asset names in sync.
 
 ## Commits
 

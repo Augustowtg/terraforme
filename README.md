@@ -36,6 +36,22 @@ RTK, AI Memory e AI Jail).
 
 ## Instalação
 
+Binários prontos (sem Rust), da [última release](https://github.com/Augustowtg/terraforme/releases/latest):
+
+```powershell
+# Windows (PowerShell) — instala em %LOCALAPPDATA%\Programs\terraforme\bin e põe no PATH
+irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
+```
+
+```bash
+# Linux (x86_64 e ARM64) — instala em ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.sh | sh
+```
+
+Depois, `terraforme setup`. Para atualizar, rode o mesmo comando ou `terraforme upgrade`.
+
+### Compilando do código
+
 Pré-requisitos: Linux, `git` e Rust ([rustup](https://rustup.rs) — a versão certa é baixada
 sozinha). Para usar o AI Jail, instale também o `bwrap` (pacote `bubblewrap`).
 

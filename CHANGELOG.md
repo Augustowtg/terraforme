@@ -14,6 +14,11 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
   (ou `$env:PREFIX\bin`), adicionando a pasta ao `PATH` do usuário. O binário em uso é renomeado
   para `.old` antes da troca, já que o Windows não deixa sobrescrever um `.exe` em execução.
 - `terraforme upgrade` também funciona no Windows (roda o `install.windows.ps1 -Update`).
+- Binários prontos nas releases do GitHub (Linux x86_64/ARM64 estáticos e Windows x64), gerados
+  pelo GitHub Actions a cada tag `v*`. Instalação sem Rust:
+  `irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex` (Windows) ou
+  `curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.sh | sh` (Linux).
+  Instalado assim, o `terraforme upgrade` baixa a última release.
 - Conversa entre instâncias: toda instância do `terraforme cli`, em qualquer space, se registra no
   daemon `terraforme-mcp` (apelido `<space>/<agente>-<n>`), e o Claude Code ganha o MCP `terraforme`
   com `list_instances` e `send_message` — a mensagem chega como prompt na instância de destino.

@@ -1,0 +1,140 @@
+# Compila os binários (terraforme + terraforme-mcp) e publica uma Release do
+# GitHub a cada tag `v*`. Os scripts install.sh / install.ps1 baixam daqui.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Tag confere com o Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versão
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::a tag $GITHUB_REF_NAME não bate com a versão $version do Cargo.toml"
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: musl (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          # O `ring` (TLS do ureq) compila C: usa o gcc do musl.
+          target_env=$(echo "${{ matrix.target }}" | tr '-' '_')
+          echo "CC_${target_env}=musl-gcc" >> "$GITHUB_ENV"
+
+      # O rust-toolchain.toml fixa a versão; o rustup a instala na primeira chamada.
+      - name: Toolchain
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Build
+        run: cargo build --profile dist --locked --target ${{ matrix.target }} -p terraforme-cli -p terraforme-mcp
+
+      - name: Pacote (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          asset="terraforme-${{ matrix.target }}.tar.gz"
+          tar -czf "$asset" -C "target/${{ matrix.target }}/dist" terraforme terraforme-mcp
+          sha256sum "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Pacote (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asset = "terraforme-${{ matrix.target }}.zip"
+          $dir = "target/${{ matrix.target }}/dist"
+          Compress-Archive -Path "$dir/terraforme.exe", "$dir/terraforme-mcp.exe" -DestinationPath $asset
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Out-File -Encoding ascii -NoNewline "$asset.sha256"
+          "ASSET=$asset" >> $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+
+  release:
+    name: Publica a Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Notas (seção do CHANGELOG.md)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { if (show) exit; if ($2 == v) { show = 1; next } }
+            show
+          ' CHANGELOG.md > notes.md
+          cat >> notes.md <<'EOF'
+
+          ## Instalação (sem Rust)
+
+          Windows (PowerShell):
+
+          ```powershell
+          irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
+          ```
+
+          Linux:
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.sh | sh
+          ```
+
+          Depois: `terraforme setup`.
+          EOF
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "terraforme ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md
