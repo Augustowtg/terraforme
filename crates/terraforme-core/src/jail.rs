@@ -434,6 +434,8 @@ mod tests {
         assert!(loopback_ports("http://example.com:443").is_empty());
     }
 
+    // Caminhos Unix: no Windows `join` usa `\` (e lá não há AI Jail).
+    #[cfg(unix)]
     #[test]
     fn binds_tools_into_dir() {
         let bin = Path::new("/home/u/.local/bin");
