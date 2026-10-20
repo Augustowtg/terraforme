@@ -5,7 +5,7 @@ use std::io::{self, IsTerminal, Write};
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use terraforme_core::accounts::ClaudeAccounts;
+use terraforme_core::accounts::{ClaudeAccounts, is_default_dir};
 use terraforme_core::agent::{self, CliMode, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Outcome};
@@ -788,6 +788,10 @@ impl Choice {
         {
             let accounts = ClaudeAccounts::load()?;
             match accounts.get(name) {
+                // A conta da pasta padrão (`~/.claude`) roda sem a variável.
+                Some(dir) if is_default_dir(dir) => unsafe {
+                    std::env::remove_var("CLAUDE_CONFIG_DIR")
+                },
                 Some(dir) => unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir) },
                 None => bail!(
                     "conta '{name}' não encontrada — registre com \
@@ -979,7 +983,7 @@ fn space(
         spaces.save()?;
         println!("✔ space {name} salvo: {}", dir.display());
         if let Some(prefs) = prefs {
-            space_preferences(name, &dir, prefs, reset)?;
+            space_preferences(name, prefs, reset)?;
         }
         return Ok(());
     }
@@ -992,6 +996,7 @@ fn space(
         if yes || confirm(&format!("Remover o space {name}?"))? {
             spaces.remove(name);
             spaces.save()?;
+            Preferences::default().save(name)?;
             println!("✔ space {name} removido");
         }
         return Ok(());
@@ -1003,6 +1008,7 @@ fn space(
             None => bail!("space {old_name} não encontrado"),
             Some(dir) => {
                 spaces.save()?;
+                Preferences::rename(old_name, new_name)?;
                 println!(
                     "✔ space {old_name} renomeado para {new_name}: {}",
                     dir.display()
@@ -1038,13 +1044,13 @@ fn space(
         );
     }
     if let Some(prefs) = prefs {
-        return space_preferences(name, dir, prefs, reset);
+        return space_preferences(name, prefs, reset);
     }
     if path {
         println!("{}", dir.display());
         return Ok(());
     }
-    let summary = preferences_summary(&Preferences::load(dir)?)
+    let summary = preferences_summary(&Preferences::load(name)?)
         .map(|s| format!(" · {s}"))
         .unwrap_or_default();
     eprintln!(
@@ -1056,12 +1062,7 @@ fn space(
 
 /// Grava as preferências do space: `reset` apaga as anteriores, o resto
 /// substitui só o que foi passado.
-fn space_preferences(
-    name: &str,
-    dir: &std::path::Path,
-    new: Preferences,
-    reset: bool,
-) -> Result<()> {
+fn space_preferences(name: &str, new: Preferences, reset: bool) -> Result<()> {
     if let Some(p) = new.agent
         && !p.is_implemented()
     {
@@ -1079,17 +1080,17 @@ fn space_preferences(
     let mut prefs = if reset {
         Preferences::default()
     } else {
-        Preferences::load(dir)?
+        Preferences::load(name)?
     };
     prefs.agent = new.agent.or(prefs.agent);
     prefs.mode = new.mode.or(prefs.mode);
     prefs.jail = new.jail.or(prefs.jail);
     prefs.account = new.account.or(prefs.account);
-    prefs.save(dir)?;
+    prefs.save(name)?;
     match preferences_summary(&prefs) {
         Some(summary) => println!(
             "✔ preferências do space {name}: {summary}\n{}",
-            Preferences::path(dir).display()
+            Preferences::path(name)?.display()
         ),
         None => println!("✔ space {name} sem preferências (usa o `terraforme config`)"),
     }
@@ -1123,7 +1124,7 @@ fn print_spaces(spaces: &Spaces, out: &mut impl Write) -> Result<()> {
         let extra = if !dir.is_dir() {
             "  ✘ pasta não existe".to_string()
         } else {
-            Preferences::load(dir)
+            Preferences::load(name)
                 .ok()
                 .and_then(|p| preferences_summary(&p))
                 .map(|s| format!("  ({s})"))

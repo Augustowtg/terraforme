@@ -72,6 +72,17 @@ impl ClaudeAccounts {
     }
 }
 
+/// Se `dir` é a pasta padrão do Claude Code (`~/.claude`). Para ela o
+/// `CLAUDE_CONFIG_DIR` deve ficar indefinido: com a variável, o Claude Code
+/// passa a ler `<dir>/.claude.json` em vez de `~/.claude.json`.
+pub fn is_default_dir(dir: &Path) -> bool {
+    let Ok(default) = crate::agent::home().map(|h| h.join(".claude")) else {
+        return false;
+    };
+    let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(dir) == canon(&default)
+}
+
 fn validate_name(name: &str) -> Result<&str> {
     let name = name.trim();
     if name.is_empty() {

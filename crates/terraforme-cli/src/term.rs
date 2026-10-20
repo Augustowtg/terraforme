@@ -584,9 +584,9 @@ fn step_index(len: usize, i: usize, delta: isize) -> usize {
 /// Estado da aba Config.
 struct Form {
     config: Config,
-    /// Pasta do space quando agente, modo, jail e conta gravam nas preferências
+    /// Nome do space quando agente, modo, jail e conta gravam nas preferências
     /// dele (`None`: tudo fica no `config.toml`).
-    space: Option<PathBuf>,
+    space: Option<String>,
     /// Preferências do space (vazias fora dele: tudo vem do `config.toml`).
     prefs: Preferences,
     /// Nomes das contas registradas em `claude.toml`, para o campo Account ciclar.
@@ -599,15 +599,14 @@ struct Form {
     message: Option<Result<String, String>>,
 }
 
-/// Pasta do space da pasta atual e as preferências dele; `None` fora de
+/// Nome do space da pasta atual e as preferências dele; `None` fora de
 /// space, quando o `config.toml` é que vale.
-fn space_prefs() -> Result<(Option<PathBuf>, Preferences)> {
+fn space_prefs() -> Result<(Option<String>, Preferences)> {
     let cwd = std::env::current_dir().context("pasta atual")?;
-    let Some(dir) = Preferences::dir_for(&cwd)? else {
-        return Ok((None, Preferences::default()));
-    };
-    let prefs = Preferences::load(&dir)?;
-    Ok((Some(dir), prefs))
+    Ok(match Preferences::find(&cwd)? {
+        Some((name, prefs)) => (Some(name), prefs),
+        None => (None, Preferences::default()),
+    })
 }
 
 impl Form {
@@ -718,14 +717,15 @@ impl Form {
     /// Grava as preferências do space; vazias, o `Preferences::save` apaga
     /// o arquivo e o space volta a seguir só o `config.toml`.
     fn save_prefs(&mut self) {
-        let Some(dir) = &self.space else {
+        let Some(name) = &self.space else {
             return;
         };
-        self.message = Some(match self.prefs.save(dir) {
+        self.message = Some(match self.prefs.save(name) {
             Ok(()) if self.prefs.is_empty() => {
                 Ok("space sem preferências (vale o config.toml)".into())
             }
-            Ok(()) => Ok(format!("salvo em {}", Preferences::path(dir).display())),
+            Ok(()) => Ok(Preferences::path(name)
+                .map_or_else(|_| "salvo".into(), |p| format!("salvo em {}", p.display()))),
             Err(err) => Err(format!("{err:#}")),
         });
     }
@@ -853,10 +853,11 @@ impl Form {
             None => {}
         }
         let footer = match &self.space {
-            Some(dir) => format!(
-                "Agente, modo, jail e conta valem em {} (preferências do space); \
+            Some(name) => format!(
+                "Agente, modo, jail e conta valem em {} (preferências do space {name}); \
                  os outros campos valem no config.toml. As flags do terraforme cli têm prioridade.",
-                Preferences::path(dir).display()
+                Preferences::path(name)
+                    .map_or_else(|_| "preferences.toml".into(), |p| p.display().to_string())
             ),
             None => "As flags do terraforme cli e as preferências do space têm prioridade \
                      sobre o agente, o modo e o jail. Conta só vale dentro de um space."
@@ -3200,7 +3201,7 @@ mod tests {
                 jail: false,
                 ..Config::default()
             },
-            space: Some(PathBuf::from("/space")),
+            space: Some("web".into()),
             prefs: Preferences {
                 agent: Some(Provider::OpenCode),
                 mode: None,

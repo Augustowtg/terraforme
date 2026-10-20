@@ -132,7 +132,7 @@ O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no t
   (valem no próximo `terraforme cli`), orçamento de tokens, preferências da TUI (capturar o mouse,
   copiar ao selecionar — aplicadas na hora) e o daemon MCP. Cada alteração é gravada na hora.
   Dentro de um space, agente, modo e AI Jail gravam nas preferências do space
-  (`<pasta do space>/.terraforme/preferences.toml`) em vez do `config.toml` global — é o arquivo
+  (`~/.terraforme/<nome do space>/preferences.toml`) em vez do `config.toml` global — é o arquivo
   que o `terraforme cli` passa a usar ali — e o rodapé diz onde cada campo vale; os outros campos
   continuam no `config.toml`. Apagar um valor com `Delete` tira o override e volta ao `config.toml`.
 
@@ -193,8 +193,8 @@ ts() { local dir; dir=$(terraforme space --path "$@") && cd "$dir"; }
 
 ### Preferências do space
 
-Cada space pode ter preferências próprias — agente, modo e sandbox — gravadas em
-`<pasta do space>/.terraforme/preferences.toml`. O `terraforme cli` aberto na pasta (ou numa
+Cada space pode ter preferências próprias — agente, modo, sandbox e conta — gravadas em
+`~/.terraforme/<nome do space>/preferences.toml`, fora da pasta do projeto. O `terraforme cli` aberto na pasta (ou numa
 subpasta) usa essas preferências no lugar do `terraforme config`; flags da linha de comando
 (`--agent`, `--eco`, `--jail`…) continuam vencendo:
 

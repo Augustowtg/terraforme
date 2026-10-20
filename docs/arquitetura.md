@@ -147,7 +147,9 @@ Um programa não consegue mudar a pasta do shell que o chamou. Por isso abrir um
 um shell novo (`$SHELL`; `%COMSPEC%` no Windows) na pasta, com `TERRAFORME_SPACE` definido. Os
 spaces ficam fora do `config.toml` porque `Config` é `Copy`.
 
-As preferências de um space (`space::Preferences`: `agent`, `mode`, `jail`, todos opcionais) ficam
-na própria pasta, em `.terraforme/preferences.toml`, para acompanharem o projeto. `Choice::resolve`
-procura o arquivo na pasta atual e nas de cima (`Preferences::find`) e resolve cada campo nesta
-ordem: linha de comando → preferências do space → `.ai-jail` da pasta (só `jail`) → `config.toml`.
+As preferências de um space (`space::Preferences`: `agent`, `mode`, `jail`, `account`, todos
+opcionais) ficam fora do projeto, em `~/.terraforme/<nome do space>/preferences.toml`
+(`TERRAFORME_HOME` troca a raiz), e seguem o nome do space ao renomear/remover. `Spaces::load` move
+para lá o `<pasta do space>/.terraforme/preferences.toml` das versões antigas. `Choice::resolve`
+acha o space salvo mais específico que contém a pasta atual (`Preferences::find`) e resolve cada
+campo nesta ordem: linha de comando → preferências do space → `.ai-jail` da pasta (só `jail`) → `config.toml`.

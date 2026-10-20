@@ -281,7 +281,7 @@ terraforge space api --delete        # remove
 
 Abrir um space inicia um shell novo (`$SHELL` / `%COMSPEC%`) na pasta, com `TERRAFORME_SPACE` definido. `exit` volta para onde estava. Use `--path` para só imprimir a pasta (útil em aliases de shell, ex.: `ts() { dir=$(terraforge space --path "$@") && cd "$dir"; }`).
 
-**Preferências por space** (`<pasta do space>/.terraforme/preferences.toml`): agente, modo e sandbox usados pelo `terraforme cli` aberto na pasta ou numa subpasta. Ordem de prioridade: flags da linha de comando → preferências do space → `.ai-jail` da pasta (só a sandbox) → `config.toml`.
+**Preferências por space** (`~/.terraforme/<nome do space>/preferences.toml`, fora do projeto): agente, modo, sandbox e conta usados pelo `terraforme cli` aberto na pasta ou numa subpasta. Ordem de prioridade: flags da linha de comando → preferências do space → `.ai-jail` da pasta (só a sandbox) → `config.toml`.
 
 ```bash
 terraforme space api --agent opencode --mode eco --jail false

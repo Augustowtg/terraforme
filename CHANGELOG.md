@@ -5,6 +5,24 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.17.0 - 2026-10-20
+
+### Alterado
+
+- As preferências de cada space (agente, modo, AI Jail e conta) saíram da pasta do projeto e agora
+  ficam em `~/.terraforme/<nome do space>/preferences.toml` (`TERRAFORME_HOME` troca a raiz). O
+  arquivo antigo, `<pasta do space>/.terraforme/preferences.toml`, é movido para lá
+  automaticamente. Renomear um space leva as preferências junto, e remover apaga.
+- Valem as preferências do space salvo que contém a pasta atual (o mais específico); um
+  `.terraforme/preferences.toml` solto numa pasta que não é space deixa de ser lido.
+- O nome do space não pode ter `/` nem `\`, nem ser `.` ou `..` (vira o nome da pasta).
+
+### Corrigido
+
+- Uma conta registrada com a pasta padrão `~/.claude` (ex.: `pessoal=~/.claude`) abre o Claude
+  Code sem `CLAUDE_CONFIG_DIR`; antes a variável era definida e o Claude Code passava a ler
+  `~/.claude/.claude.json` em vez de `~/.claude.json`, perdendo login e servidores MCP.
+
 ## 0.16.0 - 2026-10-20
 
 ### Adicionado
