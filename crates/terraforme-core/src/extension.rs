@@ -460,7 +460,7 @@ fn require_ours(ext: Extension, path: &Path) -> Result<()> {
 }
 
 fn home() -> Option<PathBuf> {
-    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+    crate::agent::home().ok()
 }
 
 fn run(cmd: &mut Command) -> Result<()> {

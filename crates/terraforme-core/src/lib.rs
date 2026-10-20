@@ -8,6 +8,7 @@ pub mod extension;
 pub mod jail;
 pub mod limits;
 pub mod mcp;
+pub mod platform;
 pub mod skill;
 pub mod space;
 pub mod status;

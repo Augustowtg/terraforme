@@ -125,7 +125,8 @@ Exemplos:
   terraforme space api --save              salva a pasta atual como api
   terraforme space api --mode eco --jail true
   terraforme space api --reset             volta às preferências do config
-  cd \"$(terraforme space api --path)\"      muda de pasta no shell atual"
+  cd \"$(terraforme space api --path)\"      muda de pasta no shell atual (bash/zsh)
+  cd (terraforme space api --path)         idem no PowerShell"
     )]
     Space {
         /// Nome do space (ou número na lista); sem ele, lista e pergunta
@@ -928,6 +929,20 @@ impl Choice {
             .jail
             .or(prefs.jail)
             .unwrap_or(config.jail || project.is_some());
+        // Sem AI Jail no Windows: o `.ai-jail` de um projeto versionado, o
+        // config ou o space não podem impedir a sessão; só o `--jail` pedido
+        // agora vira erro.
+        let mut prepared = Vec::new();
+        let jail = if jail && !jail::is_supported() {
+            if self.jail == Some(true) {
+                bail!("o AI Jail não roda no Windows — use-o dentro do WSL2 ou rode sem --jail");
+            }
+            prepared
+                .push("AI Jail ignorado: ele não roda no Windows (use-o dentro do WSL2)".into());
+            false
+        } else {
+            jail
+        };
 
         // Conta do Claude Code: define CLAUDE_CONFIG_DIR antes de prepare()
         // para que Claude::setup() use a pasta certa (hooks, credenciais, MCP).
@@ -951,7 +966,6 @@ impl Choice {
 
         // Extensões que precisam de algo no projeto (ex.: o `.ai-jail`) são
         // preparadas aqui, só na primeira vez em cada pasta.
-        let mut prepared = Vec::new();
         if let Some(dir) = &cwd
             && let Some(adapter) = provider.adapter()
         {
@@ -1055,6 +1069,8 @@ fn exec(mut command: std::process::Command) -> Result<()> {
 
 #[cfg(not(unix))]
 fn exec(mut command: std::process::Command) -> Result<()> {
+    // Sem `exec`, o terraforme espera o filho: o Ctrl+C é dele.
+    terraforme_core::platform::ignore_ctrl_c();
     let status = command
         .status()
         .with_context(|| format!("falha ao iniciar {}", command.get_program().display()))?;

@@ -60,7 +60,9 @@ impl LockFile {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
                 .or_else(|| {
-                    env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+                    crate::agent::home()
+                        .ok()
+                        .map(|h| h.join(".local").join("share"))
                 })
         };
         Ok(base
@@ -107,15 +109,7 @@ impl LockFile {
 
     /// `true` se o PID ainda existe no sistema.
     pub fn is_pid_alive(pid: u32) -> bool {
-        #[cfg(unix)]
-        {
-            std::path::Path::new("/proc").join(pid.to_string()).exists()
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = pid;
-            true
-        }
+        crate::platform::is_pid_alive(pid)
     }
 }
 
@@ -149,9 +143,21 @@ pub fn ensure_running(config: &McpConfig) -> Result<LockFile> {
     start(config)
 }
 
+/// O `terraforme-mcp` instalado ao lado do binário atual (as instalações põem
+/// os dois na mesma pasta) ou, sem ele, o do `PATH`.
+fn daemon_bin() -> PathBuf {
+    let name = format!("terraforme-mcp{}", env::consts::EXE_SUFFIX);
+    env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join(&name)))
+        .filter(|path| path.is_file())
+        .or_else(|| crate::status::find_in_path("terraforme-mcp"))
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
 /// Inicia o `terraforme-mcp` em background e aguarda até 2s pelo lock file.
 pub fn start(config: &McpConfig) -> Result<LockFile> {
-    let mut cmd = process::Command::new("terraforme-mcp");
+    let mut cmd = process::Command::new(daemon_bin());
     cmd.arg("--grace-seconds")
         .arg(config.grace_seconds.to_string())
         .arg("--subagent-timeout")
@@ -161,6 +167,8 @@ pub fn start(config: &McpConfig) -> Result<LockFile> {
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::null())
         .stderr(process::Stdio::null());
+    // Compartilhado entre as janelas: não pode cair junto com a que o iniciou.
+    crate::platform::detach(&mut cmd);
     cmd.spawn()
         .context("falha ao iniciar terraforme-mcp — binário no PATH?")?;
 

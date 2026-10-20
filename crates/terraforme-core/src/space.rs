@@ -98,7 +98,7 @@ impl Spaces {
     /// de space): um de dentro vence um de fora.
     pub fn name_containing(&self, start: &Path) -> Option<&str> {
         self.iter()
-            .filter(|(_, dir)| start.starts_with(dir))
+            .filter(|(_, dir)| contains(dir, start, cfg!(windows)))
             .max_by_key(|(_, dir)| dir.components().count())
             .map(|(name, _)| name)
     }
@@ -249,23 +249,81 @@ fn validate_name(name: &str) -> Result<&str> {
     if name == "." || name == ".." || name.contains(['/', '\\']) {
         bail!("o nome do space não pode ter / nem \\ nem ser . ou ..");
     }
+    // O nome vira pasta (`~/.terraforme/<nome>`): vale a regra do Windows,
+    // para os spaces funcionarem nos dois sistemas.
+    if let Some(c) = name
+        .chars()
+        .find(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') || c.is_control())
+    {
+        bail!(
+            "o nome do space não pode ter {c:?} (caractere proibido em nomes de pasta no Windows)"
+        );
+    }
+    if name.ends_with('.') {
+        bail!("o nome do space não pode terminar com ponto");
+    }
+    if is_reserved(name) {
+        bail!("{name} é um nome reservado do Windows (CON, PRN, AUX, NUL, COM1–9, LPT1–9)");
+    }
     if name.parse::<usize>().is_ok() {
         bail!("o nome do space não pode ser só um número");
     }
     Ok(name)
 }
 
-/// Shell do usuário aberto na pasta do space (`$SHELL`; `%COMSPEC%` no Windows).
+/// `CON`, `NUL`, `COM1`… (com ou sem extensão, qualquer caixa) não podem ser
+/// nome de pasta no Windows.
+fn is_reserved(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix)
+                .is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
+        })
+}
+
+/// Se `path` está dentro de `dir` (ou é ela). Com `ignore_case` (Windows, que
+/// não diferencia `C:\Proj` de `c:\proj`), compara os componentes sem caixa.
+fn contains(dir: &Path, path: &Path, ignore_case: bool) -> bool {
+    if !ignore_case {
+        return path.starts_with(dir);
+    }
+    let lower = |p: &Path| -> Vec<String> {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    lower(path).starts_with(&lower(dir))
+}
+
+/// Shell do usuário aberto na pasta do space: `$SHELL` no Unix; no Windows o
+/// PowerShell (`pwsh`, depois `powershell`) e, sem ele, o `%COMSPEC%`.
 /// `TERRAFORME_SPACE` fica com o nome dele.
 pub fn shell(name: &str, dir: &Path) -> Command {
-    let shell = if cfg!(windows) {
-        env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into())
+    let mut command = if cfg!(windows) {
+        match ["pwsh", "powershell"]
+            .into_iter()
+            .find_map(crate::status::find_in_path)
+        {
+            Some(powershell) => {
+                let mut command = Command::new(powershell);
+                command.arg("-NoLogo");
+                command
+            }
+            None => Command::new(env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into())),
+        }
     } else {
-        env::var_os("SHELL")
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "/bin/sh".into())
+        Command::new(
+            env::var_os("SHELL")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "/bin/sh".into()),
+        )
     };
-    let mut command = Command::new(shell);
     command.current_dir(dir).env("TERRAFORME_SPACE", name);
     command
 }
@@ -333,10 +391,27 @@ mod tests {
     #[test]
     fn names_cannot_be_paths() {
         let mut spaces = Spaces::default();
-        for bad in ["a/b", "a\\b", ".", ".."] {
+        for bad in [
+            "a/b", "a\\b", ".", "..", "a:b", "a*", "a?", "a|b", "a\"b", "<a>", "web.", "CON",
+            "nul", "Com1", "lpt9", "aux.txt",
+        ] {
             assert!(spaces.insert(bad, Path::new("/x")).is_err(), "{bad}");
         }
         assert!(spaces.insert("Claude Skills", Path::new("/x")).is_ok());
+        for good in ["console", "com10", "COM0", "lpt", "web.api"] {
+            assert!(spaces.insert(good, Path::new("/x")).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn contains_ignores_case_only_when_asked() {
+        let dir = Path::new("/w/Web");
+        assert!(contains(dir, Path::new("/w/Web/src"), false));
+        assert!(!contains(dir, Path::new("/w/web/src"), false));
+        assert!(contains(dir, Path::new("/w/web/src"), true));
+        assert!(contains(dir, Path::new("/W/WEB"), true));
+        assert!(!contains(dir, Path::new("/w/webapp"), true));
+        assert!(!contains(dir, Path::new("/w"), true));
     }
 
     #[test]
