@@ -1,11 +1,13 @@
-# Formatação, lint e testes no Linux e no Windows a cada push/PR: o código em
-# `#[cfg(windows)]` só é compilado (e testado) no runner do Windows.
+# Formatação, lint e testes no Linux e no Windows a cada nova versão (tag
+# `v*`) ou quando disparado na mão (Actions → ci → Run workflow); não roda em
+# push nem em PR. O código em `#[cfg(windows)]` só é compilado (e testado) no
+# runner do Windows.
 name: ci
 
 on:
   push:
-    branches: [main, develop]
-  pull_request:
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read

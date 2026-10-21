@@ -23,7 +23,7 @@ cargo test --workspace
 cargo test -p terraforme-core toml_round_trip   # single test (name filter)
 ```
 
-`.github/workflows/ci.yml` runs fmt, clippy and tests on `ubuntu-latest` and `windows-latest` for every push/PR; it is the only place `#[cfg(windows)]` code is compiled (cross-checking for `x86_64-pc-windows-msvc` locally fails on `ring`, which needs `lib.exe`).
+`.github/workflows/ci.yml` runs fmt, clippy and tests on `ubuntu-latest` and `windows-latest` only on `v*` tags (new versions) and on manual `workflow_dispatch`, not on pushes or PRs, so run `cargo fmt`/`clippy`/`test` locally before opening a PR; it is the only place `#[cfg(windows)]` code is compiled (cross-checking for `x86_64-pc-windows-msvc` locally fails on `ring`, which needs `lib.exe`).
 
 `release` has no LTO on purpose (fat LTO + 1 codegen unit left the last step, the `terraforme` binary, compiling on a single core for ~35s+, looking stuck at 181/182); the `dist` profile keeps that for distribution builds.
 
