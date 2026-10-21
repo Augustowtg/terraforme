@@ -144,6 +144,11 @@ O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no t
     projeto hoje e de todos hoje/7 dias, com custo e tokens por modelo.
   - **Subagentes** — a sessão atual dividida entre o agente principal e cada subagente; com o
     OpenCode, a contagem de sessões, prompts e subagentes.
+  - **Spaces** — o histórico do consumo por space e agente (últimas 24h, 7 dias e total, com o
+    número de sessões), guardado num SQLite em `~/.terraforme/usage.db`
+    (`%APPDATA%\.terraforme\usage.db` no Windows). O `terraforme cli` grava o total de cada
+    instância a cada 60s e quando ela fecha; o OpenCode não informa o total da sessão, então não
+    entra. A mesma tabela aparece na UI web do MCP (box "Consumo por space").
   - **RTK** (quando o modo usa o RTK) — Economia, Neste projeto, Por dia e Histórico, os
     relatórios de `terraforme extension rtk --status`.
 - **Extensões** — só aparece quando o modo usa o AI Memory ou o AI Jail está ligado: os relatórios

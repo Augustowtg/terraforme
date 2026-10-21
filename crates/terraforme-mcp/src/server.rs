@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/instances/unregister", post(unregister_instance_handler))
         .route("/ui", get(crate::ui::page))
         .route("/api/state", get(crate::ui::state))
+        .route("/api/usage", get(crate::ui::usage))
         .route("/api/send", post(crate::ui::send))
         .with_state(state)
 }

@@ -26,7 +26,7 @@ use crate::agent::claude::claude_config_dir;
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 const FIVE_HOURS: Duration = Duration::from_secs(5 * 60 * 60);
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Tokens {
     pub input: u64,
     pub output: u64,

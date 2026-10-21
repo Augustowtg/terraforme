@@ -49,6 +49,7 @@ use terraforme_core::accounts::ClaudeAccounts;
 use terraforme_core::agent::{Adapter, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Report};
+use terraforme_core::history::{History, Record, SpaceUsage};
 use terraforme_core::limits::{self, Limit, Source};
 use terraforme_core::space::Preferences;
 use terraforme_core::usage::{self, Summary, Tokens, UsageSource};
@@ -59,7 +60,11 @@ const SCROLLBACK: usize = 5000;
 /// Intervalo de atualização automática da aba de consumo.
 const USAGE_REFRESH: Duration = Duration::from_secs(5);
 /// Sub-abas da aba de consumo.
-const USAGE_VIEWS: [&str; 3] = ["Limites", "Tokens", "Subagentes"];
+const USAGE_VIEWS: [&str; 4] = ["Limites", "Tokens", "Subagentes", "Spaces"];
+/// Sub-aba do consumo com o histórico por space e agente.
+const SPACES_VIEW: usize = 3;
+/// Intervalo entre as gravações do consumo das instâncias no histórico.
+const RECORD_EVERY: Duration = Duration::from_secs(60);
 /// Largura da barra de progresso dos limites.
 const BAR_WIDTH: usize = 40;
 /// Máximo de instâncias do agente abertas ao mesmo tempo.
@@ -1137,6 +1142,10 @@ struct App {
     selection: Option<Selection>,
     /// Mensagem curta no canto da tela, até [`STATUS_TTL`].
     status: Option<(String, Instant)>,
+    /// Space da pasta (vazio fora de space), gravado com o consumo.
+    space: String,
+    /// Última gravação do consumo no histórico ([`RECORD_EVERY`]).
+    recorded_at: Instant,
 }
 
 /// Abre a TUI com o agente dentro e só volta quando todas as instâncias
@@ -1223,6 +1232,8 @@ pub fn run(options: Options) -> Result<()> {
         copy_on_select: tui.copy_on_select,
         selection: None,
         status: None,
+        space: options.space.unwrap_or_default(),
+        recorded_at: Instant::now(),
     };
     for _ in 0..options.instances.clamp(1, MAX_INSTANCES) {
         app.spawn()?;
@@ -1256,6 +1267,8 @@ pub fn run(options: Options) -> Result<()> {
     let _ = execute!(stdout, DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
 
+    // Grava o consumo de quem ainda está aberto antes de encerrar.
+    app.record_usage(None, true);
     // Encerra as instâncias que ainda estiverem rodando.
     drop(app);
 
@@ -1453,6 +1466,7 @@ impl App {
             Ok(agent) => {
                 self.next_id += 1;
                 self.agents.insert(i + 1, agent);
+                self.record_usage(Some(self.focused), false);
                 // Encerra a antiga (o `Drop` mata o processo).
                 self.agents.remove(i);
                 self.focus(id);
@@ -1506,6 +1520,10 @@ impl App {
         let Some(i) = self.agents.iter().position(|a| a.id == id) else {
             return;
         };
+        // A última sai junto com a TUI, que grava todas ao encerrar.
+        if self.agents.len() > 1 {
+            self.record_usage(Some(id), false);
+        }
         self.agents.remove(i);
         if self.agents.is_empty() {
             self.quit = true;
@@ -1513,6 +1531,65 @@ impl App {
         }
         if self.focused == id {
             self.focused = self.agents[i.min(self.agents.len() - 1)].id;
+        }
+    }
+
+    /// Grava no histórico por space e agente ([`History`]) o consumo da
+    /// sessão de cada instância (só a `only`, se dada). Em segundo plano, a
+    /// não ser com `wait` (no encerramento, quando o processo vai sair).
+    fn record_usage(&mut self, only: Option<usize>, wait: bool) {
+        self.recorded_at = Instant::now();
+        let sessions: Vec<_> = self
+            .agents
+            .iter()
+            .filter(|a| only.is_none_or(|id| a.id == id))
+            .map(|a| {
+                let started = a
+                    .launched
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let key = match &a.session {
+                    Some(session) => format!("{}:{session}", self.agent),
+                    None => format!(
+                        "{}:{}-{}-{}",
+                        self.agent,
+                        std::process::id(),
+                        a.id,
+                        started.as_millis()
+                    ),
+                };
+                (key, a.launched, a.session.clone())
+            })
+            .collect();
+        if sessions.is_empty() {
+            return;
+        }
+        let (adapter, cwd) = (self.adapter, self.cwd.clone());
+        let (agent, space) = (self.agent.clone(), self.space.clone());
+        let job = move || {
+            let Ok(db) = History::open() else {
+                return;
+            };
+            for (key, launched, session) in sessions {
+                let Ok(usage) = adapter.usage(&cwd, launched, session.as_deref()) else {
+                    continue;
+                };
+                if let Some(summary) = &usage.session {
+                    let _ = db.record(&Record {
+                        key: &key,
+                        agent: &agent,
+                        space: &space,
+                        cwd: &cwd,
+                        started: launched,
+                        summary,
+                    });
+                }
+            }
+        };
+        if wait {
+            job();
+        } else {
+            thread::spawn(job);
         }
     }
 
@@ -1527,6 +1604,9 @@ impl App {
             // visões do consumo, não os relatórios do RTK).
             if self.deve_atualizar() {
                 self.load(false);
+            }
+            if self.recorded_at.elapsed() >= RECORD_EVERY {
+                self.record_usage(None, false);
             }
             // Mensagens para um agente ocioso (sem saída que dispare a entrega).
             for agent in &mut self.agents {
@@ -2041,6 +2121,9 @@ impl App {
         thread::spawn(move || {
             let result = match (tab, report) {
                 (_, Some((ext, report))) => ext.report(report, adapter.bin()).map(Text::from),
+                (Tab::Usage, None) if index == SPACES_VIEW => History::open()
+                    .and_then(|db| db.totals())
+                    .map(|totals| format_spaces(&totals)),
                 (Tab::Usage, None) => {
                     adapter
                         .usage(&cwd, launched, session.as_deref())
@@ -2574,6 +2657,45 @@ fn format_agents(usage: &usage::Usage) -> Text<'static> {
         "Fonte: transcripts do Claude Code (<sessão>/subagents) · atualiza a cada {}s",
         USAGE_REFRESH.as_secs()
     ));
+    Text::from(lines.join("\n"))
+}
+
+/// Histórico do consumo: uma linha por space × agente.
+fn format_spaces(totals: &[SpaceUsage]) -> Text<'static> {
+    let fonte = format!(
+        "Fonte: {} · sessões abertas pelo terraforme cli, gravadas a cada {}s e ao fechar",
+        History::path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "usage.db".into()),
+        RECORD_EVERY.as_secs()
+    );
+    if totals.is_empty() {
+        return Text::from(format!("Nenhuma sessão gravada ainda.\n\n{fonte}"));
+    }
+    let mut lines = vec![format!(
+        "{:<22} {:<12} {:>8} {:>14} {:>14} {:>14} {:>9}",
+        "Space", "Agente", "Sessões", "24h", "7 dias", "Total", "Respostas"
+    )];
+    for row in totals {
+        let space = if row.space.is_empty() {
+            "(fora de space)"
+        } else {
+            &row.space
+        };
+        lines.push(format!(
+            "{:<22} {:<12} {:>8} {:>14} {:>14} {:>14} {:>9}",
+            truncate(space, 22),
+            truncate(&row.agent, 12),
+            thousands(row.sessions),
+            thousands(row.day.total()),
+            thousands(row.week.total()),
+            thousands(row.total.total()),
+            thousands(row.responses)
+        ));
+    }
+    lines.push(String::new());
+    lines.push("24h e 7 dias: sessões atualizadas no período (o total inteiro de cada uma)".into());
+    lines.push(fonte);
     Text::from(lines.join("\n"))
 }
 
@@ -3347,6 +3469,31 @@ mod tests {
         assert_eq!(duration(200_000), "2d 7h");
         assert_eq!(truncate("abc", 3), "abc");
         assert_eq!(truncate("abcdef", 4), "abc…");
+    }
+
+    #[test]
+    fn spaces_view_lists_space_and_agent_rows() {
+        let text = |totals: &[SpaceUsage]| {
+            format_spaces(totals)
+                .lines
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(text(&[])[0], "Nenhuma sessão gravada ainda.");
+        let row = SpaceUsage {
+            agent: "claude".into(),
+            sessions: 2,
+            total: Tokens {
+                input: 1500,
+                ..Tokens::default()
+            },
+            ..SpaceUsage::default()
+        };
+        let lines = text(&[row]);
+        assert!(lines[0].starts_with("Space"));
+        assert!(lines[1].starts_with("(fora de space)"));
+        assert!(lines[1].contains("claude") && lines[1].contains("1.500"));
     }
 
     #[test]

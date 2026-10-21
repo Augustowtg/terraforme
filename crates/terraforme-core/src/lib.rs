@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod agent;
 pub mod config;
 pub mod extension;
+pub mod history;
 pub mod jail;
 pub mod limits;
 pub mod mcp;
