@@ -67,6 +67,9 @@ pub const MAX_INSTANCES: usize = 9;
 /// Espera até entregar um prompt pendente à instância: a TUI do agente
 /// precisa estar pronta para recebê-lo.
 const PROMPT_DELAY: Duration = Duration::from_secs(2);
+/// Espera entre ver o agente encerrado e fechar a instância, para a saída
+/// que ainda está a caminho chegar (ver [`Agent::exited`]).
+const EXIT_GRACE: Duration = Duration::from_millis(500);
 /// Linhas roladas por passo da roda do mouse.
 const WHEEL_LINES: u16 = 3;
 /// Linhas acima do pseudoterminal do agente: o menu e as sub-abas.
@@ -913,6 +916,8 @@ struct Agent {
     mcp_port: Option<u16>,
     /// Id da instância no registro do MCP (`None`: não registrada).
     instance_id: Option<String>,
+    /// Quando o processo foi visto encerrado por [`Agent::exited`].
+    exited_at: Option<Instant>,
 }
 
 impl Agent {
@@ -1005,6 +1010,7 @@ impl Agent {
             output_buf: Vec::new(),
             mcp_port: link.map(|l| l.port),
             instance_id,
+            exited_at: None,
         })
     }
 
@@ -1012,6 +1018,30 @@ impl Agent {
         self.writer.write_all(bytes)?;
         self.writer.flush()?;
         Ok(())
+    }
+
+    /// `true` quando o processo já terminou há [`EXIT_GRACE`]. No Windows a
+    /// leitura do ConPTY não chega ao fim quando o agente sai (o
+    /// pseudoterminal continua aberto), então a saída é vista por aqui; a
+    /// espera deixa chegar o resto da saída (o resultado de um subagente).
+    fn exited(&mut self) -> bool {
+        if self.exited_at.is_none() && matches!(self.child.try_wait(), Ok(Some(_))) {
+            self.exited_at = Some(Instant::now());
+        }
+        self.exited_at.is_some_and(|at| at.elapsed() >= EXIT_GRACE)
+    }
+
+    /// Responde aos pedidos de posição do cursor (`ESC[6n`) na saída do
+    /// agente, como faria um terminal. No Windows o ConPTY manda um ao
+    /// iniciar e trava o agente até receber a resposta.
+    fn answer_cursor_queries(&mut self, bytes: &[u8]) {
+        let queries = cursor_queries(bytes);
+        if queries == 0 {
+            return;
+        }
+        let (row, col) = self.parser.screen().cursor_position();
+        let reply = format!("\x1b[{};{}R", row + 1, col + 1).repeat(queries);
+        let _ = self.send(reply.as_bytes());
     }
 
     /// Põe uma mensagem na fila do prompt pendente (entregue por
@@ -1319,7 +1349,19 @@ impl App {
             PathBuf::from(&req.cwd)
         };
         let id = self.next_id;
-        let mut command = Command::new(self.adapter.bin());
+        // O caminho completo que o `prepare` achou (fora do `PATH` ou um
+        // `.cmd` no Windows); com o AI Jail o programa é o `ai-jail`, e aí
+        // fica o nome do agente.
+        let program = self.command.get_program();
+        let bin = if Path::new(program)
+            .file_stem()
+            .is_some_and(|stem| stem == self.adapter.bin())
+        {
+            program
+        } else {
+            self.adapter.bin().as_ref()
+        };
+        let mut command = Command::new(bin);
         command.arg("--print");
         command.arg("--dangerously-skip-permissions");
         command.arg("-p");
@@ -1490,6 +1532,15 @@ impl App {
             for agent in &mut self.agents {
                 agent.deliver_pending();
             }
+            let exited: Vec<_> = self
+                .agents
+                .iter_mut()
+                .filter_map(|a| a.exited().then_some(a.id))
+                .collect();
+            for id in exited {
+                self.handle_msg(Msg::Exited(id));
+                dirty = true;
+            }
             if self
                 .status
                 .as_ref()
@@ -1557,6 +1608,7 @@ impl App {
                         agent.output_buf.extend_from_slice(&bytes);
                     }
                     agent.parser.process(&bytes);
+                    agent.answer_cursor_queries(&bytes);
                     agent.deliver_pending();
                 }
             }
@@ -2721,6 +2773,11 @@ fn thousands(n: u64) -> String {
     out
 }
 
+/// Quantos pedidos de posição do cursor (`ESC[6n`, DSR) há em `bytes`.
+fn cursor_queries(bytes: &[u8]) -> usize {
+    bytes.windows(4).filter(|w| w == b"\x1b[6n").count()
+}
+
 /// Instruções como teclas: quebra de linha vira `Alt+Enter` (não envia o
 /// prompt no meio das instruções) e termina com Enter, que envia.
 fn prompt_bytes(instructions: &str) -> Vec<u8> {
@@ -3320,6 +3377,14 @@ mod tests {
         assert_eq!(path, "/message");
         assert_eq!(read, body);
         assert!(read_request(&mut std::io::Cursor::new(b"lixo".to_vec())).is_none());
+    }
+
+    #[test]
+    fn counts_cursor_position_queries() {
+        // O ConPTY abre com `ESC[6n` e espera a resposta.
+        assert_eq!(cursor_queries(b"\x1b[6n"), 1);
+        assert_eq!(cursor_queries(b"oi\x1b[6n\x1b[?25l\x1b[6n"), 2);
+        assert_eq!(cursor_queries(b"\x1b[5n\x1b[6"), 0);
     }
 
     #[test]
