@@ -275,7 +275,7 @@ Exemplos:
         #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, help_heading = "Só do AI Jail")]
         default: Option<bool>,
     },
-    /// Mostra se as extensões estão instaladas e em que versão
+    /// Mostra se as extensões estão instaladas e em que versão, e as pastas do terraforme
     Status,
     /// Atualiza o terraforme: no repositório, git pull + compila + reinstala; instalado por
     /// release, baixa a última versão
@@ -1729,6 +1729,23 @@ fn print_status() {
     println!("Extensões");
     for ext in &status.extensions {
         print_component(ext);
+    }
+
+    println!("\nPastas");
+    let dirs = [
+        ("local (spaces e skills)", space::root()),
+        ("configuração", Config::dir()),
+        (
+            "dados (daemon MCP)",
+            mcp::LockFile::path().map(|p| p.parent().map(Into::into).unwrap_or(p)),
+        ),
+    ];
+    for (label, dir) in dirs {
+        match dir {
+            Ok(dir) if dir.is_dir() => println!("  ✔ {label}  ({})", dir.display()),
+            Ok(dir) => println!("  ✘ {label}  ({}) — ainda não criada", dir.display()),
+            Err(err) => println!("  ⚠ {label} — {err:#}"),
+        }
     }
 
     if !status.all_installed() {

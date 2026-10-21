@@ -5,6 +5,20 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.21.0 - 2026-10-20
+
+### Adicionado
+
+- `terraforme status` mostra as pastas do terraforme (local, configuração e dados do daemon MCP) e
+  se cada uma já existe (#28).
+
+### Alterado
+
+- Windows: a pasta local do terraforme (preferências dos spaces e dados das skills, como o
+  `requisitos.json` do `terraform-requisitos`) passa de `%USERPROFILE%\.terraforme` para
+  `%APPDATA%\.terraforme`, junto do resto da configuração; a pasta antiga é movida para lá na
+  primeira vez. No Linux continua `~/.terraforme` (#28).
+
 ## 0.20.2 - 2026-10-20
 
 ### Corrigido
