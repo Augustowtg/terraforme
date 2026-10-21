@@ -153,7 +153,7 @@ $M versao    <projeto> --tipo maior|menor|correcao --mudancas "<texto>"
 $M gerar     <projeto> [--md <caminho.md>] [--pdf]
 ```
 
-Seções: `documento`, `visao_geral`, `contextos`, `glossario`, `modelo_dominio`, `rf`, `rn`, `rnf`, `integracoes`, `lacunas`. A raiz `~/.terraforme` pode ser trocada pela variável `TERRAFORME_HOME`. Detalhes de cada campo em `references/esquema-json.md`.
+Seções: `documento`, `visao_geral`, `contextos`, `glossario`, `modelo_dominio`, `rf`, `rn`, `rnf`, `integracoes`, `lacunas`. A raiz `~/.terraforme` (`%APPDATA%\.terraforme` no Windows) pode ser trocada pela variável `TERRAFORME_HOME`. Detalhes de cada campo em `references/esquema-json.md`.
 
 ## Validação
 

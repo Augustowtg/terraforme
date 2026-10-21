@@ -27,7 +27,7 @@ Toda a lógica de negócio fica no crate `terraforme-core`; o crate `terraforme-
 | --- | --- |
 | `terraforme` / `--help` | Mostra a ajuda |
 | `terraforme --version` / `-V` / `version` | Exibe a versão do terraforme |
-| `terraforme status` | Verifica o status e versão das extensões (RTK, AI Memory, AI Jail) |
+| `terraforme status` | Verifica o status e versão das extensões (RTK, AI Memory, AI Jail) e se as pastas do terraforme (local, configuração e dados) existem |
 | `terraforme setup` | Configura a máquina do zero: identifica os agentes (sem nenhum, pergunta quais instalar — seleção com Espaço), instala e configura as extensões neles e instala as skills embutidas |
 | `terraforme extension …` | Instala, atualiza, configura, remove ou mostra o status das extensões |
 | `terraforme config …` | Mostra ou altera a configuração (agente, modo de início, sandbox, orçamento de tokens) |
@@ -281,7 +281,7 @@ terraforge space api --delete        # remove
 
 Abrir um space inicia um shell novo (`$SHELL` / `%COMSPEC%`) na pasta, com `TERRAFORME_SPACE` definido. `exit` volta para onde estava. Use `--path` para só imprimir a pasta (útil em aliases de shell, ex.: `ts() { dir=$(terraforge space --path "$@") && cd "$dir"; }`).
 
-**Preferências por space** (`~/.terraforme/<nome do space>/preferences.toml`, fora do projeto): agente, modo, sandbox e conta usados pelo `terraforme cli` aberto na pasta ou numa subpasta. Ordem de prioridade: flags da linha de comando → preferências do space → `.ai-jail` da pasta (só a sandbox) → `config.toml`.
+**Preferências por space** (`~/.terraforme/<nome do space>/preferences.toml` no Linux, `%APPDATA%\.terraforme\<nome do space>\preferences.toml` no Windows, fora do projeto): agente, modo, sandbox e conta usados pelo `terraforme cli` aberto na pasta ou numa subpasta. Ordem de prioridade: flags da linha de comando → preferências do space → `.ai-jail` da pasta (só a sandbox) → `config.toml`.
 
 ```bash
 terraforme space api --agent opencode --mode eco --jail false

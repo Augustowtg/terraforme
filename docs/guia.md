@@ -14,7 +14,7 @@ terraforme upgrade --no-pull             # só recompila (--repo DIR / TERRAFORM
 
 terraforme                               # mostra a ajuda (mesmo que --help)
 terraforme --version                     # ou -V, ou `terraforme version`
-terraforme status                        # extensões (RTK, AI Memory, AI Jail)
+terraforme status                        # extensões (RTK, AI Memory, AI Jail) e pastas do terraforme
 ```
 
 Depois de uma atualização, o script mostra as novidades do [`CHANGELOG.md`](../CHANGELOG.md).
@@ -153,7 +153,7 @@ O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no t
   (valem no próximo `terraforme cli`), orçamento de tokens, preferências da TUI (capturar o mouse,
   copiar ao selecionar — aplicadas na hora) e o daemon MCP. Cada alteração é gravada na hora.
   Dentro de um space, agente, modo e AI Jail gravam nas preferências do space
-  (`~/.terraforme/<nome do space>/preferences.toml`) em vez do `config.toml` global — é o arquivo
+  (`~/.terraforme/<nome do space>/preferences.toml`; no Windows, `%APPDATA%\.terraforme\...`) em vez do `config.toml` global — é o arquivo
   que o `terraforme cli` passa a usar ali — e o rodapé diz onde cada campo vale; os outros campos
   continuam no `config.toml`. Apagar um valor com `Delete` tira o override e volta ao `config.toml`.
 

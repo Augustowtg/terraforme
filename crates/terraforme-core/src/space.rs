@@ -2,8 +2,8 @@
 //! `~/.config/terraforme/spaces.toml`, para voltar a elas depois.
 //!
 //! Cada space pode ter preferências ([`Preferences`]: agente, modo, sandbox,
-//! conta) em `~/.terraforme/<space>/preferences.toml`, fora da pasta do
-//! projeto; o `terraforme cli` aberto na pasta do space (ou numa subpasta)
+//! conta) em `<root>/<space>/preferences.toml` ([`root`]: `~/.terraforme` no
+//! Linux, `%APPDATA%\.terraforme` no Windows), fora da pasta do projeto; o `terraforme cli` aberto na pasta do space (ou numa subpasta)
 //! usa essas preferências no lugar do `config.toml`.
 
 use std::collections::BTreeMap;
@@ -116,13 +116,40 @@ impl Spaces {
     }
 }
 
-/// Raiz das preferências dos spaces: `~/.terraforme` (`TERRAFORME_HOME`
-/// troca). Cada space tem uma pasta com o nome dele.
+/// Pasta local do terraforme (preferências dos spaces e dados das skills):
+/// `~/.terraforme` no Linux e `%APPDATA%\.terraforme` no Windows
+/// (`TERRAFORME_HOME` troca). Cada space tem uma pasta com o nome dele.
 pub fn root() -> Result<PathBuf> {
-    match env::var_os("TERRAFORME_HOME").filter(|v| !v.is_empty()) {
-        Some(dir) => Ok(PathBuf::from(dir)),
-        None => Ok(crate::agent::home()?.join(".terraforme")),
+    if let Some(dir) = env::var_os("TERRAFORME_HOME").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(dir));
     }
+    let home = crate::agent::home()?;
+    if !cfg!(windows) {
+        return Ok(home.join(ROOT_DIR));
+    }
+    let root = env::var_os("APPDATA")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .context("pasta %APPDATA% não encontrada")?
+        .join(ROOT_DIR);
+    move_legacy_root(&home.join(ROOT_DIR), &root);
+    Ok(root)
+}
+
+/// Nome da [`root`] dentro da pasta do usuário (ou do `%APPDATA%`).
+const ROOT_DIR: &str = ".terraforme";
+
+/// Leva a pasta das versões antigas (`%USERPROFILE%\.terraforme` no
+/// Windows) para a nova, só se a nova ainda não existe. Falhar não é erro:
+/// a pasta antiga fica onde está.
+fn move_legacy_root(old: &Path, new: &Path) {
+    if new.exists() || !old.is_dir() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::rename(old, new);
 }
 
 /// Pasta onde as preferências ficavam antes, dentro da pasta do space;
@@ -180,7 +207,7 @@ impl Preferences {
             .with_context(|| format!("gravando {}", path.display()))
     }
 
-    /// `~/.terraforme/<space>/preferences.toml`.
+    /// `<root>/<space>/preferences.toml` (veja [`root`]).
     pub fn path(name: &str) -> Result<PathBuf> {
         Ok(Self::path_in(&root()?, name))
     }
@@ -249,7 +276,7 @@ fn validate_name(name: &str) -> Result<&str> {
     if name == "." || name == ".." || name.contains(['/', '\\']) {
         bail!("o nome do space não pode ter / nem \\ nem ser . ou ..");
     }
-    // O nome vira pasta (`~/.terraforme/<nome>`): vale a regra do Windows,
+    // O nome vira pasta (`<root>/<nome>`): vale a regra do Windows,
     // para os spaces funcionarem nos dois sistemas.
     if let Some(c) = name
         .chars()
@@ -337,6 +364,27 @@ mod tests {
         spaces.insert("web", Path::new("/w/web")).unwrap();
         spaces.insert(" api ", Path::new("/w/api")).unwrap();
         spaces
+    }
+
+    #[test]
+    fn legacy_root_moves_only_when_the_new_one_is_missing() {
+        let base = env::temp_dir().join(format!("terraforme-root-{}", std::process::id()));
+        let (old, new) = (
+            base.join("home/.terraforme"),
+            base.join("appdata/.terraforme"),
+        );
+        fs::create_dir_all(old.join("web")).unwrap();
+        fs::write(old.join("web/preferences.toml"), "mode = \"eco\"\n").unwrap();
+
+        move_legacy_root(&old, &new);
+        assert!(!old.exists());
+        assert!(new.join("web/preferences.toml").is_file());
+
+        // A nova já existe: a antiga fica onde está.
+        fs::create_dir_all(&old).unwrap();
+        move_legacy_root(&old, &new);
+        assert!(old.is_dir());
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

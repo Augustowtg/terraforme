@@ -21,7 +21,8 @@ Uso:
 Seções: documento, visao_geral, contextos, glossario, modelo_dominio (dominio),
 requisitos_funcionais (rf), regras_negocio (rn), requisitos_nao_funcionais (rnf), integracoes, lacunas.
 O esquema completo está em references/esquema-json.md.
-A raiz ~/.terraforme pode ser trocada pela variável de ambiente TERRAFORME_HOME.
+A raiz ~/.terraforme (%APPDATA%\\.terraforme no Windows) pode ser trocada pela variável de
+ambiente TERRAFORME_HOME.
 """
 import argparse
 import json
@@ -82,7 +83,12 @@ class ErroMemoria(Exception):
 # ---------------------------------------------------------------- armazenamento
 
 def raiz():
-    return Path(os.environ.get("TERRAFORME_HOME", "~/.terraforme")).expanduser()
+    """Pasta local do terraforme: ~/.terraforme no Linux, %APPDATA%\\.terraforme no Windows."""
+    if os.environ.get("TERRAFORME_HOME"):
+        return Path(os.environ["TERRAFORME_HOME"]).expanduser()
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        return Path(os.environ["APPDATA"]) / ".terraforme"
+    return Path("~/.terraforme").expanduser()
 
 
 def pasta_projeto(projeto):
