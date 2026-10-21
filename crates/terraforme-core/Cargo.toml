@@ -13,6 +13,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 toml.workspace = true
 ureq = "3"
 clap = { workspace = true, optional = true }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [features]
 # Deriva `clap::ValueEnum` nos enums públicos, para a CLI usá-los direto.

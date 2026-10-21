@@ -68,6 +68,13 @@
   button[disabled] { opacity: .5; cursor: default; }
   #feedback { font-size: 12px; color: var(--muted); min-height: 1em; }
   #feedback.error { color: var(--error); }
+  .wide { grid-column: 1 / -1; }
+  .table { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  th:nth-child(-n+2), td:nth-child(-n+2) { text-align: left; }
+  .note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 </style>
 </head>
 <body>
@@ -89,6 +96,12 @@
       <button type="submit">Enviar</button>
       <div id="feedback"></div>
     </form>
+  </section>
+  <section class="wide">
+    <h2>Consumo por space</h2>
+    <div class="table" id="usage"><p class="empty">carregando…</p></div>
+    <p class="note">Sessões abertas pelo <code>terraforme cli</code>, gravadas a cada 60s e ao fechar.
+      24h e 7 dias somam as sessões atualizadas no período.</p>
   </section>
 </main>
 <script>
@@ -178,6 +191,31 @@ async function refresh() {
   }
 }
 
+const num = (n) => n.toLocaleString("pt-BR");
+const total = (t) => t.input + t.output + t.reasoning + t.cache_write + t.cache_read;
+
+async function refreshUsage() {
+  const box = $("usage");
+  try {
+    const response = await fetch("/api/usage");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || response.statusText);
+    if (!data.totals.length) {
+      box.replaceChildren(el("p", { className: "empty", textContent: "Nenhuma sessão gravada ainda." }));
+      return;
+    }
+    const head = el("tr", {}, ...["Space", "Agente", "Sessões", "24h", "7 dias", "Total", "Respostas"]
+      .map((h) => el("th", { textContent: h })));
+    const rows = data.totals.map((r) => el("tr", {},
+      ...[r.space || "(fora de space)", r.agent, num(r.sessions), num(total(r.day)),
+        num(total(r.week)), num(total(r.total)), num(r.responses)]
+        .map((v) => el("td", { textContent: v }))));
+    box.replaceChildren(el("table", {}, el("thead", {}, head), el("tbody", {}, ...rows)));
+  } catch (err) {
+    box.replaceChildren(el("p", { className: "empty", textContent: `consumo indisponível: ${err.message}` }));
+  }
+}
+
 $("to").addEventListener("change", highlight);
 $("send").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -203,6 +241,8 @@ $("send").addEventListener("submit", async (event) => {
 
 refresh();
 setInterval(refresh, 2000);
+refreshUsage();
+setInterval(refreshUsage, 10000);
 </script>
 </body>
 </html>

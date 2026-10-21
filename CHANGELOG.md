@@ -11,6 +11,11 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
 - `terraforme status` mostra as pastas do terraforme (local, configuração e dados do daemon MCP) e
   se cada uma já existe (#28).
+- Histórico do consumo por space e agente num SQLite (`~/.terraforme/usage.db`,
+  `%APPDATA%\.terraforme\usage.db` no Windows): o `terraforme cli` grava o total de cada instância
+  a cada 60s, ao fechar ou reiniciar e ao sair. Aparece na nova sub-aba **Spaces** do Consumo e no
+  box "Consumo por space" da UI web do MCP (`/api/usage`), com 24h, 7 dias, total e sessões. O
+  OpenCode não informa o total da sessão e fica de fora (#29).
 
 ### Alterado
 

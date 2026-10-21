@@ -1,5 +1,5 @@
-//! UI web do daemon (`/ui`): instâncias de todos os spaces e as mensagens
-//! entre elas. Ligada por `[mcp] ui` no config.toml, lido a cada pedido, então
+//! UI web do daemon (`/ui`): instâncias de todos os spaces, as mensagens
+//! entre elas e o consumo gravado por space e agente (`/api/usage`). Ligada por `[mcp] ui` no config.toml, lido a cada pedido, então
 //! ligar/desligar vale sem reiniciar o daemon.
 
 use axum::Json;
@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use terraforme_core::config::Config;
+use terraforme_core::history::History;
 
 use crate::hub::WEB;
 use crate::server::AppState;
@@ -67,6 +68,28 @@ pub async fn state(State(state): State<AppState>, headers: HeaderMap) -> Respons
         "messages": state.hub.messages(),
     }))
     .into_response()
+}
+
+/// Consumo por space × agente, do histórico em SQLite gravado pelo
+/// `terraforme cli` ([`History`]).
+pub async fn usage(headers: HeaderMap) -> Response {
+    if let Some(refused) = refuse(&headers) {
+        return refused;
+    }
+    let totals = tokio::task::spawn_blocking(|| History::open().and_then(|db| db.totals())).await;
+    match totals {
+        Ok(Ok(totals)) => Json(json!({ "totals": totals })).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{error:#}") })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize)]
