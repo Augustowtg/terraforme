@@ -28,6 +28,7 @@ Toda a lógica de negócio fica no crate `terraforme-core`; o crate `terraforme-
 | `terraforme` / `--help` | Mostra a ajuda |
 | `terraforme --version` / `-V` / `version` | Exibe a versão do terraforme |
 | `terraforme status` | Verifica o status e versão das extensões (RTK, AI Memory, AI Jail) e se as pastas do terraforme (local, configuração e dados) existem |
+| `terraforme --historico` / `--history` | Lista as pastas em que o `terraforme cli` foi aberto: uma linha por space (a abertura mais recente) e as 10 pastas recentes fora de space, com quando, o agente e quantas vezes |
 | `terraforme setup` | Configura a máquina do zero: identifica os agentes (sem nenhum, pergunta quais instalar — seleção com Espaço), instala e configura as extensões neles e instala as skills embutidas |
 | `terraforme extension …` | Instala, atualiza, configura, remove ou mostra o status das extensões |
 | `terraforme config …` | Mostra ou altera a configuração (agente, modo de início, sandbox, orçamento de tokens) |

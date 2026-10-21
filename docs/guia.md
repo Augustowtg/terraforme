@@ -15,6 +15,7 @@ terraforme upgrade --no-pull             # só recompila (--repo DIR / TERRAFORM
 terraforme                               # mostra a ajuda (mesmo que --help)
 terraforme --version                     # ou -V, ou `terraforme version`
 terraforme status                        # extensões (RTK, AI Memory, AI Jail) e pastas do terraforme
+terraforme --historico                   # pastas abertas pelo `terraforme cli`: spaces e recentes
 ```
 
 Depois de uma atualização, o script mostra as novidades do [`CHANGELOG.md`](../CHANGELOG.md).
