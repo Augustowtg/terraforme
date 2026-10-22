@@ -83,7 +83,7 @@ terraforme cli (TUI) ──POST /instances/state──▶ terraforme-mcp (hub) �
    cada segundo. Quando uma instância passa a "terminou" ou "precisa de você", mostra o balão e
    chama `notify-send` (se instalado).
 
-Os sprites são os de `assets/*_strip.png` (4 quadros de 48×34), embutidos no binário e desenhados
+Os sprites são os de `assets/*_strip.png` do repositório [terraforme-pet](https://github.com/Augustowtg/terraforme-pet) (4 quadros de 48×34), embutidos no binário e desenhados
 em escala 3 sem suavização.
 
 ## Trazer o terminal para frente

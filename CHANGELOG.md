@@ -23,7 +23,7 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
   [Augustowtg/terraforme-pet](https://github.com/Augustowtg/terraforme-pet) e virou plugin:
   instale com `terraforme plugin install pet`. O `install.linux.sh` não a compila mais (atualiza
   a já instalada com `terraforme plugin update pet`), e `terraforme pet`/`terraforme status`
-  avisam quando ela não está instalada.
+  avisam quando ela não está instalada. Os sprites e GIFs do mascote (`assets/`) foram junto.
 
 ## 0.24.0 - 2026-10-22
 

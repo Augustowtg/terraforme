@@ -13,7 +13,7 @@ código; o uso está no [Guia](guia.md) e o catálogo em [Funcionalidades](funci
 │   ├── terraforme-cli/       # binário `terraforme`: clap e a TUI
 │   └── terraforme-mcp/       # binário `terraforme-mcp`: daemon compartilhado entre os terminais
 ├── skills/                   # skills de agente embutidas no binário (build.rs do core)
-├── assets/                   # sprites do mascote e extensão do GNOME Shell
+├── assets/                   # extensão do GNOME Shell (trazer o terminal para frente)
 ├── docs/                     # esta documentação
 ├── install.linux.sh / install.windows.ps1   # instalação a partir do código
 ├── install.sh / install.ps1                 # instalação a partir das releases
@@ -191,7 +191,7 @@ Detalhes de comportamento: [tui/tui.feature.md](tui/tui.feature.md) e
 ## Janela flutuante (`terraforme-pet`)
 
 Consulta `pet::instances()` (`GET /pet/state` do daemon) a cada segundo, desenha o mascote dos
-sprites em `assets/*_strip.png` (embutidos com `include_bytes!`) e, num clique, chama `pet::focus`
+sprites em `assets/*_strip.png` do repositório do plugin (embutidos com `include_bytes!`) e, num clique, chama `pet::focus`
 (`POST /pet/focus` → `POST /focus` na TUI dona, que chama `platform::raise_terminal`). Detalhes:
 [janela-flutuante.md](janela-flutuante.md).
 
