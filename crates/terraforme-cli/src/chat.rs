@@ -84,6 +84,12 @@ pub struct Chat {
     adapter: &'static dyn Adapter,
     /// Pasta do agente, onde o `@` procura os arquivos.
     cwd: PathBuf,
+    /// Modelo em uso, recebido no evento Init e mostrado no título da caixa.
+    model: String,
+    /// Nível de esforço (low/medium/high/xhigh/max/auto) ou vazio se não definido.
+    effort: String,
+    /// Modo do Claude (padrão, plan, auto…), mostrado no rodapé.
+    mode: String,
     entries: Vec<Entry>,
     /// Linhas já desenhadas de cada item, pela largura e pelo tamanho do
     /// texto (o Markdown e as cores do código custam a cada desenho).
@@ -124,10 +130,16 @@ pub struct Chat {
     /// Bloco de texto fechado pelo fim de um turno: o texto do próximo abre
     /// outro bloco (os protocolos sem `TextStart` marcam o fim só aqui).
     closed: bool,
+    /// Mensagens já enviadas, para navegar com ↑/↓.
+    sent: Vec<String>,
+    /// Posição no histórico (None = editando rascunho novo).
+    hist_pos: Option<usize>,
+    /// Rascunho salvo ao entrar no histórico.
+    draft: String,
 }
 
 impl Chat {
-    pub fn new(name: &str, adapter: &'static dyn Adapter, cwd: &Path) -> Chat {
+    pub fn new(name: &str, adapter: &'static dyn Adapter, cwd: &Path, effort: &str) -> Chat {
         let ctx = ChatCtx {
             cwd: cwd.to_path_buf(),
             session: None,
@@ -136,6 +148,9 @@ impl Chat {
             name: name.to_string(),
             adapter,
             cwd: cwd.to_path_buf(),
+            model: String::new(),
+            effort: effort.to_string(),
+            mode: "padrão".to_string(),
             entries: vec![Entry::Note(
                 "Middleware (experimental): o agente roda sem a TUI dele e a conversa \
                  aparece aqui. / lista os comandos, @ os arquivos."
@@ -159,6 +174,9 @@ impl Chat {
             session: None,
             waiting: Vec::new(),
             closed: false,
+            sent: Vec::new(),
+            hist_pos: None,
+            draft: String::new(),
         }
     }
 
@@ -199,6 +217,9 @@ impl Chat {
                 let note = format!("sessão iniciada · modelo {model}");
                 if !model.is_empty() && !self.entries.contains(&Entry::Note(note.clone())) {
                     self.entries.push(Entry::Note(note));
+                }
+                if !model.is_empty() && self.model.is_empty() {
+                    self.model = model.clone();
                 }
                 // Sem a resposta do `initialize`, ficam só os nomes.
                 if self.commands.is_empty() {
@@ -283,6 +304,10 @@ impl Chat {
                     self.entries.pop();
                 }
                 if let Some(error) = error {
+                    // A mensagem sintética já trouxe o mesmo texto do erro.
+                    if self.entries.last() == Some(&Entry::Agent(error.clone())) {
+                        self.entries.pop();
+                    }
                     self.entries.push(Entry::Error(error));
                 }
                 if !denied.is_empty() {
@@ -314,6 +339,13 @@ impl Chat {
         self.entries.push(Entry::User(text.to_string()));
         self.busy = true;
         self.scroll = 0;
+        if let Some(level) = text
+            .strip_prefix("/effort")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            self.effort = level.to_string();
+        }
         // Agentes que abrem sessão só a aceitam depois de pronta.
         if self.session.is_none() && self.adapter.chat_waits_session() {
             self.waiting.push(text.to_string());
@@ -326,6 +358,11 @@ impl Chat {
     fn queue(&mut self, text: &str) {
         let ctx = self.ctx();
         self.outbox.push(self.adapter.chat_input(text, &ctx));
+    }
+
+    /// Modo do Claude em uso (padrão, plan, auto…), para o rodapé da TUI.
+    pub fn mode(&self) -> &str {
+        &self.mode
     }
 
     /// Cola o texto na caixa de entrada.
@@ -429,8 +466,66 @@ impl Chat {
         }
         self.input.clear();
         self.cursor = 0;
+        self.hist_pos = None;
+        self.draft.clear();
         self.edited();
+        self.sent.push(text.clone());
         self.message(&text);
+    }
+
+    /// Navega ao histórico de mensagens enviadas (↑).
+    fn history_up(&mut self) {
+        if self.sent.is_empty() {
+            return;
+        }
+        match self.hist_pos {
+            None => {
+                self.draft = self.input.clone();
+                self.hist_pos = Some(self.sent.len() - 1);
+            }
+            Some(0) => return,
+            Some(pos) => self.hist_pos = Some(pos - 1),
+        }
+        let msg = self.sent[self.hist_pos.unwrap()].clone();
+        self.input = msg;
+        self.cursor = self.input.chars().count();
+        self.edited();
+    }
+
+    /// Avança no histórico (↓); depois da última mensagem, volta ao rascunho.
+    fn history_down(&mut self) {
+        let Some(pos) = self.hist_pos else {
+            return;
+        };
+        if pos + 1 < self.sent.len() {
+            self.hist_pos = Some(pos + 1);
+            let msg = self.sent[pos + 1].clone();
+            self.input = msg;
+        } else {
+            self.input = self.draft.clone();
+            self.hist_pos = None;
+            self.draft.clear();
+        }
+        self.cursor = self.input.chars().count();
+        self.edited();
+    }
+
+    /// `Shift+Tab`: cicla entre os modos do agente (padrão → plan → auto).
+    fn cycle_mode(&mut self) {
+        const MODES: &[&str] = &["padrão", "plan", "auto"];
+        const CMDS: &[&str] = &["", "/plan", "/auto"];
+        let current = MODES.iter().position(|m| *m == self.mode).unwrap_or(0);
+        let next = (current + 1) % MODES.len();
+        // Ao voltar ao padrão reenvia o comando do modo atual para desativá-lo.
+        let cmd = if CMDS[next].is_empty() {
+            CMDS[current]
+        } else {
+            CMDS[next]
+        };
+        if !cmd.is_empty() {
+            self.message(cmd);
+        }
+        self.mode = MODES[next].to_string();
     }
 
     /// Opções do pedido de permissão aberto.
@@ -493,7 +588,9 @@ impl Chat {
     /// Edita a entrada; com `Enter` põe a mensagem na fila do agente
     /// ([`Chat::outbox`]). `Alt+Enter` (ou `Shift+Enter`, com o protocolo do
     /// kitty) quebra a linha. Com a lista de sugestões aberta, `↑↓` escolhem,
-    /// `Tab`/`Enter` completam e `Esc` fecha.
+    /// `Tab`/`Enter` completam e `Esc` fecha. `↑↓` sem lista navegam o
+    /// histórico de mensagens enviadas; rolar a conversa fica com `PgUp`/`PgDn`.
+    /// `Shift+Tab` cicla o modo do agente.
     pub fn key(&mut self, key: KeyEvent) {
         if !self.permissions.is_empty() {
             self.permission_key(key);
@@ -537,6 +634,8 @@ impl Chat {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.clear();
                 self.cursor = 0;
+                self.hist_pos = None;
+                self.draft.clear();
                 self.edited();
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -559,8 +658,9 @@ impl Chat {
             KeyCode::End => self.cursor = len,
             KeyCode::PageUp => self.scroll_by(10),
             KeyCode::PageDown => self.scroll_by(-10),
-            KeyCode::Up if self.input.is_empty() => self.scroll_by(1),
-            KeyCode::Down if self.input.is_empty() => self.scroll_by(-1),
+            KeyCode::Up => self.history_up(),
+            KeyCode::Down => self.history_down(),
+            KeyCode::BackTab => self.cycle_mode(),
             _ => {}
         }
     }
@@ -731,14 +831,18 @@ impl Chat {
         }
 
         let first = (row + 1).saturating_sub(visible);
+        let title_text = match (self.model.is_empty(), self.effort.is_empty()) {
+            (true, _) => " mensagem ".to_string(),
+            (false, true) => format!(" {} ", self.model),
+            (false, false) => format!(" {} · esforço {} ", self.model, self.effort),
+        };
         let status = if self.busy {
-            Line::from(format!(" ⏳ {} trabalhando… ", self.name)).yellow()
+            Line::from(" ⏳ trabalhando… ").yellow()
         } else {
-            Line::from(" Enter envia · Alt+Enter quebra a linha · / comandos · @ arquivos ")
-                .dark_gray()
+            Line::default()
         };
         let block = Block::bordered()
-            .title(Line::from(" mensagem ").bold().cyan())
+            .title(Line::from(title_text).bold().cyan())
             .title_bottom(status)
             .border_style(Style::new().cyan());
         let text: Vec<Line> = input_lines[first..]
@@ -1030,6 +1134,7 @@ mod tests {
             "claude",
             Provider::Claude.adapter().unwrap(),
             Path::new("."),
+            "",
         )
     }
 
@@ -1208,11 +1313,33 @@ mod tests {
     }
 
     #[test]
+    fn shows_local_commands_once() {
+        let mut chat = chat();
+        chat.message("/model");
+        let reply = r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Current model: Opus"}]},"parent_tool_use_id":null}"#;
+        chat.output(format!("{reply}\n").as_bytes());
+        assert!(chat.output(b"{\"type\":\"result\",\"is_error\":false}\n"));
+        assert_eq!(
+            chat.entries.last(),
+            Some(&Entry::Agent("Current model: Opus".into()))
+        );
+        // Erro: o texto da mensagem sintética vira só o erro do `result`.
+        chat.message("/x");
+        let reply = r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Unknown command"}]},"parent_tool_use_id":null}"#;
+        chat.output(format!("{reply}\n").as_bytes());
+        chat.output(b"{\"type\":\"result\",\"is_error\":true,\"result\":\"Unknown command\"}\n");
+        let n = chat.entries.len();
+        assert_eq!(chat.entries[n - 2], Entry::User("/x".into()));
+        assert_eq!(chat.entries[n - 1], Entry::Error("Unknown command".into()));
+    }
+
+    #[test]
     fn opencode_waits_the_session_and_opens_a_block_per_turn() {
         let mut chat = Chat::new(
             "opencode",
             Provider::OpenCode.adapter().unwrap(),
             Path::new("."),
+            "",
         );
         // O handshake começa pelo `initialize`.
         let start = chat.outbox();
@@ -1266,5 +1393,117 @@ mod tests {
             .count();
         assert_eq!(tools, 1);
         assert!(chat.transcript().contains("⚙ shell  ls -la"));
+    }
+
+    #[test]
+    fn history_navigates_sent_messages() {
+        let mut chat = chat();
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        // Sem histórico, ↑ não faz nada.
+        chat.key(up);
+        assert!(chat.input.is_empty() && chat.hist_pos.is_none());
+        // Envia duas mensagens.
+        typed(&mut chat, "primeira");
+        chat.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        typed(&mut chat, "segunda");
+        chat.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(chat.sent, vec!["primeira", "segunda"]);
+        // ↑ mostra a mais recente e salva o rascunho vazio.
+        chat.key(up);
+        assert_eq!(chat.input, "segunda");
+        assert_eq!(chat.hist_pos, Some(1));
+        assert_eq!(chat.draft, "");
+        // ↑ de novo mostra a mais antiga.
+        chat.key(up);
+        assert_eq!(chat.input, "primeira");
+        assert_eq!(chat.hist_pos, Some(0));
+        // ↑ no começo não sai do lugar.
+        chat.key(up);
+        assert_eq!(chat.input, "primeira");
+        // ↓ volta para a mais recente.
+        chat.key(down);
+        assert_eq!(chat.input, "segunda");
+        assert_eq!(chat.hist_pos, Some(1));
+        // ↓ de novo restaura o rascunho.
+        chat.key(down);
+        assert_eq!(chat.input, "");
+        assert!(chat.hist_pos.is_none());
+    }
+
+    #[test]
+    fn history_saves_and_restores_draft() {
+        let mut chat = chat();
+        typed(&mut chat, "enviada");
+        chat.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // Rascunho em progresso.
+        typed(&mut chat, "rascunho");
+        // ↑ salva o rascunho.
+        chat.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(chat.input, "enviada");
+        assert_eq!(chat.draft, "rascunho");
+        // ↓ restaura o rascunho.
+        chat.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(chat.input, "rascunho");
+        assert!(chat.hist_pos.is_none());
+    }
+
+    #[test]
+    fn ctrl_u_resets_history_position() {
+        let mut chat = chat();
+        typed(&mut chat, "a");
+        chat.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        chat.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert!(chat.hist_pos.is_some());
+        chat.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(chat.hist_pos.is_none() && chat.input.is_empty());
+    }
+
+    #[test]
+    fn effort_shown_in_title_and_updated_by_effort_command() {
+        let init = r#"{"type":"system","subtype":"init","model":"claude-opus-5-5","parent_tool_use_id":null}"#;
+        // Sem esforço inicial.
+        let mut chat = Chat::new(
+            "claude",
+            Provider::Claude.adapter().unwrap(),
+            Path::new("."),
+            "",
+        );
+        chat.output(format!("{init}\n").as_bytes());
+        assert_eq!(chat.model, "claude-opus-5-5");
+        assert!(chat.effort.is_empty());
+        // Com esforço passado no spawn.
+        let mut chat = Chat::new(
+            "claude",
+            Provider::Claude.adapter().unwrap(),
+            Path::new("."),
+            "high",
+        );
+        chat.output(format!("{init}\n").as_bytes());
+        assert_eq!(chat.effort, "high");
+        // /effort atualiza o campo.
+        chat.message("/effort medium");
+        assert_eq!(chat.effort, "medium");
+        chat.message("/effort xhigh");
+        assert_eq!(chat.effort, "xhigh");
+    }
+
+    #[test]
+    fn shift_tab_cycles_mode() {
+        let mut chat = chat();
+        let bt = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(chat.mode, "padrão");
+        chat.key(bt);
+        assert_eq!(chat.mode, "plan");
+        let sent = chat.outbox();
+        assert!(sent.iter().any(|s| s.contains("/plan")));
+        chat.key(bt);
+        assert_eq!(chat.mode, "auto");
+        let sent = chat.outbox();
+        assert!(sent.iter().any(|s| s.contains("/auto")));
+        chat.key(bt);
+        assert_eq!(chat.mode, "padrão");
+        let sent = chat.outbox();
+        assert!(sent.iter().any(|s| s.contains("/auto")));
     }
 }

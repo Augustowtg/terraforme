@@ -1501,7 +1501,9 @@ impl Agent {
                 SCROLLBACK,
                 Signals::default(),
             ),
-            chat: master.is_none().then(|| Chat::new(name, adapter, cwd)),
+            chat: master
+                .is_none()
+                .then(|| Chat::new(name, adapter, cwd, &effort_from_command(command))),
             master,
             writer,
             child,
@@ -3314,6 +3316,7 @@ impl App {
 
     /// Rodapé da instância aberta: à esquerda o consumo do prompt atual (o
     /// em andamento ou o último), à direita o total da sessão dela.
+    /// No modo Middleware mostra o modo do Claude (esquerda) e só o total (direita).
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
         let Some(agent) = self.agent(self.focused) else {
             return;
@@ -3322,6 +3325,19 @@ impl App {
         let Some(live) = &agent.live else {
             return;
         };
+        if let Some(chat) = &agent.chat {
+            let left = Line::from(format!(" {} ", chat.mode())).dark_gray();
+            let right = Line::from(Span::styled(
+                format!(" {} tokens ", thousands(live.session.tokens.io())),
+                Style::new().black().on_dark_gray().bold(),
+            ))
+            .right_aligned();
+            if left.width() + right.width() < area.width as usize {
+                frame.render_widget(left, area);
+            }
+            frame.render_widget(right, area);
+            return;
+        }
         let turn = &live.turn.tokens;
         let left = Line::from(vec![
             Span::styled(" Prompt atual ", Style::new().black().on_dark_gray().bold()),
@@ -4308,6 +4324,17 @@ fn piped(command: &Command, cwd: &std::path::Path, ignored: &[&str]) -> Command 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     piped
+}
+
+/// Extrai o valor de `--effort` do comando, se presente.
+fn effort_from_command(command: &Command) -> String {
+    let args: Vec<_> = command.get_args().collect();
+    for pair in args.windows(2) {
+        if pair[0] == "--effort" {
+            return pair[1].to_string_lossy().into_owned();
+        }
+    }
+    String::new()
 }
 
 /// `Ctrl+Alt` com um caractere que não é letra é AltGr no Windows (`@`, `\`,

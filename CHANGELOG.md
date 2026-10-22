@@ -5,6 +5,14 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.26.3 - 2026-10-22
+
+### Corrigido
+
+- Middleware: os comandos `/` locais do Claude Code (`/model`, `/usage`, `/cost`, `/context`…) voltam a
+  mostrar a resposta no chat. Eles não chamam a API e respondem só com uma mensagem completa, sem
+  `stream_event`, que o chat ignorava (#41).
+
 ## 0.26.2 - 2026-10-22
 
 ### Alterado

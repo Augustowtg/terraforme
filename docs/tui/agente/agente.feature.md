@@ -34,33 +34,12 @@ o router (LLM) por baixo, em pipes, e desenha as mensagens e a caixa de entrada.
 └ Enter envia · Alt+Enter quebra a linha · / comandos · @ arquivos ┘
 ```
 
-- Respostas com Markdown formatado (títulos, listas, citações, **negrito**, `código`, links) e
-  blocos de código coloridos pela linguagem (sintaxes do `bat`), na paleta do
-  [VS-Claude](https://github.com/EstarinAzx/VS-Claude) (`markdown.rs`).
-- Enquanto o agente responde, o rodapé mostra `⏳ <agente> trabalhando…`; ao terminar, a
-  instância fica "precisa de você" na [janela flutuante](../../janela-flutuante.md).
-- Mensagens do [MCP](../../MCP/mcp.feature.md) (`send_message`, `delegate_task`,
-  `open_instance`) entram direto como mensagem do usuário, sem esperar o agente ficar quieto.
+- [Histórico de mensagens](agente-message.feature.md): a conversa, em cima.
+- [Caixa de mensagem](agente-input.feature.md): onde se escreve, embaixo, com os tokens e os atalhos.
 - Se o agente sai com erro, o stderr dele (últimas 20 linhas) aparece num aviso.
 
-### Teclas
-
-| Tecla | Ação |
-| --- | --- |
-| `Enter` | envia |
-| `Alt+Enter` (ou `Shift+Enter` com o protocolo do kitty) | quebra a linha |
-| `←→` `Home` `End` `Backspace` `Delete` | editam |
-| `Ctrl+U` | limpa a caixa |
-| `PgUp`/`PgDn`, `↑↓` com a caixa vazia, roda do mouse | rolam a conversa |
-| `Ctrl+Alt+C` | copia a conversa inteira |
-
-Os atalhos da TUI (`Ctrl+Alt+…`, `Ctrl+Shift+F…`) seguem iguais ([menu](../tui.feature.md)).
-
-### Completar `/` e `@`
-
-- `/` no começo da mensagem lista os comandos do agente (com descrição e argumentos).
-- `@` lista arquivos e pastas da pasta atual, respeitando o `.gitignore` (lidos no primeiro `@`).
-- `↑↓` escolhem, `Tab` completa, `Enter` completa (e envia um comando sem argumentos), `Esc` fecha.
+Os atalhos da TUI (`Ctrl+Alt+N/W/R/S/K`, `Ctrl+Alt+1-9`, `Ctrl+Shift+F…`, `F10`) seguem iguais
+([menu](../tui.feature.md)).
 
 ### Permissões
 

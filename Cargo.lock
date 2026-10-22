@@ -2252,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "terraforme-cli"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "terraforme-core"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2288,7 +2288,7 @@ dependencies = [
 
 [[package]]
 name = "terraforme-mcp"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "anyhow",
  "axum",

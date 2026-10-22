@@ -223,6 +223,19 @@ pub fn claude_events(line: &str) -> Vec<ChatEvent> {
             .into_iter()
             .collect(),
         Some("stream_event") => stream_event(&value["event"]).into_iter().collect(),
+        // Comandos locais (`/model`, `/usage`, `/context`…) não chamam a API:
+        // a resposta vem só nesta mensagem "sintética", sem `stream_event`.
+        Some("assistant") if value["message"]["model"] == "<synthetic>" => {
+            let text: Vec<&str> = content(&value["message"])
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str())
+                .collect();
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![ChatEvent::TextStart, ChatEvent::Text(text.join("\n\n"))]
+            }
+        }
         Some("assistant") => content(&value["message"])
             .filter(|block| block["type"] == "tool_use")
             .map(|block| ChatEvent::Tool {
@@ -713,6 +726,15 @@ mod tests {
                 name: "Bash".into(),
                 detail: "ls -la".into()
             }]
+        );
+        // Comando local: o texto vem só na mensagem sintética.
+        let local = r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Current model: Opus"}]},"parent_tool_use_id":null}"#;
+        assert_eq!(
+            claude_events(local),
+            vec![
+                ChatEvent::TextStart,
+                ChatEvent::Text("Current model: Opus".into())
+            ]
         );
         let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"a\nb","is_error":false}]},"parent_tool_use_id":null}"#;
         assert_eq!(
