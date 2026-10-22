@@ -131,11 +131,10 @@ Info "Instalando em $Target"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 Install-Exe $BinName $Target
 Install-Exe 'terraforme-mcp.exe' $McpTarget
-# O mascote é um plugin: atualiza o que já estava instalado.
-if (Test-Path $PetTarget) {
-    & $Target plugin update pet
-    if ($LASTEXITCODE -ne 0) { Warn 'Falha ao atualizar o mascote — rode `terraforme plugin update pet`.' }
-}
+# Plugins (ex.: o mascote) são opcionais: nada é instalado aqui, e só os já
+# instalados e ligados na configuração são atualizados (desligado continua desligado).
+& $Target plugin sync
+if ($LASTEXITCODE -ne 0) { Warn 'Falha ao atualizar os plugins — rode `terraforme plugin sync`.' }
 
 $current = (& $Target version | Out-String).Trim()
 if ($previous -eq $current) {

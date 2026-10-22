@@ -82,6 +82,10 @@
         } else {
             Ok "Instalado: terraforme $version"
         }
+        # Plugins (ex.: o mascote) sao opcionais: nada e instalado aqui, e so os
+        # ja instalados e ligados na configuracao sao atualizados.
+        & $Exe plugin sync
+        if ($LASTEXITCODE -ne 0) { Warn 'Falha ao atualizar os plugins: rode `terraforme plugin sync`.' }
         # Daemon MCP da versao antiga no ar: reinicia com o binario novo (os
         # `terraforme cli` abertos se reconectam sozinhos). TERRAFORME_RESTART=1
         # reinicia sem perguntar (`terraforme upgrade --restart`), 0 nao reinicia.

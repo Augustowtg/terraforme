@@ -108,10 +108,9 @@ run install -m 755 "$REPO_DIR/target/$profile/$BIN_NAME" "$TARGET.new"
 run mv -f "$TARGET.new" "$TARGET"
 run install -m 755 "$REPO_DIR/target/$profile/terraforme-mcp" "$MCP_TARGET.new"
 run mv -f "$MCP_TARGET.new" "$MCP_TARGET"
-# O mascote virou plugin: atualiza o que já estava instalado.
-if [[ -e "$PET_TARGET" ]]; then
-    "$TARGET" plugin update pet || warn "Falha ao atualizar o mascote — rode \`terraforme plugin update pet\`."
-fi
+# Plugins (ex.: o mascote) são opcionais: nada é instalado aqui, e só os já
+# instalados e ligados na configuração são atualizados (desligado continua desligado).
+"$TARGET" plugin sync || warn "Falha ao atualizar os plugins — rode \`terraforme plugin sync\`."
 current="$("$TARGET" version)"
 if [[ "$previous" == "$current" ]]; then
     ok "Recompilado: $current (mesma versão)"
@@ -129,10 +128,11 @@ else
     ok "Instalado: $current"
 fi
 
-# Extensão do GNOME: copia e habilita. Uma extensão nova só é carregada pelo
-# GNOME no Wayland depois de sair e entrar na sessão, então, se ele ainda não a
-# conhece, ela é habilitada direto na lista do gsettings.
-if command -v gnome-shell >/dev/null 2>&1; then
+# Extensão do GNOME: só serve ao mascote, então só com ele ligado
+# (`terraforme config --pet true`). Copia e habilita. Uma extensão nova só é
+# carregada pelo GNOME no Wayland depois de sair e entrar na sessão, então, se
+# ele ainda não a conhece, ela é habilitada direto na lista do gsettings.
+if command -v gnome-shell >/dev/null 2>&1 && "$TARGET" plugin enabled pet >/dev/null 2>&1; then
     mkdir -p "$GNOME_EXT_DIR"
     cp "$REPO_DIR/assets/gnome-shell/$GNOME_UUID/"* "$GNOME_EXT_DIR/"
     if ! gnome-extensions enable "$GNOME_UUID" >/dev/null 2>&1; then

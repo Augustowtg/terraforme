@@ -5,6 +5,21 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.26.1 - 2026-10-22
+
+### Corrigido
+
+- O mascote (`terraforme pet`) é opcional e não vem mais com a atualização: os scripts de
+  instalação (`install.linux.sh`, `install.windows.ps1`, `install.sh`, `install.ps1`) e o
+  `terraforme upgrade` não instalam o plugin e só atualizam os plugins **já instalados e ligados**
+  na configuração — com `[tui] pet = false` (o padrão) ele continua como está e desligado (#37).
+- `install.linux.sh` só instala a extensão do GNOME Shell com o mascote ligado.
+
+### Adicionado
+
+- `terraforme plugin sync`: atualiza os plugins instalados que estão ligados (é o que os
+  instaladores rodam). `terraforme plugin install pet` avisa como ligar a janela, sem ligá-la.
+
 ## 0.26.0 - 2026-10-22
 
 ### Adicionado
