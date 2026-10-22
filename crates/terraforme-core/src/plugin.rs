@@ -51,6 +51,7 @@ struct Known {
     description: &'static str,
     bin: &'static str,
     repo: &'static str,
+    min_terraforme: Option<&'static str>,
     platforms: &'static [&'static str],
 }
 
@@ -60,6 +61,7 @@ const KNOWN: &[Known] = &[Known {
     description: "Janela flutuante com o mascote do terraforme",
     bin: "terraforme-pet",
     repo: "Augustowtg/terraforme-pet",
+    min_terraforme: Some("0.25.0"),
     platforms: &["linux"],
 }];
 
@@ -70,7 +72,7 @@ impl From<&Known> for Manifest {
             description: k.description.into(),
             bin: k.bin.into(),
             repo: k.repo.into(),
-            min_terraforme: None,
+            min_terraforme: k.min_terraforme.map(Into::into),
             platforms: k.platforms.iter().map(|p| (*p).into()).collect(),
         }
     }
@@ -389,15 +391,18 @@ pub fn install_dir() -> Result<PathBuf> {
     Ok(crate::agent::home()?.join(".local/bin"))
 }
 
-/// Binário de um plugin: ao lado do `terraforme`, no `PATH` ou na
-/// [`install_dir`] (mesmo fora do `PATH`).
+/// Binário de um plugin: o da [`install_dir`] (onde `plugin install` o põe,
+/// mesmo fora do `PATH`) e, sem ele, o do `PATH` ou o ao lado do
+/// `terraforme`. A pasta de instalação vem primeiro para um binário velho em
+/// `target/debug` (de quando o plugin era deste repositório) não ganhar do
+/// instalado.
 pub fn locate(bin: &str) -> Option<PathBuf> {
-    let sibling = crate::mcp::sibling_bin(bin);
-    if sibling.is_absolute() && sibling.is_file() {
-        return Some(sibling);
+    let installed = install_dir().ok().map(|dir| dir.join(exe(bin)));
+    if let Some(path) = installed.filter(|p| p.is_file()) {
+        return Some(path);
     }
-    let path = install_dir().ok()?.join(exe(bin));
-    path.is_file().then_some(path)
+    let other = crate::mcp::sibling_bin(bin);
+    (other.is_absolute() && other.is_file()).then_some(other)
 }
 
 fn exe(bin: &str) -> String {
