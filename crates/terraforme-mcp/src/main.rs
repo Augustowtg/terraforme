@@ -3,6 +3,7 @@
 
 mod hub;
 mod lifecycle;
+mod pet;
 mod server;
 mod tools;
 mod ui;
@@ -22,6 +23,9 @@ use terraforme_core::mcp::{LockFile, McpConfig};
 use crate::hub::Hub;
 use crate::lifecycle::ClientRegistry;
 use crate::server::AppState;
+
+/// Tempo mínimo, ao subir, até o primeiro terminal se registrar.
+const STARTUP_GRACE_SECONDS: u64 = 30;
 
 #[derive(Debug)]
 struct Args {
@@ -88,7 +92,10 @@ async fn main() -> Result<()> {
     let port = listener.local_addr()?.port();
 
     info!(port, "ouvindo em 127.0.0.1:{}", port);
-    LockFile::write(std::process::id(), port)?;
+    if !LockFile::claim(std::process::id(), port)? {
+        info!("outro terraforme-mcp já está no ar — encerrando");
+        return Ok(());
+    }
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
@@ -107,6 +114,8 @@ async fn main() -> Result<()> {
         hub.clone(),
     ));
     registry.spawn_watchdog();
+    // Quem subiu o daemon se registra logo; sem ninguém, ele não fica no ar.
+    registry.schedule_shutdown(args.grace_seconds.max(STARTUP_GRACE_SECONDS));
 
     let state = AppState {
         registry,
@@ -117,13 +126,27 @@ async fn main() -> Result<()> {
 
     let router = server::router(state);
 
-    // Handler de Ctrl-C / SIGTERM.
+    // Handler de Ctrl-C / SIGTERM (`terraforme restart`).
     let shutdown_tx_signal = shutdown_tx.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            info!("sinal recebido — encerrando");
-            let _ = shutdown_tx_signal.send(true);
+        #[cfg(unix)]
+        let terminate = async {
+            use tokio::signal::unix::{SignalKind, signal};
+            match signal(SignalKind::terminate()) {
+                Ok(mut term) => {
+                    term.recv().await;
+                }
+                Err(_) => std::future::pending().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            () = terminate => {}
         }
+        info!("sinal recebido — encerrando");
+        let _ = shutdown_tx_signal.send(true);
     });
 
     let server = axum::serve(listener, router).with_graceful_shutdown(async move {
@@ -136,7 +159,7 @@ async fn main() -> Result<()> {
 
     server.await?;
 
-    LockFile::delete()?;
+    LockFile::release(std::process::id())?;
     info!("terraforme-mcp encerrado");
     Ok(())
 }

@@ -8,10 +8,13 @@
 //! próprias e o comportamento dela, e o menu, os atalhos, a ajuda e a ordem
 //! saem todos dessa lista (ver [`spec`]). Abas: `Ctrl+Shift+F1` (Agente),
 //! `Ctrl+Shift+F2` (Consumo), `Ctrl+Shift+F3` (Extensões, quando o modo abre
-//! uma) e `Ctrl+Shift+F4` (Config). Sub-abas, iguais em todas as abas:
+//! uma) e `Ctrl+Shift+F4` (Configurações), ou `Ctrl+Shift+←/→` para a aba
+//! vizinha (`←`/`→` sozinhas nas visões Consumo e Extensões); o menu
+//! (blocos `Terraforme` e `Agente (claude)`, `Consumo`, … `Sair`, a aba ativa
+//! verde e as outras cinza, atalhos do outro lado) também abre a aba com um clique. Sub-abas, iguais em todas as abas:
 //! `Ctrl+Alt+Tab` passa para a próxima e `Ctrl+Alt+1`–`9` vai direto
-//! (`Alt+1`–`9`, `Shift+Alt+1`–`9`, `Ctrl+PgUp/PgDn` e `←`/`→` nas visões
-//! também); na aba do agente, um número além da última abre outra instância.
+//! (`Alt+1`–`9`, `Shift+Alt+1`–`9` e `Ctrl+PgUp/PgDn` também); na aba do
+//! agente, um número além da última abre outra instância.
 //! Os atalhos próprios da TUI usam `Ctrl+Alt`, que o agente não usa
 //! (`Ctrl+Alt+K` lista todos). Para distinguir `Ctrl+Shift`/`Ctrl+Alt` de
 //! teclas comuns, a TUI liga o protocolo de teclado do kitty quando o terminal
@@ -23,6 +26,7 @@
 //! `wl-copy`/`xclip`/`xsel`). `Ctrl+Alt+S` devolve o mouse ao terminal, para a
 //! seleção nativa.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -41,24 +45,29 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, crossterm};
 use terraforme_core::accounts::ClaudeAccounts;
-use terraforme_core::agent::{Adapter, Mode, Provider};
+use terraforme_core::agent::{Adapter, CliMode, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Report};
 use terraforme_core::history::{History, Record, SpaceUsage};
-use terraforme_core::limits::{self, Limit, Source};
+use terraforme_core::limits::{self, Budget, Limit, Source};
+use terraforme_core::pet::{Activity, Tracker};
 use terraforme_core::space::Preferences;
-use terraforme_core::usage::{self, Summary, Tokens, UsageSource};
+use terraforme_core::usage::{self, Live, Summary, Tokens, UsageSource};
 use tui_term::widget::PseudoTerminal;
+
+use crate::chat::Chat;
 
 /// Linhas de histórico guardadas da saída do agente.
 const SCROLLBACK: usize = 5000;
 /// Intervalo de atualização automática da aba de consumo.
 const USAGE_REFRESH: Duration = Duration::from_secs(5);
+/// Intervalo da leitura do consumo das instâncias para o rodapé ([`Live`]).
+const LIVE_EVERY: Duration = Duration::from_secs(5);
 /// Sub-abas da aba de consumo.
 const USAGE_VIEWS: [&str; 4] = ["Limites", "Tokens", "Subagentes", "Spaces"];
 /// Sub-aba do consumo com o histórico por space e agente.
@@ -69,9 +78,18 @@ const RECORD_EVERY: Duration = Duration::from_secs(60);
 const BAR_WIDTH: usize = 40;
 /// Máximo de instâncias do agente abertas ao mesmo tempo.
 pub const MAX_INSTANCES: usize = 9;
-/// Espera até entregar um prompt pendente à instância: a TUI do agente
-/// precisa estar pronta para recebê-lo.
+/// Espera mínima até entregar um prompt pendente à instância: a TUI do
+/// agente precisa estar pronta para recebê-lo.
 const PROMPT_DELAY: Duration = Duration::from_secs(2);
+/// Silêncio na saída do agente antes de digitar o prompt pendente (a TUI
+/// dele terminou de desenhar).
+const PROMPT_QUIET: Duration = Duration::from_millis(500);
+/// Até quando esperar o agente ligar o bracketed paste (sinal de que o
+/// campo do prompt está pronto) antes de digitar mesmo assim.
+const PROMPT_READY_TIMEOUT: Duration = Duration::from_secs(20);
+/// Espera entre colar o prompt e mandar o Enter: no mesmo bloco, o agente
+/// trata o Enter como parte da colagem e não envia.
+const SUBMIT_DELAY: Duration = Duration::from_millis(300);
 /// Espera entre ver o agente encerrado e fechar a instância, para a saída
 /// que ainda está a caminho chegar (ver [`Agent::exited`]).
 const EXIT_GRACE: Duration = Duration::from_millis(500);
@@ -79,29 +97,19 @@ const EXIT_GRACE: Duration = Duration::from_millis(500);
 const WHEEL_LINES: u16 = 3;
 /// Linhas acima do pseudoterminal do agente: o menu e as sub-abas.
 const AGENT_TOP: u16 = 2;
+/// Linha da tela em que começa o texto da aba Config (menu e borda acima).
+const FORM_TOP: u16 = 2;
 /// Tempo que a mensagem de status (ex.: "copiado") fica na tela.
 const STATUS_TTL: Duration = Duration::from_secs(3);
 
 /// O que `run` precisa para montar o terminal.
 pub struct Options {
-    /// Nome da aba do agente (ex.: `claude`).
-    pub agent: String,
-    /// Texto à direita do menu (provider e modo).
-    pub title: String,
-    /// Integração com o agente (sessão e consumo).
-    pub adapter: &'static dyn Adapter,
-    /// Comando de cada instância do agente.
-    pub command: Command,
+    /// Agente resolvido para as instâncias abertas ao iniciar.
+    pub launched: Launched,
+    /// Refaz o [`Launched`] quando a aba Config troca o agente ou o modo.
+    pub relaunch: Relaunch,
     /// Instâncias abertas ao iniciar.
     pub instances: usize,
-    /// Passa um id de sessão próprio a cada instância, para o consumo saber
-    /// qual é a sessão dela; desligado quando os argumentos já escolhem a sessão.
-    pub session_ids: bool,
-    /// Aparecem num aviso inicial, já que a tela alternativa esconderia o
-    /// que fosse impresso antes.
-    pub notices: Vec<String>,
-    /// Extensões do modo; os relatórios delas ficam na aba Extensões.
-    pub extensions: Vec<Extension>,
     /// Lock file do daemon MCP; `None` se o MCP não está disponível.
     pub mcp_lock: Option<terraforme_core::mcp::LockFile>,
     /// Id único desta instância da CLI para o registro no MCP.
@@ -110,6 +118,29 @@ pub struct Options {
     pub space: Option<String>,
 }
 
+/// Agente resolvido pelo `terraforme cli`: o que cada instância nova abre.
+pub struct Launched {
+    /// Nome da aba do agente (ex.: `claude`).
+    pub agent: String,
+    /// Texto à direita do menu (provider e modo).
+    pub title: String,
+    /// Integração com o agente (sessão e consumo).
+    pub adapter: &'static dyn Adapter,
+    /// Comando de cada instância do agente.
+    pub command: Command,
+    /// Passa um id de sessão próprio a cada instância, para o consumo saber
+    /// qual é a sessão dela; desligado quando os argumentos já escolhem a sessão.
+    pub session_ids: bool,
+    /// Aparecem num aviso, já que a tela alternativa esconderia o que fosse
+    /// impresso antes.
+    pub notices: Vec<String>,
+    /// Extensões do modo; os relatórios delas ficam na aba Extensões.
+    pub extensions: Vec<Extension>,
+}
+
+/// Resolve de novo o agente com outro agente, modo e sandbox.
+pub type Relaunch = Box<dyn Fn(Provider, Mode, bool) -> Result<Launched>>;
+
 /// Ligação do terminal com o daemon MCP: cada instância se registra nele (e
 /// some ao fechar) e recebe as mensagens das outras pelo servidor de controle.
 struct Link {
@@ -117,7 +148,6 @@ struct Link {
     client_id: String,
     /// Endereço do servidor de controle deste terminal.
     control_addr: String,
-    agent: String,
     space: String,
 }
 
@@ -134,10 +164,11 @@ enum Tab {
 }
 
 impl Tab {
-    /// Nome da aba: o agente usa o nome dele (`claude`, `opencode`).
+    /// Nome da aba no menu: o agente leva o nome dele entre parênteses
+    /// (`Agente (claude)`).
     fn label(self, agent: &str) -> String {
         match self {
-            Tab::Agent => agent.to_string(),
+            Tab::Agent => format!("{} ({agent})", self.nome()),
             other => other.nome().to_string(),
         }
     }
@@ -149,7 +180,7 @@ impl Tab {
             Tab::Agent => "Agente",
             Tab::Usage => "Consumo",
             Tab::Extensions => "Extensões",
-            Tab::Config => "Config",
+            Tab::Config => "Configurações",
         }
     }
 
@@ -195,6 +226,15 @@ enum TabKind {
     Content,
     /// Formulário editável, gravado a cada alteração (Config).
     Form,
+}
+
+/// Item clicável do menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuItem {
+    /// Abre a aba.
+    Tab(Tab),
+    /// Sai (igual a `F10`).
+    Quit,
 }
 
 /// Descrição de uma aba.
@@ -257,11 +297,6 @@ const TABS: [TabSpec; 4] = [
 ];
 
 impl TabSpec {
-    /// Atalho como tecla do menu (`⌃⇧F4`), sempre igual ao que abre a aba.
-    fn tecla(&self) -> String {
-        format!("⌃⇧F{}", self.shortcut)
-    }
-
     /// Atalho por extenso, na janela de atalhos (`Ctrl+Shift+F4`).
     fn tecla_longa(&self) -> String {
         format!("Ctrl+Shift+F{}", self.shortcut)
@@ -302,6 +337,8 @@ struct SpawnRequest {
 
 enum Msg {
     Output(usize, Vec<u8>),
+    /// Linha do stderr de uma instância no modo Middleware.
+    Stderr(usize, String),
     Exited(usize),
     Loaded {
         tab: Tab,
@@ -316,6 +353,27 @@ enum Msg {
         from: String,
         text: String,
     },
+    /// A janela flutuante pediu para ir a uma instância daqui.
+    Focus {
+        instance_id: String,
+    },
+    /// Uma instância (pelo MCP) pediu outra neste terminal, com o id já
+    /// escolhido pelo daemon e, se veio, a primeira mensagem dela.
+    Open {
+        instance_id: String,
+        from: String,
+        text: Option<String>,
+    },
+    /// Uma instância (pelo MCP) pediu para fechar uma daqui.
+    Close {
+        instance_id: String,
+        from: String,
+    },
+    /// Consumo das instâncias lido por [`App::poll_live`], por id.
+    Live(Vec<(usize, Live)>),
+    /// O daemon MCP em que este terminal se registrou saiu (ou não o conhece
+    /// mais) e ele se registrou de novo no daemon desta porta.
+    Reconnected(u16),
 }
 
 enum Content {
@@ -374,69 +432,150 @@ impl Selection {
     }
 }
 
-/// Campos da aba Config, na ordem da tela.
+/// Seções da aba Config, na ordem da tela (`docs/tui/config`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Agent,
+    Budget,
+    Plugins,
+    Advanced,
+}
+
+impl Section {
+    fn title(self) -> &'static str {
+        match self {
+            Section::Agent => "Agente",
+            Section::Budget => "Orçamento",
+            Section::Plugins => "Plugins · config global",
+            Section::Advanced => "Avançado",
+        }
+    }
+
+    /// Linha logo abaixo do título.
+    fn note(self) -> Option<&'static str> {
+        match self {
+            Section::Agent => Some(
+                "O agente escolhido no Router abre uma instância dele ao sair do campo ou da aba",
+            ),
+            Section::Budget => {
+                Some("Limites de tokens (aba Consumo, quando o plano não informa os dele)")
+            }
+            Section::Plugins | Section::Advanced => None,
+        }
+    }
+}
+
+/// Campos da aba Config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
+    /// Router: o agente das próximas instâncias. A troca só vale ao sair do
+    /// campo ou da aba ([`Form::leave_router`]).
     Provider,
+    /// Preset de início ([`CliMode`]); no custom, as extensões aparecem
+    /// embaixo como caixas.
     Mode,
-    Jail,
-    /// Conta do Claude Code: nome registrado em `terraforme config --account`.
+    /// Caixa de uma extensão do modo custom.
+    Extension(Extension),
+    /// Conta do agente: nome registrado em `terraforme config --account`.
     /// Só vale no contexto de um space (grava em `preferences.toml`).
     Account,
+    /// Middleware (experimental, `[tui] middleware`): as instâncias novas
+    /// viram um chat da própria TUI ([`Chat`]). Sempre no `config.toml`.
+    Middleware,
+    /// Orçamento digitado; o diário e o de 7 dias saem dele.
     BudgetFiveHours,
+    BudgetDay,
     BudgetWeek,
+    /// UI web das instâncias no daemon MCP (`[mcp] ui`).
+    Ui,
+    /// Abre a janela flutuante com o mascote junto com o `terraforme cli`.
+    Pet,
+    /// O daemon MCP em si: no ar ou não.
+    Mcp,
     Mouse,
     CopyOnSelect,
     McpGrace,
     McpTimeout,
     McpMax,
-    McpUi,
 }
 
-const FIELDS: [Field; 12] = [
-    Field::Provider,
-    Field::Mode,
-    Field::Jail,
-    Field::Account,
-    Field::BudgetFiveHours,
-    Field::BudgetWeek,
-    Field::Mouse,
-    Field::CopyOnSelect,
-    Field::McpGrace,
-    Field::McpTimeout,
-    Field::McpMax,
-    Field::McpUi,
+/// Caixas do modo custom, na ordem da tela.
+const CUSTOM: [Extension; 3] = [Extension::AiJail, Extension::Rtk, Extension::AiMemory];
+
+/// Presets do campo Modo, na ordem em que ele alterna (o custom por último,
+/// porque abre as caixas embaixo).
+const PRESETS: [CliMode; 4] = [
+    CliMode::Eco,
+    CliMode::High,
+    CliMode::Security,
+    CliMode::Custom,
 ];
 
-const MODES: [Mode; 4] = [Mode::None, Mode::Eco, Mode::High, Mode::Hybrid];
+/// Orçamento de `hours` horas no ritmo do orçamento de 5 horas.
+fn budget_for(five_hours: u64, hours: u64) -> u64 {
+    five_hours.saturating_mul(hours) / 5
+}
+
+/// Nome do preset e a descrição curta mostrada ao lado.
+fn preset_text(preset: CliMode) -> (&'static str, &'static str) {
+    match preset {
+        CliMode::Eco => ("eco", "economiza tokens compactando a saída dos comandos"),
+        CliMode::High => ("high", "memória entre sessões e projetos"),
+        CliMode::Security => ("security", "agente dentro da sandbox, sem extensões"),
+        CliMode::Custom => ("custom", "marque as extensões abaixo com Espaço"),
+    }
+}
+
+/// Extensões do modo e do sandbox, para mostrar ao lado do nome do modo.
+fn mode_extensions(mode: Mode, jail: bool) -> String {
+    let mut names: Vec<_> = mode.extensions().iter().map(|e| e.name()).collect();
+    if jail {
+        names.push(Extension::AiJail.name());
+    }
+    if names.is_empty() {
+        return "sem extensões".into();
+    }
+    names.join(" + ")
+}
 
 impl Field {
-    /// Seção da tela em que o campo aparece.
-    fn group(self) -> &'static str {
+    fn section(self) -> Section {
         match self {
-            Field::Provider | Field::Mode | Field::Jail | Field::Account => {
-                "Início do agente (vale no próximo terraforme cli)"
-            }
-            Field::BudgetFiveHours | Field::BudgetWeek => "Orçamento de tokens (aba Consumo)",
-            Field::Mouse | Field::CopyOnSelect => "TUI",
-            Field::McpGrace | Field::McpTimeout | Field::McpMax | Field::McpUi => "Daemon MCP",
+            Field::Provider
+            | Field::Mode
+            | Field::Extension(_)
+            | Field::Account
+            | Field::Middleware => Section::Agent,
+            Field::BudgetFiveHours | Field::BudgetDay | Field::BudgetWeek => Section::Budget,
+            Field::Ui | Field::Pet | Field::Mcp => Section::Plugins,
+            Field::Mouse
+            | Field::CopyOnSelect
+            | Field::McpGrace
+            | Field::McpTimeout
+            | Field::McpMax => Section::Advanced,
         }
     }
 
+    /// Rótulo fixo; o da conta e o das caixas dependem do formulário
+    /// ([`Form::label`]).
     fn label(self) -> &'static str {
         match self {
-            Field::Provider => "Agente",
+            Field::Provider => "Router",
             Field::Mode => "Modo",
-            Field::Jail => "AI Jail (sandbox)",
-            Field::Account => "Conta Claude Code",
-            Field::BudgetFiveHours => "Tokens em 5h",
+            Field::Extension(ext) => ext.name(),
+            Field::Account => "Conta",
+            Field::Middleware => "Middleware (Experimental)",
+            Field::BudgetFiveHours => "A cada 5 horas",
+            Field::BudgetDay => "Tokens diário",
             Field::BudgetWeek => "Tokens em 7 dias",
+            Field::Ui => "UI",
+            Field::Pet => "Mascote",
+            Field::Mcp => "MCP",
             Field::Mouse => "Capturar o mouse",
             Field::CopyOnSelect => "Copiar ao selecionar",
             Field::McpGrace => "Carência ao sair (s)",
             Field::McpTimeout => "Timeout do subagente (s)",
             Field::McpMax => "Subagentes simultâneos",
-            Field::McpUi => "UI web das instâncias",
         }
     }
 
@@ -444,102 +583,45 @@ impl Field {
     fn numeric(self) -> bool {
         matches!(
             self,
-            Field::BudgetFiveHours
-                | Field::BudgetWeek
-                | Field::McpGrace
-                | Field::McpTimeout
-                | Field::McpMax
+            Field::BudgetFiveHours | Field::McpGrace | Field::McpTimeout | Field::McpMax
         )
     }
 
+    /// Valor dos campos que só dependem do `config.toml`.
     fn value(self, config: &Config) -> String {
         let yes = |on: bool| if on { "sim" } else { "não" }.to_string();
-        let tokens = |n: Option<u64>| n.map_or("sem orçamento".into(), thousands);
+        let five_hours = config.budget.five_hours;
         match self {
-            Field::Provider => config.provider.name().into(),
-            Field::Mode => format!(
-                "{} ({})",
-                config.mode.id(),
-                match config.mode {
-                    Mode::None => "sem extensões",
-                    Mode::Eco => "RTK",
-                    Mode::High => "AI Memory",
-                    Mode::Hybrid => "RTK + AI Memory",
+            Field::BudgetFiveHours => five_hours.map_or("sem orçamento".into(), thousands),
+            Field::BudgetDay => five_hours.map_or("—".into(), |n| {
+                format!("{} (calculado)", thousands(budget_for(n, 24)))
+            }),
+            // Sem o de 5 horas, um semanal antigo do config.toml continua valendo.
+            Field::BudgetWeek => match (five_hours, config.budget.week) {
+                (Some(n), _) => format!("{} (calculado)", thousands(budget_for(n, 24 * 7))),
+                (None, Some(n)) => thousands(n),
+                (None, None) => "—".into(),
+            },
+            Field::Ui => match (config.mcp.ui, daemon()) {
+                (true, Some(lock)) => {
+                    format!("online · {}", terraforme_core::mcp::ui_url(&lock))
                 }
-            ),
-            Field::Jail => yes(config.jail),
-            // Account é resolvido em Form::account_display(); nunca chamado por este caminho.
-            Field::Account => String::new(),
-            Field::BudgetFiveHours => tokens(config.budget.five_hours),
-            Field::BudgetWeek => tokens(config.budget.week),
+                (true, None) => "online (daemon fora do ar)".into(),
+                (false, _) => "offline".into(),
+            },
+            Field::Pet if !terraforme_core::pet::is_supported() => "só no Linux (roadmap)".into(),
+            Field::Pet if config.tui.pet => "ativo".into(),
+            Field::Pet => "inativo".into(),
+            Field::Mcp => daemon().map_or("offline".into(), |lock| {
+                format!("online · porta {}", lock.port)
+            }),
+            Field::Middleware => yes(config.tui.middleware),
             Field::Mouse => yes(config.tui.mouse),
             Field::CopyOnSelect => yes(config.tui.copy_on_select),
             Field::McpGrace => config.mcp.grace_seconds.to_string(),
             Field::McpTimeout => config.mcp.subagent_timeout_seconds.to_string(),
             Field::McpMax => config.mcp.max_simultaneous_subagents.to_string(),
-            // Ligada com o daemon no ar: mostra o endereço.
-            Field::McpUi => match terraforme_core::mcp::LockFile::read() {
-                Ok(Some(lock)) if config.mcp.ui => {
-                    format!("sim · {}", terraforme_core::mcp::ui_url(&lock))
-                }
-                _ => yes(config.mcp.ui),
-            },
-        }
-    }
-
-    /// Passa ao valor seguinte (ou anterior) dos campos que não são números.
-    fn step(self, config: &mut Config, delta: isize) {
-        match self {
-            Field::Provider => {
-                let providers = implemented_providers();
-                let i = providers
-                    .iter()
-                    .position(|&p| p == config.provider)
-                    .unwrap_or(0);
-                config.provider = providers[step_index(providers.len(), i, delta)];
-            }
-            Field::Mode => {
-                let i = MODES.iter().position(|&m| m == config.mode).unwrap_or(0);
-                config.mode = MODES[step_index(MODES.len(), i, delta)];
-            }
-            Field::Jail => config.jail = !config.jail,
-            Field::Mouse => config.tui.mouse = !config.tui.mouse,
-            Field::CopyOnSelect => config.tui.copy_on_select = !config.tui.copy_on_select,
-            Field::McpUi => config.mcp.ui = !config.mcp.ui,
-            _ => {}
-        }
-    }
-
-    /// Passa ao valor seguinte nas preferências do space. `current` são os
-    /// valores efetivos, para a sequência continuar de onde a tela mostra.
-    fn step_prefs(self, prefs: &mut Preferences, current: &Config, delta: isize) {
-        match self {
-            Field::Provider => {
-                let providers = implemented_providers();
-                let i = providers
-                    .iter()
-                    .position(|&p| p == current.provider)
-                    .unwrap_or(0);
-                prefs.agent = Some(providers[step_index(providers.len(), i, delta)]);
-            }
-            Field::Mode => {
-                let i = MODES.iter().position(|&m| m == current.mode).unwrap_or(0);
-                prefs.mode = Some(MODES[step_index(MODES.len(), i, delta)]);
-            }
-            Field::Jail => prefs.jail = Some(!current.jail),
-            _ => {}
-        }
-    }
-
-    /// Tira o campo das preferências do space: ele volta a valer o que está
-    /// no `config.toml`.
-    fn reset_prefs(self, prefs: &mut Preferences) {
-        match self {
-            Field::Provider => prefs.agent = None,
-            Field::Mode => prefs.mode = None,
-            Field::Jail => prefs.jail = None,
-            Field::Account => prefs.account = None,
-            _ => {}
+            Field::Provider | Field::Mode | Field::Extension(_) | Field::Account => String::new(),
         }
     }
 
@@ -556,8 +638,10 @@ impl Field {
         };
         let mcp = terraforme_core::mcp::McpConfig::default();
         match self {
-            Field::BudgetFiveHours => config.budget.five_hours = n,
-            Field::BudgetWeek => config.budget.week = n,
+            Field::BudgetFiveHours => {
+                config.budget.five_hours = n;
+                config.budget.week = n.map(|n| budget_for(n, 24 * 7));
+            }
             Field::McpGrace => config.mcp.grace_seconds = n.unwrap_or(mcp.grace_seconds),
             Field::McpTimeout => {
                 config.mcp.subagent_timeout_seconds = n.unwrap_or(mcp.subagent_timeout_seconds)
@@ -571,17 +655,16 @@ impl Field {
         Ok(())
     }
 
-    /// Volta o campo ao valor padrão.
+    /// Volta ao padrão os campos que só dependem do `config.toml`.
     fn reset(self, config: &mut Config) {
         let default = Config::default();
         match self {
-            Field::Provider => config.provider = default.provider,
-            Field::Mode => config.mode = default.mode,
-            Field::Jail => config.jail = default.jail,
-            // Account não existe no config.toml (só em preferências de space).
-            Field::Account => {}
-            Field::BudgetFiveHours => config.budget.five_hours = None,
-            Field::BudgetWeek => config.budget.week = None,
+            Field::BudgetFiveHours | Field::BudgetDay | Field::BudgetWeek => {
+                config.budget = default.budget
+            }
+            Field::Ui => config.mcp.ui = default.mcp.ui,
+            Field::Pet => config.tui.pet = default.tui.pet,
+            Field::Middleware => config.tui.middleware = default.tui.middleware,
             Field::Mouse => config.tui.mouse = default.tui.mouse,
             Field::CopyOnSelect => config.tui.copy_on_select = default.tui.copy_on_select,
             Field::McpGrace => config.mcp.grace_seconds = default.mcp.grace_seconds,
@@ -591,9 +674,18 @@ impl Field {
             Field::McpMax => {
                 config.mcp.max_simultaneous_subagents = default.mcp.max_simultaneous_subagents
             }
-            Field::McpUi => config.mcp.ui = default.mcp.ui,
+            Field::Provider | Field::Mode | Field::Extension(_) | Field::Account | Field::Mcp => {}
         }
     }
+}
+
+/// Lock file do daemon MCP, se ele está no ar.
+fn daemon() -> Option<terraforme_core::mcp::LockFile> {
+    use terraforme_core::mcp::LockFile;
+    LockFile::read()
+        .ok()
+        .flatten()
+        .filter(|lock| LockFile::is_pid_alive(lock.pid))
 }
 
 /// Agentes implementados, na ordem em que a aba os alterna.
@@ -609,20 +701,41 @@ fn step_index(len: usize, i: usize, delta: isize) -> usize {
     (i as isize + delta).rem_euclid(len as isize) as usize
 }
 
+/// Valores que a sessão vai usar: as preferências do space vencem o
+/// `config.toml`, como em `Choice::resolve`.
+fn with_prefs(mut config: Config, prefs: &Preferences) -> Config {
+    if let Some(agent) = prefs.agent {
+        config.provider = agent;
+    }
+    if let Some(mode) = prefs.mode {
+        config.mode = mode;
+    }
+    if let Some(jail) = prefs.jail {
+        config.jail = jail;
+    }
+    config
+}
+
 /// Estado da aba Config.
 struct Form {
     config: Config,
-    /// Nome do space quando agente, modo, jail e conta gravam nas preferências
+    /// Nome do space quando agente, modo e conta gravam nas preferências
     /// dele (`None`: tudo fica no `config.toml`).
     space: Option<String>,
     /// Preferências do space (vazias fora dele: tudo vem do `config.toml`).
     prefs: Preferences,
     /// Nomes das contas registradas em `claude.toml`, para o campo Account ciclar.
     accounts: Vec<String>,
-    /// Campo escolhido em [`FIELDS`].
+    /// Modo custom escolhido: as caixas das extensões ficam na tela mesmo
+    /// quando a combinação marcada é a de um preset.
+    custom: bool,
+    /// Campo escolhido em [`Form::fields`].
     index: usize,
     /// Número sendo digitado no campo escolhido.
     editing: Option<String>,
+    /// Agente de antes de mexer no Router: a troca fica pendente até sair
+    /// do campo ou da aba.
+    router: Option<Provider>,
     /// Resultado da última alteração (gravada ou não).
     message: Option<Result<String, String>>,
 }
@@ -655,55 +768,148 @@ impl Form {
         let accounts = ClaudeAccounts::load()
             .map(|a| a.iter().map(|(n, _)| n.to_string()).collect())
             .unwrap_or_default();
-        Form {
+        let mut form = Form {
             config,
             space,
             prefs,
             accounts,
+            custom: false,
             index: 0,
             editing: None,
+            router: None,
             message,
+        };
+        form.custom = form.preset() == CliMode::Custom;
+        form
+    }
+
+    /// Campos na ordem da tela: as caixas do custom só com ele escolhido.
+    fn fields(&self) -> Vec<Field> {
+        let mut fields = vec![Field::Provider, Field::Mode];
+        if self.custom {
+            fields.extend(
+                CUSTOM
+                    .into_iter()
+                    .filter(|&e| e != Extension::AiJail || terraforme_core::jail::is_supported())
+                    .map(Field::Extension),
+            );
         }
+        fields.extend([
+            Field::Account,
+            Field::Middleware,
+            Field::BudgetFiveHours,
+            Field::BudgetDay,
+            Field::BudgetWeek,
+            Field::Ui,
+            Field::Pet,
+            Field::Mcp,
+            Field::Mouse,
+            Field::CopyOnSelect,
+            Field::McpGrace,
+            Field::McpTimeout,
+            Field::McpMax,
+        ]);
+        fields
     }
 
     fn field(&self) -> Field {
-        FIELDS[self.index]
+        let fields = self.fields();
+        fields[self.index.min(fields.len() - 1)]
     }
 
-    /// Agente, modo, jail e conta gravam nas preferências do space quando há
-    /// um; os outros campos são sempre do `config.toml`.
+    /// Agente, modo e conta gravam nas preferências do space quando há um;
+    /// os outros campos são sempre do `config.toml`.
     fn in_space(&self, field: Field) -> bool {
-        self.space.is_some()
-            && matches!(
-                field,
-                Field::Provider | Field::Mode | Field::Jail | Field::Account
-            )
+        self.space.is_some() && field.section() == Section::Agent && field != Field::Middleware
     }
 
-    /// Valor exibido para o campo Account: nome da conta nas preferências do
-    /// space, ou indicação de que está fora de um space (campo inativo).
-    fn account_display(&self) -> String {
-        if self.space.is_none() {
-            return "— (fora de space)".into();
+    /// Valores que a sessão vai usar (space por cima do `config.toml`).
+    fn effective(&self) -> Config {
+        with_prefs(self.config, &self.prefs)
+    }
+
+    /// O preset mostrado no campo Modo.
+    fn preset(&self) -> CliMode {
+        if self.custom {
+            return CliMode::Custom;
         }
+        let effective = self.effective();
+        CliMode::of(effective.mode, effective.jail)
+    }
+
+    fn label(&self, field: Field) -> String {
+        match field {
+            Field::Account => format!("Conta {}", self.effective().provider.name()),
+            Field::Extension(ext) => {
+                let effective = self.effective();
+                let on = match ext {
+                    Extension::AiJail => effective.jail,
+                    ext => effective.mode.uses(ext),
+                };
+                format!("  [{}] {}", if on { "x" } else { " " }, ext.name())
+            }
+            field => field.label().to_string(),
+        }
+    }
+
+    /// Valor e, à parte, a descrição curta (em cinza) do campo.
+    fn value(&self, field: Field) -> (String, Option<&'static str>) {
+        let effective = self.effective();
+        match field {
+            Field::Provider => (effective.provider.name().into(), None),
+            Field::Mode => {
+                let (name, description) = preset_text(self.preset());
+                let extensions = mode_extensions(effective.mode, effective.jail);
+                (format!("{name} ({extensions})"), Some(description))
+            }
+            Field::Extension(ext) => (
+                String::new(),
+                Some(match ext {
+                    Extension::Rtk => "economia de tokens",
+                    Extension::AiMemory => "memória entre sessões",
+                    Extension::AiJail => "sandbox do sistema",
+                }),
+            ),
+            Field::Account => (self.account_display(), None),
+            Field::Middleware => (
+                field.value(&self.config),
+                Some("chat do terraforme no lugar do terminal (Claude, Antigravity, OpenCode)"),
+            ),
+            field => (field.value(&self.config), None),
+        }
+    }
+
+    /// Valor exibido para a conta: a das preferências do space, ou `default`
+    /// quando não há nenhuma configurada.
+    fn account_display(&self) -> String {
         self.prefs
             .account
             .as_deref()
-            .unwrap_or("padrão")
+            .unwrap_or("default")
             .to_string()
     }
 
     /// Avança (ou retrocede) a conta nas preferências do space, ciclando pela
-    /// lista de contas registradas mais a opção "padrão" (sem conta fixa).
+    /// lista de contas registradas mais a opção `default` (sem conta fixa).
     fn step_account(&mut self, delta: isize) {
+        if self.effective().provider != Provider::Claude {
+            self.message = Some(Err("só o Claude Code tem contas registradas".into()));
+            return;
+        }
+        if self.space.is_none() {
+            self.message = Some(Err(
+                "a conta vale por space — salve a pasta com `terraforme space`".into(),
+            ));
+            return;
+        }
         if self.accounts.is_empty() {
             self.message = Some(Err(
                 "nenhuma conta registrada — use `terraforme config --account NOME=PASTA`".into(),
             ));
             return;
         }
-        // Opções: [None/"padrão", "conta1", "conta2", ...]
-        let len = self.accounts.len() + 1; // +1 para o "padrão"
+        // Opções: [None/"default", "conta1", "conta2", ...]
+        let len = self.accounts.len() + 1;
         let current = self
             .prefs
             .account
@@ -711,27 +917,8 @@ impl Form {
             .and_then(|name| self.accounts.iter().position(|a| a == name).map(|i| i + 1))
             .unwrap_or(0);
         let next = step_index(len, current, delta);
-        self.prefs.account = if next == 0 {
-            None
-        } else {
-            Some(self.accounts[next - 1].clone())
-        };
-    }
-
-    /// Valores que a sessão vai usar: as preferências do space vencem o
-    /// `config.toml`, como em `Choice::resolve`.
-    fn effective(&self) -> Config {
-        let mut config = self.config;
-        if let Some(agent) = self.prefs.agent {
-            config.provider = agent;
-        }
-        if let Some(mode) = self.prefs.mode {
-            config.mode = mode;
-        }
-        if let Some(jail) = self.prefs.jail {
-            config.jail = jail;
-        }
-        config
+        self.prefs.account = (next > 0).then(|| self.accounts[next - 1].clone());
+        self.save_prefs();
     }
 
     fn save(&mut self) {
@@ -758,20 +945,153 @@ impl Form {
         });
     }
 
-    /// Alterna o valor do campo: nas preferências do space quando elas valem
-    /// para ele, senão no `config.toml`.
-    fn step(&mut self, field: Field, delta: isize) {
-        if self.in_space(field) {
-            if field == Field::Account {
-                self.step_account(delta);
-            } else {
-                let current = self.effective();
-                field.step_prefs(&mut self.prefs, &current, delta);
-            }
+    /// Grava o agente: nas preferências do space quando há um, senão no
+    /// `config.toml`.
+    fn set_provider(&mut self, provider: Provider) {
+        if self.space.is_some() {
+            self.prefs.agent = Some(provider);
             self.save_prefs();
         } else {
-            field.step(&mut self.config, delta);
+            self.config.provider = provider;
             self.save();
+        }
+    }
+
+    /// Grava o modo e o sandbox, como o agente.
+    fn set_mode(&mut self, mode: Mode, jail: bool) {
+        if self.space.is_some() {
+            self.prefs.mode = Some(mode);
+            self.prefs.jail = Some(jail);
+            self.save_prefs();
+        } else {
+            self.config.mode = mode;
+            self.config.jail = jail;
+            self.save();
+        }
+    }
+
+    /// Passa ao preset seguinte (ou anterior). O custom não grava nada: só
+    /// abre as caixas, que partem da combinação atual.
+    fn step_mode(&mut self, delta: isize) {
+        let presets: Vec<_> = PRESETS
+            .into_iter()
+            .filter(|&p| p != CliMode::Security || terraforme_core::jail::is_supported())
+            .collect();
+        let i = presets
+            .iter()
+            .position(|&p| p == self.preset())
+            .unwrap_or(0);
+        let next = presets[step_index(presets.len(), i, delta)];
+        self.custom = next == CliMode::Custom;
+        match next.preset() {
+            Some((mode, jail)) => self.set_mode(mode, jail),
+            None => self.message = Some(Ok("modo custom: marque as extensões com Espaço".into())),
+        }
+    }
+
+    /// Marca ou desmarca a extensão no modo custom.
+    fn toggle_extension(&mut self, ext: Extension) {
+        let effective = self.effective();
+        let (mut rtk, mut memory, mut jail) = (
+            effective.mode.uses(Extension::Rtk),
+            effective.mode.uses(Extension::AiMemory),
+            effective.jail,
+        );
+        match ext {
+            Extension::Rtk => rtk = !rtk,
+            Extension::AiMemory => memory = !memory,
+            Extension::AiJail => jail = !jail,
+        }
+        self.set_mode(Mode::with(rtk, memory), jail);
+    }
+
+    /// Liga ou desliga o mascote e já abre (ou fecha) a janela.
+    fn toggle_pet(&mut self) {
+        use terraforme_core::pet;
+        if !pet::is_supported() {
+            self.message = Some(Err(
+                "a janela flutuante só existe no Linux por enquanto (ROADMAP.md)".into(),
+            ));
+            return;
+        }
+        self.config.tui.pet = !self.config.tui.pet;
+        self.save();
+        let result = if self.config.tui.pet {
+            pet::start().map(|_| "mascote aberto")
+        } else {
+            pet::stop().map(|_| "mascote fechado")
+        };
+        match result {
+            Ok(text) => self.message = Some(Ok(text.into())),
+            Err(err) => self.message = Some(Err(format!("{err:#}"))),
+        }
+    }
+
+    /// Sobe o daemon MCP se ele está fora do ar; no ar, ele fecha sozinho
+    /// quando o último terminal sai.
+    fn start_mcp(&mut self) {
+        self.message = Some(match daemon() {
+            Some(lock) => Ok(format!(
+                "daemon MCP no ar (porta {}); ele fecha sozinho quando o último terminal sai",
+                lock.port
+            )),
+            None => terraforme_core::mcp::ensure_running(&self.config.mcp)
+                .map(|lock| format!("daemon MCP no ar na porta {}", lock.port))
+                .map_err(|err| format!("{err:#}")),
+        });
+    }
+
+    /// Abre a UI web no navegador, se ela está ligada e o daemon no ar.
+    fn open_ui(&mut self) {
+        let Some(lock) = daemon().filter(|_| self.config.mcp.ui) else {
+            self.message = Some(Err("a UI está offline".into()));
+            return;
+        };
+        let url = terraforme_core::mcp::ui_url(&lock);
+        self.message = Some(
+            terraforme_core::platform::open_url(&url)
+                .map(|()| format!("abrindo {url}"))
+                .map_err(|err| format!("abrindo {url}: {err}")),
+        );
+    }
+
+    /// Alterna o valor do campo; os do agente gravam nas preferências do
+    /// space quando há um, os outros no `config.toml`.
+    fn step(&mut self, field: Field, delta: isize) {
+        match field {
+            Field::Provider => {
+                let providers = implemented_providers();
+                let current = self.effective().provider;
+                let i = providers.iter().position(|&p| p == current).unwrap_or(0);
+                self.set_provider(providers[step_index(providers.len(), i, delta)]);
+            }
+            Field::Mode => self.step_mode(delta),
+            Field::Extension(ext) => self.toggle_extension(ext),
+            Field::Account => self.step_account(delta),
+            Field::BudgetDay | Field::BudgetWeek => {
+                self.message = Some(Err(
+                    "calculado a partir do orçamento de 5 horas — edite \"A cada 5 horas\"".into(),
+                ))
+            }
+            Field::Ui => {
+                self.config.mcp.ui = !self.config.mcp.ui;
+                self.save();
+            }
+            Field::Pet => self.toggle_pet(),
+            Field::Middleware => {
+                self.config.tui.middleware = !self.config.tui.middleware;
+                self.save();
+            }
+            Field::Mcp => self.start_mcp(),
+            Field::Mouse => {
+                self.config.tui.mouse = !self.config.tui.mouse;
+                self.save();
+            }
+            Field::CopyOnSelect => {
+                self.config.tui.copy_on_select = !self.config.tui.copy_on_select;
+                self.save();
+            }
+            Field::BudgetFiveHours | Field::McpGrace | Field::McpTimeout | Field::McpMax => {}
         }
     }
 
@@ -780,20 +1100,75 @@ impl Form {
     /// padrão.
     fn reset(&mut self, field: Field) {
         if self.in_space(field) {
-            field.reset_prefs(&mut self.prefs);
+            match field {
+                Field::Provider => self.prefs.agent = None,
+                Field::Mode | Field::Extension(_) => {
+                    self.prefs.mode = None;
+                    self.prefs.jail = None;
+                }
+                Field::Account => self.prefs.account = None,
+                _ => {}
+            }
             self.save_prefs();
         } else {
-            field.reset(&mut self.config);
+            let default = Config::default();
+            match field {
+                Field::Provider => self.config.provider = default.provider,
+                Field::Mode | Field::Extension(_) => {
+                    self.config.mode = default.mode;
+                    self.config.jail = default.jail;
+                }
+                field => field.reset(&mut self.config),
+            }
             self.save();
+        }
+        if field.section() == Section::Agent {
+            self.custom =
+                CliMode::of(self.effective().mode, self.effective().jail) == CliMode::Custom;
         }
     }
 
-    /// Trata a tecla; devolve o campo alterado e gravado, se houver.
+    /// Escolhe o campo da linha `line` do texto (clique do mouse); devolve
+    /// o campo, se a linha tem um.
+    fn click(&mut self, line: usize) -> Option<Field> {
+        if self.editing.is_some() {
+            return None;
+        }
+        let field = self.rows().into_iter().nth(line)?.0?;
+        self.index = self.fields().iter().position(|&f| f == field)?;
+        Some(field)
+    }
+
+    /// Sai do Router (ou da aba): devolve `true` se o agente escolhido nele
+    /// é outro e a TUI deve abrir uma instância dele.
+    fn leave_router(&mut self) -> bool {
+        self.router
+            .take()
+            .is_some_and(|before| before != self.effective().provider)
+    }
+
+    /// Trata a tecla; devolve o campo alterado e gravado, se houver. O
+    /// Router grava na hora, mas só devolve [`Field::Provider`] quando o
+    /// campo escolhido deixa de ser ele.
     fn key(&mut self, key: KeyEvent) -> Option<Field> {
+        let provider = self.effective().provider;
+        let changed = self.handle(key);
+        if changed == Some(Field::Provider) {
+            self.router.get_or_insert(provider);
+            return None;
+        }
+        if self.field() != Field::Provider && self.leave_router() {
+            return Some(Field::Provider);
+        }
+        changed
+    }
+
+    fn handle(&mut self, key: KeyEvent) -> Option<Field> {
         let field = self.field();
+        let last = self.fields().len() - 1;
         if let Some(text) = &mut self.editing {
             match key.code {
-                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => text.push(c),
+                KeyCode::Char(c) if c.is_ascii_digit() => text.push(c),
                 KeyCode::Backspace => {
                     text.pop();
                 }
@@ -817,15 +1192,14 @@ impl Form {
         }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.index = self.index.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.index = (self.index + 1).min(FIELDS.len() - 1)
-            }
+            KeyCode::Down | KeyCode::Char('j') => self.index = (self.index + 1).min(last),
             KeyCode::Home | KeyCode::Char('g') => self.index = 0,
-            KeyCode::End | KeyCode::Char('G') => self.index = FIELDS.len() - 1,
+            KeyCode::End | KeyCode::Char('G') => self.index = last,
             KeyCode::Enter if field.numeric() => self.editing = Some(String::new()),
             KeyCode::Char(c) if field.numeric() && c.is_ascii_digit() => {
                 self.editing = Some(c.to_string())
             }
+            KeyCode::Char('o') if field == Field::Ui => self.open_ui(),
             KeyCode::Left | KeyCode::Char('h') if !field.numeric() => {
                 self.step(field, -1);
                 return Some(field);
@@ -840,59 +1214,112 @@ impl Form {
                 self.reset(field);
                 return Some(field);
             }
-            KeyCode::Char('r') => *self = Form::load(),
+            KeyCode::Char('r') => {
+                let router = self.router;
+                *self = Form::load();
+                self.router = router;
+            }
             _ => {}
         }
         None
     }
 
-    fn text(&self) -> Text<'static> {
-        let effective = self.effective();
-        let mut lines = Vec::new();
-        for (i, &field) in FIELDS.iter().enumerate() {
-            if i == 0 || FIELDS[i - 1].group() != field.group() {
+    /// Linhas da tela, cada uma com o campo dela (para o clique).
+    fn rows(&self) -> Vec<(Option<Field>, Line<'static>)> {
+        let fields = self.fields();
+        let current = self.field();
+        let mut rows = Vec::new();
+        for (i, &field) in fields.iter().enumerate() {
+            let section = field.section();
+            if i == 0 || fields[i - 1].section() != section {
                 if i > 0 {
-                    lines.push(Line::default());
+                    rows.push((None, Line::default()));
                 }
-                lines.push(Line::raw(field.group()).bold());
+                let title = format!("── {} ", section.title());
+                let rule = "─".repeat(48usize.saturating_sub(title.chars().count()));
+                rows.push((None, Line::raw(format!("{title}{rule}")).bold().cyan()));
+                if let Some(note) = section.note() {
+                    rows.push((None, Line::raw(format!("   {note}")).dark_gray()));
+                }
             }
-            let selected = i == self.index;
-            let value = match (&self.editing, selected) {
-                (Some(text), true) => format!("{text}▏"),
-                _ if field == Field::Account => self.account_display(),
-                _ => field.value(&effective),
+            let selected = field == current;
+            let (value, description) = match (&self.editing, selected) {
+                (Some(text), true) if field == Field::BudgetFiveHours => {
+                    let masked = text.parse().map_or_else(|_| text.clone(), thousands);
+                    (format!("{masked}▏"), Some("Enter grava · Esc cancela"))
+                }
+                (Some(text), true) => (format!("{text}▏"), Some("Enter grava · Esc cancela")),
+                _ => self.value(field),
             };
             let style = if selected {
                 Style::new().black().on_cyan().bold()
             } else {
                 Style::new()
             };
-            lines.push(Line::from(vec![
+            let gap = if value.is_empty() { "" } else { "  " };
+            let mut spans = vec![
                 Span::raw(if selected { " › " } else { "   " }),
-                Span::styled(format!("{:<26}", field.label()), style),
+                Span::styled(format!("{:<26}", self.label(field)), style),
                 Span::raw("  "),
                 Span::raw(value).cyan(),
-            ]));
+            ];
+            if let Some(description) = description {
+                spans.push(Span::raw(format!("{gap}{description}")).dark_gray());
+            }
+            rows.push((Some(field), Line::from(spans)));
         }
-        lines.push(Line::default());
+        rows.push((None, Line::default()));
         match &self.message {
-            Some(Ok(text)) => lines.push(Line::raw(format!("✔ {text}")).green()),
-            Some(Err(err)) => lines.push(Line::raw(format!("✘ {err}")).red()),
+            Some(Ok(text)) => rows.push((None, Line::raw(format!("✔ {text}")).green())),
+            Some(Err(err)) => rows.push((None, Line::raw(format!("✘ {err}")).red())),
             None => {}
         }
         let footer = match &self.space {
             Some(name) => format!(
-                "Agente, modo, jail e conta valem em {} (preferências do space {name}); \
-                 os outros campos valem no config.toml. As flags do terraforme cli têm prioridade.",
+                "Agente, modo e conta valem em {} (preferências do space {name}); \
+                 os outros campos valem no config.toml. O modo e a conta valem nas \
+                 próximas instâncias (⌃⌥N).",
                 Preferences::path(name)
                     .map_or_else(|_| "preferences.toml".into(), |p| p.display().to_string())
             ),
-            None => "As flags do terraforme cli e as preferências do space têm prioridade \
-                     sobre o agente, o modo e o jail. Conta só vale dentro de um space."
+            None => "As preferências do space têm prioridade sobre o agente e o modo; \
+                     a conta só vale dentro de um space. O modo vale nas próximas \
+                     instâncias (⌃⌥N)."
                 .to_string(),
         };
-        lines.push(Line::raw(footer).dark_gray());
-        Text::from(lines)
+        rows.push((None, Line::raw(footer).dark_gray()));
+        rows
+    }
+
+    fn text(&self) -> Text<'static> {
+        Text::from(
+            self.rows()
+                .into_iter()
+                .map(|(_, line)| line)
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+/// Avisos do agente vistos na saída: o sino (`BEL`) e as notificações de
+/// terminal (OSC 9, menos o progresso `9;4`, e OSC 777), que marcam a
+/// instância como "precisa de você" na janela flutuante.
+#[derive(Default)]
+struct Signals {
+    bell: bool,
+}
+
+impl vt100::Callbacks for Signals {
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        self.bell = true;
+    }
+
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        match params {
+            [b"9", b"4", ..] => {}
+            [b"9", ..] | [b"777", ..] => self.bell = true,
+            _ => {}
+        }
     }
 }
 
@@ -900,10 +1327,19 @@ impl Form {
 struct Agent {
     /// Número da sub-aba; não é reaproveitado quando a instância fecha.
     id: usize,
-    parser: vt100::Parser,
-    master: Box<dyn MasterPty + Send>,
+    /// Nome do agente (ex.: `claude`): a aba Config pode trocar o agente das
+    /// instâncias novas enquanto as antigas continuam abertas.
+    name: String,
+    adapter: &'static dyn Adapter,
+    parser: vt100::Parser<Signals>,
+    /// Pseudoterminal; `None` no modo Middleware, em que o agente roda em
+    /// pipes e o [`Chat`] desenha a conversa.
+    master: Option<Box<dyn MasterPty + Send>>,
+    /// Entrada do agente: o pseudoterminal ou, no Middleware, o stdin.
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
+    /// Conversa do modo Middleware.
+    chat: Option<Chat>,
     /// Linhas roladas para trás no histórico (0 = ao vivo).
     scrollback: usize,
     launched: SystemTime,
@@ -913,6 +1349,10 @@ struct Agent {
     pending: Option<String>,
     /// Momento da abertura, para o atraso de entregar o prompt.
     booted: Instant,
+    /// Última saída recebida do agente.
+    last_output: Instant,
+    /// Quando mandar o Enter do prompt já colado ([`SUBMIT_DELAY`]).
+    submit_at: Option<Instant>,
     /// Id do spawn MCP (Some = este é um subagente MCP).
     spawn_id: Option<String>,
     /// Saída acumulada do subagente para devolver ao MCP.
@@ -921,36 +1361,44 @@ struct Agent {
     mcp_port: Option<u16>,
     /// Id da instância no registro do MCP (`None`: não registrada).
     instance_id: Option<String>,
+    /// Corpo do `/instances/register`, reenviado quando o terminal se
+    /// registra num daemon novo ([`Agent::register`]).
+    registration: Option<String>,
     /// Quando o processo foi visto encerrado por [`Agent::exited`].
     exited_at: Option<Instant>,
+    /// Atividade da instância, informada ao daemon para a janela flutuante.
+    activity: Tracker,
+    /// Consumo da sessão e do prompt atual, para o rodapé.
+    live: Option<Live>,
 }
 
 impl Agent {
     #[allow(clippy::too_many_arguments)]
     fn spawn(
         id: usize,
-        adapter: &dyn Adapter,
+        name: &str,
+        adapter: &'static dyn Adapter,
         command: &Command,
         cwd: &Path,
         body: Rect,
         session_ids: bool,
         link: Option<&Link>,
+        instance_id: Option<String>,
+        middleware: bool,
         tx: &Sender<Msg>,
     ) -> Result<Agent> {
-        let pty = native_pty_system()
-            .openpty(pty_size(body))
-            .map_err(|e| anyhow!("{e}"))
-            .context("falha ao abrir o pseudoterminal")?;
-        let mut builder = builder(command, cwd);
+        let mut extra: Vec<std::ffi::OsString> = Vec::new();
         let mut session = None;
         if session_ids {
             let id = uuid::Uuid::new_v4().to_string();
             if let Some(args) = adapter.session_args(&id) {
-                builder.args(args);
+                extra.extend(args.into_iter().map(Into::into));
                 session = Some(id);
             }
         }
-        let instance_id = link.map(|_| uuid::Uuid::new_v4().to_string());
+        // O id vem do daemon quando foi ele quem pediu a instância.
+        let instance_id =
+            link.map(|_| instance_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()));
         if let (Some(link), Some(instance_id)) = (link, &instance_id) {
             let url = format!("http://127.0.0.1:{}/", link.port);
             let headers = [
@@ -958,18 +1406,59 @@ impl Agent {
                 ("x-instance-id", instance_id.as_str()),
             ];
             if let Some(args) = adapter.mcp_args(&url, &headers) {
-                builder.args(args);
+                extra.extend(args);
             }
         }
+        let chat_args = adapter.chat_args().filter(|_| middleware);
         let launched = SystemTime::now();
-        let child = pty
-            .slave
-            .spawn_command(builder)
-            .map_err(|e| anyhow!("{e}"))
-            .context("falha ao iniciar o agente")?;
-        drop(pty.slave);
+        let (master, writer, child, mut reader): (
+            _,
+            Box<dyn Write + Send>,
+            _,
+            Box<dyn Read + Send>,
+        ) = match chat_args {
+            Some(args) => {
+                let mut child = piped(command, cwd, adapter.chat_drop_args())
+                    .args(extra)
+                    .args(args)
+                    .spawn()
+                    .context("falha ao iniciar o agente")?;
+                let stdin = child.stdin.take().context("stdin do agente")?;
+                let stdout = child.stdout.take().context("stdout do agente")?;
+                if let Some(stderr) = child.stderr.take() {
+                    let tx = tx.clone();
+                    thread::spawn(move || {
+                        use std::io::BufRead;
+                        for line in std::io::BufReader::new(stderr).lines() {
+                            let Ok(line) = line else { break };
+                            if tx.send(Msg::Stderr(id, line)).is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+                let child: Box<dyn Child + Send + Sync> = Box::new(child);
+                (None, Box::new(stdin), child, Box::new(stdout))
+            }
+            None => {
+                let pty = native_pty_system()
+                    .openpty(pty_size(body))
+                    .map_err(|e| anyhow!("{e}"))
+                    .context("falha ao abrir o pseudoterminal")?;
+                let mut builder = builder(command, cwd);
+                builder.args(extra);
+                let child = pty
+                    .slave
+                    .spawn_command(builder)
+                    .map_err(|e| anyhow!("{e}"))
+                    .context("falha ao iniciar o agente")?;
+                drop(pty.slave);
+                let reader = pty.master.try_clone_reader().map_err(|e| anyhow!("{e}"))?;
+                let writer = pty.master.take_writer().map_err(|e| anyhow!("{e}"))?;
+                (Some(pty.master), writer, child, reader)
+            }
+        };
 
-        let mut reader = pty.master.try_clone_reader().map_err(|e| anyhow!("{e}"))?;
         let tx = tx.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -986,37 +1475,132 @@ impl Agent {
             let _ = tx.send(Msg::Exited(id));
         });
 
-        if let (Some(link), Some(instance_id)) = (link, &instance_id) {
-            let body = serde_json::json!({
+        let registration = link.zip(instance_id.as_ref()).map(|(link, instance_id)| {
+            serde_json::json!({
                 "instance_id": instance_id,
                 "client_id": link.client_id,
                 "control_addr": link.control_addr,
-                "agent": link.agent,
+                "agent": name,
                 "number": id,
                 "space": link.space,
                 "cwd": cwd.display().to_string(),
-            });
-            let addr = format!("127.0.0.1:{}", link.port);
-            thread::spawn(move || http_post_fire(&addr, "/instances/register", &body.to_string()));
-        }
+            })
+            .to_string()
+        });
 
-        Ok(Agent {
+        let agent = Agent {
             id,
-            parser: vt100::Parser::new(body.height, body.width, SCROLLBACK),
-            writer: pty.master.take_writer().map_err(|e| anyhow!("{e}"))?,
-            master: pty.master,
+            name: name.to_string(),
+            adapter,
+            parser: vt100::Parser::new_with_callbacks(
+                body.height,
+                body.width,
+                SCROLLBACK,
+                Signals::default(),
+            ),
+            chat: master.is_none().then(|| Chat::new(name, adapter, cwd)),
+            master,
+            writer,
             child,
             scrollback: 0,
             launched,
             session,
             pending: None,
             booted: Instant::now(),
+            last_output: Instant::now(),
+            submit_at: None,
             spawn_id: None,
             output_buf: Vec::new(),
             mcp_port: link.map(|l| l.port),
             instance_id,
+            registration,
             exited_at: None,
-        })
+            activity: Tracker::new(Instant::now()),
+            live: None,
+        };
+        agent.register(false);
+        let mut agent = agent;
+        agent.flush_chat();
+        Ok(agent)
+    }
+
+    /// Manda ao agente as linhas que o [`Chat`] pôs na fila (mensagens,
+    /// respostas de permissão, pedidos de controle).
+    fn flush_chat(&mut self) {
+        let Some(chat) = &mut self.chat else {
+            return;
+        };
+        for mut line in chat.outbox() {
+            line.push('\n');
+            if self.writer.write_all(line.as_bytes()).is_err() {
+                return;
+            }
+        }
+        let _ = self.writer.flush();
+    }
+
+    /// Registra a instância no daemon de [`Agent::mcp_port`]; com `state`,
+    /// informa também a atividade atual (o daemon é novo e não a conhece).
+    fn register(&self, state: bool) {
+        let (Some(port), Some(body), Some(instance_id)) = (
+            self.mcp_port,
+            self.registration.clone(),
+            self.instance_id.clone(),
+        ) else {
+            return;
+        };
+        let activity = self.activity.state();
+        thread::spawn(move || {
+            let addr = format!("127.0.0.1:{port}");
+            http_post_fire(&addr, "/instances/register", &body);
+            if state {
+                let body = serde_json::json!({ "instance_id": instance_id, "activity": activity });
+                http_post_fire(&addr, "/instances/state", &body.to_string());
+            }
+        });
+    }
+
+    /// O que o usuário digita, cola ou rola na instância: também marca o
+    /// aviso da janela flutuante como visto.
+    fn input(&mut self, bytes: &[u8]) -> Result<()> {
+        let change = self.activity.input(Instant::now());
+        self.report(change);
+        self.send(bytes)
+    }
+
+    /// Processa a saída do agente e atualiza a atividade.
+    fn output(&mut self, bytes: &[u8]) {
+        let now = Instant::now();
+        self.last_output = now;
+        if let Some(chat) = &mut self.chat {
+            // Fim da resposta ou pedido de permissão: o agente espera o usuário.
+            let change = if chat.output(bytes) {
+                self.activity.bell(now)
+            } else {
+                self.activity.output(now)
+            };
+            self.report(change);
+            self.flush_chat();
+            return;
+        }
+        self.parser.process(bytes);
+        let mut change = self.activity.output(now);
+        if std::mem::take(&mut self.parser.callbacks_mut().bell) {
+            change = self.activity.bell(now).or(change);
+        }
+        self.report(change);
+    }
+
+    /// Informa ao daemon MCP a mudança de atividade, se houve uma.
+    fn report(&self, change: Option<Activity>) {
+        let (Some(activity), Some(port), Some(instance_id)) =
+            (change, self.mcp_port, &self.instance_id)
+        else {
+            return;
+        };
+        let body = serde_json::json!({ "instance_id": instance_id, "activity": activity });
+        let addr = format!("127.0.0.1:{port}");
+        thread::spawn(move || http_post_fire(&addr, "/instances/state", &body.to_string()));
     }
 
     fn send(&mut self, bytes: &[u8]) -> Result<()> {
@@ -1041,7 +1625,7 @@ impl Agent {
     /// iniciar e trava o agente até receber a resposta.
     fn answer_cursor_queries(&mut self, bytes: &[u8]) {
         let queries = cursor_queries(bytes);
-        if queries == 0 {
+        if queries == 0 || self.chat.is_some() {
             return;
         }
         let (row, col) = self.parser.screen().cursor_position();
@@ -1059,20 +1643,43 @@ impl Agent {
         self.deliver_pending();
     }
 
-    /// Entrega o prompt pendente ao agente quando ele já
-    /// inicializou (primeira saída recebida e ao menos [`PROMPT_DELAY`]).
+    /// Entrega o prompt pendente quando o agente está pronto: passou o
+    /// [`PROMPT_DELAY`], ele ligou o bracketed paste (ou passou o
+    /// [`PROMPT_READY_TIMEOUT`]) e a saída está parada há [`PROMPT_QUIET`].
+    /// O texto é colado e o Enter vai depois, em [`SUBMIT_DELAY`].
     fn deliver_pending(&mut self) {
+        if let Some(at) = self.submit_at
+            && Instant::now() >= at
+        {
+            self.submit_at = None;
+            let _ = self.send(b"\r");
+        }
         let Some(prompt) = self.pending.clone() else {
             return;
         };
-        if self.booted.elapsed() < PROMPT_DELAY {
+        // No Middleware o agente lê a entrada desde o início.
+        if let Some(chat) = &mut self.chat {
+            chat.message(&prompt);
+            self.pending = None;
+            self.flush_chat();
+            return;
+        }
+        let bracketed = self.parser.screen().bracketed_paste();
+        let ready = bracketed || self.booted.elapsed() >= PROMPT_READY_TIMEOUT;
+        if self.submit_at.is_some()
+            || self.booted.elapsed() < PROMPT_DELAY
+            || !ready
+            || self.last_output.elapsed() < PROMPT_QUIET
+        {
             return;
         }
         self.pending = None;
-        if self.send(&prompt_bytes(&prompt)).is_err() {
-            // Tenta de novo na próxima saída do agente.
+        if self.send(&prompt_bytes(&prompt, bracketed)).is_err() {
+            // Tenta de novo na próxima volta.
             self.pending = Some(prompt);
+            return;
         }
+        self.submit_at = Some(Instant::now() + SUBMIT_DELAY);
     }
 
     /// `isize::MIN` volta ao vivo.
@@ -1089,9 +1696,22 @@ impl Agent {
 
     fn resize(&mut self, body: Rect) -> Result<()> {
         self.parser.screen_mut().set_size(body.height, body.width);
-        self.master
-            .resize(pty_size(body))
-            .map_err(|e| anyhow!("{e}"))
+        match &self.master {
+            Some(master) => master.resize(pty_size(body)).map_err(|e| anyhow!("{e}")),
+            None => Ok(()),
+        }
+    }
+
+    /// Tecla na conversa do Middleware: edita a entrada e, no `Enter`, manda
+    /// a mensagem ao agente.
+    fn chat_key(&mut self, key: KeyEvent) -> Result<()> {
+        let change = self.activity.input(Instant::now());
+        self.report(change);
+        if let Some(chat) = &mut self.chat {
+            chat.key(key);
+        }
+        self.flush_chat();
+        Ok(())
     }
 }
 
@@ -1112,6 +1732,10 @@ struct App {
     extensions: Vec<Extension>,
     adapter: &'static dyn Adapter,
     command: Command,
+    relaunch: Relaunch,
+    /// A aba Config mudou o modo ou a conta: a próxima instância resolve o
+    /// agente de novo antes de abrir.
+    stale: bool,
     cwd: PathBuf,
     session_ids: bool,
     agents: Vec<Agent>,
@@ -1139,6 +1763,9 @@ struct App {
     mouse: bool,
     /// Copia a seleção ao soltar o botão do mouse.
     copy_on_select: bool,
+    /// Middleware (experimental): as instâncias novas viram um chat
+    /// ([`Chat`]) em vez do terminal do agente.
+    middleware: bool,
     selection: Option<Selection>,
     /// Mensagem curta no canto da tela, até [`STATUS_TTL`].
     status: Option<(String, Instant)>,
@@ -1146,13 +1773,20 @@ struct App {
     space: String,
     /// Última gravação do consumo no histórico ([`RECORD_EVERY`]).
     recorded_at: Instant,
+    /// Última leitura do consumo para o rodapé ([`LIVE_EVERY`]) e se ela
+    /// ainda está em andamento.
+    live_at: Instant,
+    live_busy: bool,
+    /// Tokens gastos por instância desde que abriu, inclusive as já
+    /// fechadas: a soma é o consumo desta sessão do terraforme.
+    spent: BTreeMap<usize, u64>,
 }
 
 /// Abre a TUI com o agente dentro e só volta quando todas as instâncias
 /// terminam (ou F10).
 pub fn run(options: Options) -> Result<()> {
     let (cols, rows) = crossterm::terminal::size().context("tamanho do terminal")?;
-    let cwd = match options.command.get_current_dir() {
+    let cwd = match options.launched.command.get_current_dir() {
         Some(dir) => dir.to_path_buf(),
         None => std::env::current_dir()?,
     };
@@ -1182,13 +1816,33 @@ pub fn run(options: Options) -> Result<()> {
             &reg_body.to_string(),
         );
 
-        // Heartbeat a cada 2s.
+        // Heartbeat a cada 2s; se o daemon saiu (ex.: `terraforme restart`
+        // depois de um upgrade) ou não conhece mais este terminal, sobe ou
+        // acha o daemon no ar e se registra de novo nele.
         let hb_client = client_id.clone();
+        let hb_tx = tx.clone();
+        let mcp_config = config.mcp;
         thread::spawn(move || {
             let body = serde_json::json!({ "client_id": hb_client }).to_string();
+            let mut port = mcp;
             loop {
                 thread::sleep(Duration::from_secs(2));
-                http_post_fire(&format!("127.0.0.1:{mcp}"), "/heartbeat", &body);
+                let status = http_post(&format!("127.0.0.1:{port}"), "/heartbeat", &body);
+                if status.is_some_and(|code| code != 404) {
+                    continue;
+                }
+                let Ok(lock) = terraforme_core::mcp::ensure_running(&mcp_config) else {
+                    continue;
+                };
+                http_post_fire(
+                    &format!("127.0.0.1:{}", lock.port),
+                    "/register",
+                    &reg_body.to_string(),
+                );
+                port = lock.port;
+                if hb_tx.send(Msg::Reconnected(port)).is_err() {
+                    return;
+                }
             }
         });
 
@@ -1202,26 +1856,28 @@ pub fn run(options: Options) -> Result<()> {
             port: mcp,
             client_id: client_id.clone(),
             control_addr,
-            agent: options.agent.clone(),
             space: options.space.clone().unwrap_or_default(),
         });
     }
 
+    let launched = options.launched;
     let mut app = App {
-        agent: options.agent,
-        title: options.title,
-        extensions: options.extensions,
-        adapter: options.adapter,
-        command: options.command,
+        agent: launched.agent,
+        title: launched.title,
+        extensions: launched.extensions,
+        adapter: launched.adapter,
+        command: launched.command,
+        relaunch: options.relaunch,
+        stale: false,
         cwd,
-        session_ids: options.session_ids,
+        session_ids: launched.session_ids,
         agents: Vec::new(),
         next_id: 1,
         active: Tab::Agent,
         focused: 1,
         view: None,
         form: None,
-        popup: (!options.notices.is_empty()).then(|| notices(options.notices.join("\n"))),
+        popup: (!launched.notices.is_empty()).then(|| notices(launched.notices.join("\n"))),
         body: body_size(Rect::new(0, 0, cols, rows)),
         tx: tx.clone(),
         quit: false,
@@ -1230,10 +1886,14 @@ pub fn run(options: Options) -> Result<()> {
         enhanced: false,
         mouse: tui.mouse,
         copy_on_select: tui.copy_on_select,
+        middleware: tui.middleware,
         selection: None,
         status: None,
         space: options.space.unwrap_or_default(),
         recorded_at: Instant::now(),
+        live_at: Instant::now(),
+        live_busy: false,
+        spent: BTreeMap::new(),
     };
     for _ in 0..options.instances.clamp(1, MAX_INSTANCES) {
         app.spawn()?;
@@ -1270,9 +1930,10 @@ pub fn run(options: Options) -> Result<()> {
     // Grava o consumo de quem ainda está aberto antes de encerrar.
     app.record_usage(None, true);
     // Encerra as instâncias que ainda estiverem rodando.
-    drop(app);
 
-    // Desregistra do MCP.
+    // Desregistra do MCP (do daemon atual, que pode ter mudado).
+    let mcp_port = app.mcp_port;
+    drop(app);
     if let Some(mcp) = mcp_port {
         let body = format!(r#"{{"client_id":"{}"}}"#, client_id);
         http_post_fire(&format!("127.0.0.1:{mcp}"), "/unregister", &body);
@@ -1307,17 +1968,31 @@ impl App {
 
     /// Abre mais uma instância do agente e devolve o número dela.
     fn spawn(&mut self) -> Result<usize> {
+        self.spawn_as(None)
+    }
+
+    /// Como [`App::spawn`], com o id da instância no daemon MCP já escolhido.
+    fn spawn_as(&mut self, instance_id: Option<String>) -> Result<usize> {
         let id = self.next_id;
         let agent = Agent::spawn(
             id,
+            &self.agent,
             self.adapter,
             &self.command,
             &self.cwd,
             self.body,
             self.session_ids,
             self.link.as_ref(),
+            instance_id,
+            self.middleware,
             &self.tx,
         )?;
+        if self.middleware && agent.chat.is_none() {
+            self.flash(format!(
+                "Middleware ainda não suportado em {}: terminal",
+                self.agent
+            ));
+        }
         self.agents.push(agent);
         self.next_id += 1;
         Ok(id)
@@ -1337,9 +2012,77 @@ impl App {
             self.notify(format!("⚠ no máximo {MAX_INSTANCES} instâncias"));
             return;
         }
+        if self.stale && !self.reload() {
+            return;
+        }
         match self.spawn() {
             Ok(id) => self.focus(id),
             Err(err) => self.notify(format!("⚠ {err:#}")),
+        }
+    }
+
+    /// Resolve o agente de novo com o que a aba Config gravou (agente, modo
+    /// e sandbox do space ou do `config.toml`); as instâncias abertas
+    /// continuam como estão. Devolve `false` (com o erro na tela) se falhou.
+    fn reload(&mut self) -> bool {
+        let resolved = Config::load().and_then(|config| {
+            let (_, prefs) = space_prefs()?;
+            let config = with_prefs(config, &prefs);
+            let jail = config.jail && terraforme_core::jail::is_supported();
+            (self.relaunch)(config.provider, config.mode, jail)
+        });
+        let launched = match resolved {
+            Ok(launched) => launched,
+            Err(err) => {
+                self.notify(format!("⚠ {err:#}"));
+                return false;
+            }
+        };
+        self.agent = launched.agent;
+        self.title = launched.title;
+        self.adapter = launched.adapter;
+        self.command = launched.command;
+        self.session_ids = launched.session_ids;
+        self.extensions = launched.extensions;
+        self.stale = false;
+        if !launched.notices.is_empty() {
+            self.notify(launched.notices.join("\n"));
+        }
+        true
+    }
+
+    /// O Router da aba Config trocou o agente: abre uma instância do novo,
+    /// sem fechar as que estão rodando.
+    fn switch_agent(&mut self) {
+        self.stale = true;
+        let before = self.agents.len();
+        self.new_instance();
+        if self.agents.len() > before {
+            self.flash(format!("agente trocado: {}", self.agent));
+        }
+    }
+
+    /// Abre a instância que outra pediu pelo MCP (`open_instance`,
+    /// `delegate_task`), sem tirar o foco de onde o usuário está; sem ela,
+    /// o daemon avisa quem pediu quando o registro não chega.
+    fn open_requested(&mut self, instance_id: String, from: &str, text: Option<String>) {
+        if self.agents.len() >= MAX_INSTANCES {
+            self.flash(format!(
+                "⚠ {from} pediu uma instância: no máximo {MAX_INSTANCES}"
+            ));
+            return;
+        }
+        if self.stale && !self.reload() {
+            return;
+        }
+        match self.spawn_as(Some(instance_id)) {
+            Ok(id) => {
+                if let (Some(text), Some(agent)) = (text, self.agent_mut(id)) {
+                    agent.queue(&text);
+                }
+                self.flash(format!("＋ {} {id} aberto por {from}", self.agent));
+            }
+            Err(err) => self.notify(format!("⚠ instância pedida por {from}: {err:#}")),
         }
     }
 
@@ -1385,12 +2128,15 @@ impl App {
         // Subagente roda com `--print`: não conversa, então não se registra.
         match Agent::spawn(
             id,
+            &self.agent,
             self.adapter,
             &command,
             &cwd,
             self.body,
             false,
             None,
+            None,
+            false,
             &self.tx,
         ) {
             Ok(mut agent) => {
@@ -1429,6 +2175,10 @@ impl App {
 
     /// Abre a aba do agente na sub-aba da instância.
     fn focus(&mut self, id: usize) {
+        if let Some(agent) = self.agent_mut(id) {
+            let change = agent.activity.seen();
+            agent.report(change);
+        }
         self.focused = id;
         self.selection = None;
         self.select(Tab::Agent);
@@ -1449,18 +2199,24 @@ impl App {
         if !matches!(spec(self.active).kind, TabKind::Agent) {
             return;
         }
+        if self.stale && !self.reload() {
+            return;
+        }
         let Some(i) = self.agents.iter().position(|a| a.id == self.focused) else {
             return;
         };
         let id = self.next_id;
         match Agent::spawn(
             id,
+            &self.agent,
             self.adapter,
             &self.command,
             &self.cwd,
             self.body,
             self.session_ids,
             self.link.as_ref(),
+            None,
+            self.middleware,
             &self.tx,
         ) {
             Ok(agent) => {
@@ -1549,28 +2305,33 @@ impl App {
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap_or_default();
                 let key = match &a.session {
-                    Some(session) => format!("{}:{session}", self.agent),
+                    Some(session) => format!("{}:{session}", a.name),
                     None => format!(
                         "{}:{}-{}-{}",
-                        self.agent,
+                        a.name,
                         std::process::id(),
                         a.id,
                         started.as_millis()
                     ),
                 };
-                (key, a.launched, a.session.clone())
+                (
+                    key,
+                    a.name.clone(),
+                    a.adapter,
+                    a.launched,
+                    a.session.clone(),
+                )
             })
             .collect();
         if sessions.is_empty() {
             return;
         }
-        let (adapter, cwd) = (self.adapter, self.cwd.clone());
-        let (agent, space) = (self.agent.clone(), self.space.clone());
+        let (cwd, space) = (self.cwd.clone(), self.space.clone());
         let job = move || {
             let Ok(db) = History::open() else {
                 return;
             };
-            for (key, launched, session) in sessions {
+            for (key, agent, adapter, launched, session) in sessions {
                 let Ok(usage) = adapter.usage(&cwd, launched, session.as_deref()) else {
                     continue;
                 };
@@ -1593,6 +2354,32 @@ impl App {
         }
     }
 
+    /// Lê em segundo plano o consumo de cada instância para o rodapé e o
+    /// total da sessão ([`Msg::Live`]); uma leitura por vez.
+    fn poll_live(&mut self) {
+        if self.live_busy {
+            return;
+        }
+        self.live_at = Instant::now();
+        self.live_busy = true;
+        let sessions: Vec<_> = self
+            .agents
+            .iter()
+            .map(|a| (a.id, a.adapter, a.launched, a.session.clone()))
+            .collect();
+        let (cwd, tx) = (self.cwd.clone(), self.tx.clone());
+        thread::spawn(move || {
+            let live = sessions
+                .into_iter()
+                .filter_map(|(id, adapter, launched, session)| {
+                    let live = adapter.live_usage(&cwd, launched, session.as_deref());
+                    Some((id, live.ok()??))
+                })
+                .collect();
+            let _ = tx.send(Msg::Live(live));
+        });
+    }
+
     fn event_loop(&mut self, terminal: &mut DefaultTerminal, rx: &Receiver<Msg>) -> Result<()> {
         let mut dirty = true;
         while !self.quit {
@@ -1608,9 +2395,16 @@ impl App {
             if self.recorded_at.elapsed() >= RECORD_EVERY {
                 self.record_usage(None, false);
             }
-            // Mensagens para um agente ocioso (sem saída que dispare a entrega).
+            if self.live_at.elapsed() >= LIVE_EVERY {
+                self.poll_live();
+            }
+            // Mensagens para um agente ocioso (sem saída que dispare a entrega)
+            // e o silêncio depois de trabalhar, que vira "terminou".
+            let now = Instant::now();
             for agent in &mut self.agents {
                 agent.deliver_pending();
+                let change = agent.activity.tick(now);
+                agent.report(change);
             }
             let exited: Vec<_> = self
                 .agents
@@ -1687,12 +2481,37 @@ impl App {
                     if agent.spawn_id.is_some() {
                         agent.output_buf.extend_from_slice(&bytes);
                     }
-                    agent.parser.process(&bytes);
+                    agent.output(&bytes);
                     agent.answer_cursor_queries(&bytes);
                     agent.deliver_pending();
                 }
             }
+            Msg::Stderr(id, line) => {
+                if let Some(chat) = self.agent_mut(id).and_then(|a| a.chat.as_mut()) {
+                    chat.stderr(line);
+                }
+            }
+            Msg::Live(list) => {
+                self.live_busy = false;
+                for (id, live) in list {
+                    // A instância pode ter fechado durante a leitura: o gasto
+                    // dela continua contando na sessão.
+                    self.spent.insert(id, live.launched.tokens.io());
+                    if let Some(agent) = self.agent_mut(id) {
+                        agent.live = Some(live);
+                    }
+                }
+            }
             Msg::Exited(id) => {
+                // No Middleware o agente não tem tela: o erro dele vira aviso.
+                if let Some(agent) = self.agent_mut(id)
+                    && let Some(chat) = &agent.chat
+                    && !chat.errors().is_empty()
+                    && !matches!(agent.child.try_wait(), Ok(Some(status)) if status.success())
+                {
+                    let text = format!("⚠ {} {id} encerrou:\n{}", agent.name, chat.errors());
+                    self.notify(text);
+                }
                 // Se era subagente MCP: envia resultado e, se saiu com sucesso, fecha a aba.
                 if let Some(agent) = self.agent_mut(id)
                     && let (Some(spawn_id), Some(mcp_port)) =
@@ -1733,15 +2552,62 @@ impl App {
                 from,
                 text,
             } => {
-                let label = self.agent.clone();
                 if let Some(agent) = self
                     .agents
                     .iter_mut()
                     .find(|a| a.instance_id.as_deref() == Some(instance_id.as_str()))
                 {
                     agent.queue(&text);
-                    let id = agent.id;
-                    self.flash(format!("✉ {from} → {label} {id}"));
+                    let label = format!("{} {}", agent.name, agent.id);
+                    self.flash(format!("✉ {from} → {label}"));
+                }
+            }
+            Msg::Focus { instance_id } => {
+                let Some((id, name)) = self
+                    .agents
+                    .iter()
+                    .find(|a| a.instance_id.as_deref() == Some(instance_id.as_str()))
+                    .map(|a| (a.id, a.name.clone()))
+                else {
+                    return;
+                };
+                self.popup = None;
+                self.focus(id);
+                self.flash(format!("{name} {id}"));
+                thread::spawn(terraforme_core::platform::raise_terminal);
+            }
+            Msg::Open {
+                instance_id,
+                from,
+                text,
+            } => self.open_requested(instance_id, &from, text),
+            Msg::Close { instance_id, from } => {
+                // A aba some quando o processo termina (`Msg::Exited`).
+                if let Some(agent) = self
+                    .agents
+                    .iter_mut()
+                    .find(|a| a.instance_id.as_deref() == Some(instance_id.as_str()))
+                {
+                    let _ = agent.child.kill();
+                    let label = format!("{} {}", agent.name, agent.id);
+                    self.flash(format!("✕ {label} fechado por {from}"));
+                }
+            }
+            Msg::Reconnected(port) => {
+                let moved = self.mcp_port != Some(port);
+                self.mcp_port = Some(port);
+                if let Some(link) = &mut self.link {
+                    link.port = port;
+                }
+                for agent in &mut self.agents {
+                    agent.mcp_port = Some(port);
+                    agent.register(true);
+                }
+                // O agente aberto guarda o endereço antigo no `--mcp-config`.
+                if moved && !self.agents.is_empty() {
+                    self.flash(
+                        "daemon MCP reiniciado · ⌃⌥R reinicia a instância para o agente usá-lo",
+                    );
                 }
             }
         }
@@ -1760,14 +2626,16 @@ impl App {
                 }
                 self.selection = None;
                 if let Some(agent) = self.active_agent() {
-                    if agent.parser.screen().bracketed_paste() {
-                        agent.send(format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
+                    if let Some(chat) = &mut agent.chat {
+                        chat.paste(&text);
+                    } else if agent.parser.screen().bracketed_paste() {
+                        agent.input(format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
                     } else {
-                        agent.send(text.as_bytes())?;
+                        agent.input(text.as_bytes())?;
                     }
                 }
             }
-            Event::Mouse(mouse) => self.handle_mouse(mouse)?,
+            Event::Mouse(mouse) => return self.handle_mouse(mouse),
             // O redesenho seguinte ajusta as instâncias ao novo tamanho (`fit`).
             _ => {}
         }
@@ -1777,10 +2645,29 @@ impl App {
     /// Roda do mouse e seleção de texto. Sem a captura do mouse o terminal
     /// converte a roda em setas, que no agente navegam o histórico de prompts
     /// em vez de rolar a tela.
-    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<bool> {
+        // Clique no menu: abre a aba ou sai.
+        if mouse.row == 0 && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            match self.menu_hit(mouse.column) {
+                Some(MenuItem::Quit) => return Ok(true),
+                Some(MenuItem::Tab(tab)) if tab != self.active => self.select(tab),
+                _ => {}
+            }
+            return Ok(false);
+        }
+        self.mouse_event(mouse)?;
+        Ok(false)
+    }
+
+    /// Roda e seleção fora do menu.
+    fn mouse_event(&mut self, mouse: MouseEvent) -> Result<()> {
         let up = match mouse.kind {
             MouseEventKind::ScrollUp => true,
             MouseEventKind::ScrollDown => false,
+            MouseEventKind::Down(MouseButton::Left) if self.form.is_some() => {
+                self.click_form(mouse.row);
+                return Ok(());
+            }
             MouseEventKind::Down(MouseButton::Left)
             | MouseEventKind::Drag(MouseButton::Left)
             | MouseEventKind::Up(MouseButton::Left) => {
@@ -1798,7 +2685,7 @@ impl App {
                 form.index = if up {
                     form.index.saturating_sub(1)
                 } else {
-                    (form.index + 1).min(FIELDS.len() - 1)
+                    (form.index + 1).min(form.fields().len() - 1)
                 };
             }
             return Ok(());
@@ -1811,13 +2698,18 @@ impl App {
         let Some(agent) = self.active_agent() else {
             return Ok(());
         };
+        if let Some(chat) = &mut agent.chat {
+            let lines = WHEEL_LINES as isize;
+            chat.scroll_by(if up { lines } else { -lines });
+            return Ok(());
+        }
         let screen = agent.parser.screen();
         if screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None {
             // O agente pediu o mouse: ele mesmo rola.
             let col = mouse.column;
             let row = mouse.row.saturating_sub(AGENT_TOP);
             let bytes = wheel_bytes(up, col, row, screen.mouse_protocol_encoding());
-            agent.send(&bytes)?;
+            agent.input(&bytes)?;
         } else if screen.alternate_screen() {
             // Tela alternativa não tem histórico: vira setas, como no xterm.
             let arrow = if up { KeyCode::Up } else { KeyCode::Down };
@@ -1825,12 +2717,34 @@ impl App {
                 KeyEvent::new(arrow, KeyModifiers::NONE),
                 screen.application_cursor(),
             );
-            agent.send(&bytes.repeat(WHEEL_LINES as usize))?;
+            agent.input(&bytes.repeat(WHEEL_LINES as usize))?;
         } else {
             let lines = WHEEL_LINES as isize;
             agent.scroll_history(if up { lines } else { -lines });
         }
         Ok(())
+    }
+
+    /// Clique na aba Config: escolhe o campo da linha; no endereço da UI,
+    /// abre o navegador.
+    fn click_form(&mut self, row: u16) {
+        if self.popup.is_some() {
+            return;
+        }
+        let (Some(form), Some(view)) = (&mut self.form, &self.view) else {
+            return;
+        };
+        // Menu e borda de cima da aba.
+        let Some(line) = row.checked_sub(FORM_TOP) else {
+            return;
+        };
+        let clicked = form.click((line + view.scroll) as usize);
+        if clicked == Some(Field::Ui) {
+            form.open_ui();
+        }
+        if clicked.is_some_and(|f| f != Field::Provider) && form.leave_router() {
+            self.switch_agent();
+        }
     }
 
     /// Arrastar com o botão esquerdo seleciona texto da instância aberta e,
@@ -1840,7 +2754,7 @@ impl App {
         if self.popup.is_some() || self.view.is_some() {
             return;
         }
-        let Some(agent) = self.agent(self.focused) else {
+        let Some(agent) = self.agent(self.focused).filter(|a| a.chat.is_none()) else {
             return;
         };
         let (rows, cols) = agent.parser.screen().size();
@@ -1892,6 +2806,9 @@ impl App {
                 Content::Loading => String::new(),
             },
             (None, None) => match self.agent(self.focused) {
+                Some(Agent {
+                    chat: Some(chat), ..
+                }) => chat.transcript(),
                 Some(agent) => match self.selection.filter(|s| s.agent == agent.id) {
                     Some(selection) => selection.text(agent.parser.screen()),
                     None => agent.parser.screen().contents(),
@@ -1954,6 +2871,10 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<bool> {
+        if let Some(delta) = tab_step(key) {
+            self.step_tab(delta);
+            return Ok(false);
+        }
         if let Some(tab) = tab_shortcut(key) {
             // Uma aba fora do menu (Extensões sem relatórios) não tem para
             // onde ir; a tecla não passa para o agente.
@@ -1998,6 +2919,10 @@ impl App {
                 let Some(agent) = self.active_agent() else {
                     return Ok(false);
                 };
+                if agent.chat.is_some() {
+                    agent.chat_key(key)?;
+                    return Ok(false);
+                }
                 let half = agent.parser.screen().size().0 as isize / 2;
                 match key.code {
                     KeyCode::PageUp if shift => agent.scroll_history(half),
@@ -2008,7 +2933,7 @@ impl App {
                         let bytes = key_bytes(key, agent.parser.screen().application_cursor());
                         if !bytes.is_empty() {
                             agent.scroll_history(isize::MIN);
-                            agent.send(&bytes)?;
+                            agent.input(&bytes)?;
                         }
                     }
                 }
@@ -2043,12 +2968,9 @@ impl App {
                 return;
             }
             // A TUI aplica na hora as preferências dela.
+            let changed = form.key(key);
             let tui = form.config.tui;
-            match form.key(key) {
-                Some(Field::Mouse) if tui.mouse != self.mouse => self.set_mouse(tui.mouse),
-                Some(Field::CopyOnSelect) => self.copy_on_select = tui.copy_on_select,
-                _ => {}
-            }
+            self.config_changed(changed, tui);
             return;
         }
         let Some(view) = &mut self.view else {
@@ -2064,10 +2986,35 @@ impl App {
             KeyCode::PageDown => view.scroll = view.scroll.saturating_add(10),
             KeyCode::Home | KeyCode::Char('g') => view.scroll = 0,
             KeyCode::Char('r') => self.load(true),
-            // ←/→: sub-aba anterior/próxima (nas visões, não chega ao agente).
-            KeyCode::Left => self.cycle(-1),
-            KeyCode::Right => self.cycle(1),
+            // ←/→: aba anterior/próxima (nas visões, não chega ao agente).
+            KeyCode::Left => self.step_tab(-1),
+            KeyCode::Right => self.step_tab(1),
             _ => {}
+        }
+    }
+
+    /// Aplica na TUI o campo que a aba Config acabou de gravar.
+    fn config_changed(&mut self, field: Option<Field>, tui: terraforme_core::config::TuiConfig) {
+        match field {
+            Some(Field::Mouse) if tui.mouse != self.mouse => self.set_mouse(tui.mouse),
+            Some(Field::CopyOnSelect) => self.copy_on_select = tui.copy_on_select,
+            Some(Field::Provider) => self.switch_agent(),
+            Some(Field::Mode | Field::Extension(_) | Field::Account) => self.stale = true,
+            Some(Field::Middleware) => {
+                self.middleware = tui.middleware;
+                self.flash("Middleware vale nas próximas instâncias (⌃⌥N, ⌃⌥R)");
+            }
+            _ => {}
+        }
+    }
+
+    /// Abre a aba `delta` posições adiante (ou atrás) no menu, em volta.
+    fn step_tab(&mut self, delta: isize) {
+        let tabs = self.tabs();
+        let current = tabs.iter().position(|&t| t == self.active).unwrap_or(0);
+        let next = tabs[(current as isize + delta).rem_euclid(tabs.len() as isize) as usize];
+        if next != self.active {
+            self.select(next);
         }
     }
 
@@ -2075,6 +3022,8 @@ impl App {
     /// o pseudoterminal, as abas de conteúdo recarregam o conteúdo e a
     /// Config abre o formulário.
     fn select(&mut self, tab: Tab) {
+        // Sair da Config com o Router mudado troca o agente.
+        let switch = self.form.as_mut().is_some_and(Form::leave_router);
         let kind = spec(tab).kind;
         self.active = tab;
         self.form = (kind == TabKind::Form).then(Form::load);
@@ -2091,6 +3040,9 @@ impl App {
         };
         if self.view.is_some() && self.form.is_none() {
             self.load(true);
+        }
+        if switch {
+            self.switch_agent();
         }
     }
 
@@ -2117,18 +3069,20 @@ impl App {
             .and_then(|i| reports(tab, &self.extensions).get(i).copied());
         let tx = self.tx.clone();
         let cwd = self.cwd.clone();
-        let adapter = self.adapter;
+        // O consumo é o da instância aberta, que pode ser de outro agente.
+        let adapter = self.agent(self.focused).map_or(self.adapter, |a| a.adapter);
+        let routers = self.routers(launched, session.clone());
         thread::spawn(move || {
             let result = match (tab, report) {
                 (_, Some((ext, report))) => ext.report(report, adapter.bin()).map(Text::from),
                 (Tab::Usage, None) if index == SPACES_VIEW => History::open()
                     .and_then(|db| db.totals())
                     .map(|totals| format_spaces(&totals)),
+                (Tab::Usage, None) if index == 0 => Ok(format_routers(&routers, &cwd)),
                 (Tab::Usage, None) => {
                     adapter
                         .usage(&cwd, launched, session.as_deref())
                         .map(|u| match index {
-                            0 => format_limits(adapter, &u),
                             1 => format_usage(&u),
                             _ => format_agents(&u),
                         })
@@ -2140,53 +3094,59 @@ impl App {
         });
     }
 
+    /// Um router por agente com instância aberta (instâncias do mesmo agente
+    /// dividem os limites), o da instância em foco primeiro; sem instância,
+    /// o agente da aba.
+    fn routers(&self, launched: SystemTime, session: Option<String>) -> Vec<Router> {
+        let mut routers = vec![match self.agent(self.focused) {
+            Some(a) => (a.name.clone(), a.adapter, launched, session),
+            None => (self.agent.clone(), self.adapter, launched, session),
+        }];
+        for a in &self.agents {
+            if !routers.iter().any(|(name, ..)| *name == a.name) {
+                routers.push((a.name.clone(), a.adapter, a.launched, a.session.clone()));
+            }
+        }
+        routers
+    }
+
     /// Prefixo das teclas das sub-abas mostrado nas barras.
     fn sub_key(&self) -> &'static str {
         if self.enhanced { "⌃⌥" } else { "⌥" }
     }
 
     fn draw(&self, frame: &mut Frame) {
-        let [menu, body] =
-            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(frame.area());
+        let [menu, body, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area());
 
-        frame.render_widget(self.menu(), menu);
+        self.draw_menu(frame, menu);
+        self.draw_footer(frame, footer);
 
         if let Some(view) = &self.view {
             self.draw_view(frame, view, body);
         } else if let Some(agent) = self.agent(self.focused) {
             let [instances, body] =
                 Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
-            frame.render_widget(self.instances(), instances);
-
-            let mut term = PseudoTerminal::new(agent.parser.screen());
-            if self.popup.is_some() || agent.scrollback > 0 {
-                let mut cursor = tui_term::widget::Cursor::default();
-                cursor.hide();
-                term = term.cursor(cursor);
-            }
-            frame.render_widget(term, body);
-
-            if let Some(selection) = self.selection.filter(|s| s.agent == agent.id) {
-                let buf = frame.buffer_mut();
-                for row in 0..body.height {
-                    for col in 0..body.width {
-                        if selection.contains(row, col) {
-                            buf[(body.x + col, body.y + row)]
-                                .set_style(Style::new().black().on_light_cyan());
-                        }
-                    }
-                }
+            // O total da sessão fica à direita; sem espaço, sai a dica de atalhos.
+            let spent = self.spent_line();
+            let fits = |line: &Line| line.width() + spent.width() < instances.width as usize;
+            let line = Some(self.instances(true))
+                .filter(fits)
+                .unwrap_or_else(|| self.instances(false));
+            let room = fits(&line);
+            frame.render_widget(line, instances);
+            if room {
+                frame.render_widget(spent, instances);
             }
 
-            if agent.scrollback > 0 {
-                let hint = format!(
-                    " histórico −{} · Shift+PgDn/Shift+End volta ",
-                    agent.scrollback
-                );
-                let width = hint.chars().count() as u16;
-                let area = Rect::new(body.right().saturating_sub(width), body.y, width, 1)
-                    .intersection(body);
-                frame.render_widget(Span::raw(hint).black().on_yellow(), area);
+            if let Some(chat) = &agent.chat {
+                chat.render(frame, body, self.popup.is_none());
+            } else {
+                self.draw_terminal(frame, agent, body);
             }
         }
 
@@ -2224,52 +3184,194 @@ impl App {
         }
     }
 
-    fn menu(&self) -> Line<'_> {
-        let mut spans = vec![
-            Span::styled(" terraforme ", Style::new().black().on_green().bold()),
-            Span::raw(" "),
-        ];
-        for tab in self.tabs() {
-            let style = if tab == self.active {
-                Style::new().black().on_cyan().bold()
-            } else {
-                Style::new().white().on_dark_gray()
-            };
-            // O rótulo da tecla vem do Registro: é o atalho que a abre.
-            let key = format!(" {} ", spec(tab).tecla());
-            spans.push(Span::styled(key, style.add_modifier(Modifier::BOLD)));
-            spans.push(Span::styled(format!("{} ", tab.label(&self.agent)), style));
-            spans.push(Span::raw(" "));
+    /// O pseudoterminal da instância, com a seleção e o aviso do histórico.
+    fn draw_terminal(&self, frame: &mut Frame, agent: &Agent, body: Rect) {
+        let mut term = PseudoTerminal::new(agent.parser.screen());
+        if self.popup.is_some() || agent.scrollback > 0 {
+            let mut cursor = tui_term::widget::Cursor::default();
+            cursor.hide();
+            term = term.cursor(cursor);
         }
-        spans.push(Span::styled(" F10 ", Style::new().white().on_red().bold()));
-        spans.push(Span::styled("sair ", Style::new().white().on_red()));
+        frame.render_widget(term, body);
+
+        if let Some(selection) = self.selection.filter(|s| s.agent == agent.id) {
+            let buf = frame.buffer_mut();
+            for row in 0..body.height {
+                for col in 0..body.width {
+                    if selection.contains(row, col) {
+                        buf[(body.x + col, body.y + row)]
+                            .set_style(Style::new().black().on_light_cyan());
+                    }
+                }
+            }
+        }
+
+        if agent.scrollback > 0 {
+            let hint = format!(
+                " histórico −{} · Shift+PgDn/Shift+End volta ",
+                agent.scrollback
+            );
+            let width = hint.chars().count() as u16;
+            let area =
+                Rect::new(body.right().saturating_sub(width), body.y, width, 1).intersection(body);
+            frame.render_widget(Span::raw(hint).black().on_yellow(), area);
+        }
+    }
+
+    /// Itens do menu com o texto de cada um, na ordem da tela: os blocos
+    /// `Terraforme`, `Agente (claude)`, `Consumo`, … e `Sair`, separados por um espaço.
+    fn menu_items(&self) -> Vec<(Option<MenuItem>, String)> {
+        let mut items = vec![(None, " Terraforme ".to_string())];
+        for tab in self.tabs() {
+            items.push((None, " ".to_string()));
+            // Com o Middleware as instâncias de todos os routers são
+            // sub-abas de uma aba só, a do chat.
+            let label = match tab {
+                Tab::Agent if self.middleware || self.agents.iter().any(|a| a.chat.is_some()) => {
+                    "Middleware".to_string()
+                }
+                tab => tab.label(&self.agent),
+            };
+            items.push((Some(MenuItem::Tab(tab)), format!(" {label} ")));
+        }
+        items.push((None, " ".to_string()));
+        items.push((Some(MenuItem::Quit), " Sair ".to_string()));
+        items
+    }
+
+    /// Item do menu na coluna `col`.
+    fn menu_hit(&self, col: u16) -> Option<MenuItem> {
+        let mut x = 0u16;
+        for (item, text) in self.menu_items() {
+            let width = Span::raw(text.as_str()).width() as u16;
+            if (x..x + width).contains(&col) {
+                return item;
+            }
+            x += width;
+        }
+        None
+    }
+
+    /// Menu de abas à esquerda e, do outro lado, o atalho da lista de atalhos.
+    fn draw_menu(&self, frame: &mut Frame, area: Rect) {
+        let spans: Vec<_> = self
+            .menu_items()
+            .into_iter()
+            .map(|(item, text)| {
+                let style = match item {
+                    None if text == " Terraforme " => Style::new().black().on_green().bold(),
+                    None => Style::new(),
+                    // Mesmo bloco do Terraforme: verde na aba ativa, cinza nas outras.
+                    Some(MenuItem::Tab(tab)) if tab == self.active => {
+                        Style::new().black().on_green().bold()
+                    }
+                    Some(MenuItem::Tab(_)) => Style::new().black().on_dark_gray().bold(),
+                    Some(MenuItem::Quit) => Style::new().light_red().on_dark_gray().bold(),
+                };
+                Span::styled(text, style)
+            })
+            .collect();
+        frame.render_widget(Line::from(spans).style(Style::new().bg(Color::Reset)), area);
+
         let mouse = if self.mouse {
             ""
         } else {
-            " · 🖱 seleção nativa"
+            "🖱 seleção nativa · "
         };
-        spans.push(Span::raw(format!("  ⌃⌥K atalhos{mouse} · {}", self.title)).dark_gray());
-        Line::from(spans).style(Style::new().bg(Color::Reset))
+        let right = Line::from(vec![
+            Span::raw(format!("{mouse}{} · ", self.title)).dark_gray(),
+            Span::styled(" ⌃⌥K ", Style::new().black().on_dark_gray().bold()),
+            Span::raw(" Atalhos ").dark_gray(),
+        ])
+        .right_aligned();
+        // Só cabe se não cobrir as abas.
+        let left = self
+            .menu_items()
+            .iter()
+            .map(|(_, t)| Span::raw(t.as_str()).width() as u16)
+            .sum::<u16>();
+        if left + 1 + right.width() as u16 <= area.width {
+            frame.render_widget(right, area);
+        }
     }
 
-    /// Sub-abas da aba do agente: uma por instância.
-    fn instances(&self) -> Line<'_> {
+    /// Tokens gastos nesta sessão do terraforme, por todas as instâncias
+    /// (inclusive as já fechadas), alinhado à direita.
+    fn spent_line(&self) -> Line<'static> {
+        let total: u64 = self.spent.values().sum();
+        Line::from(vec![
+            Span::raw(" Sessão terraforme ").dark_gray(),
+            Span::styled(
+                format!(" {} tokens ", thousands(total)),
+                Style::new().black().on_dark_gray().bold(),
+            ),
+        ])
+        .right_aligned()
+    }
+
+    /// Rodapé da instância aberta: à esquerda o consumo do prompt atual (o
+    /// em andamento ou o último), à direita o total da sessão dela.
+    fn draw_footer(&self, frame: &mut Frame, area: Rect) {
+        let Some(agent) = self.agent(self.focused) else {
+            return;
+        };
+        // Sem leitura ainda (ou agente que não informa o consumo): rodapé vazio.
+        let Some(live) = &agent.live else {
+            return;
+        };
+        let turn = &live.turn.tokens;
+        let left = Line::from(vec![
+            Span::styled(" Prompt atual ", Style::new().black().on_dark_gray().bold()),
+            Span::raw(format!(
+                " {} tokens · entrada {} · saída {}",
+                thousands(turn.io()),
+                thousands(turn.input),
+                thousands(turn.output + turn.reasoning),
+            ))
+            .dark_gray(),
+        ]);
+        let right = Line::from(vec![
+            Span::raw(format!(" {} {} ", agent.name, agent.id)).dark_gray(),
+            Span::styled(
+                format!(" {} tokens ", thousands(live.session.tokens.io())),
+                Style::new().black().on_dark_gray().bold(),
+            ),
+        ])
+        .right_aligned();
+        // Sem espaço para os dois, o total da instância tem prioridade.
+        if left.width() + right.width() < area.width as usize {
+            frame.render_widget(left, area);
+        }
+        frame.render_widget(right, area);
+    }
+
+    /// Sub-abas da aba do agente: uma por instância e, com `hint`, a dica
+    /// dos atalhos.
+    fn instances(&self, hint: bool) -> Line<'_> {
         let labels: Vec<_> = self
             .agents
             .iter()
-            .map(|a| ("", format!("{} {}", self.agent, a.id)))
+            .map(|a| ("", format!("{} {}", a.name, a.id)))
             .collect();
         let (_, current) = self.sub_tabs();
         let mut spans = vec![Span::raw(" ")];
         spans.extend(sub_tab_spans(&labels, current, self.sub_key()));
+        if !hint {
+            return Line::from(spans);
+        }
         let hint = if self.agents.len() > 1 {
             format!(
                 " {k}Tab/{k}1-9 instância · ⌃⌥N nova · ⌃⌥W fecha · ⌃⌥R reinicia",
                 k = self.sub_key()
             )
         } else {
+            // No Middleware não há tela do agente para selecionar: ⌃⌥C copia a conversa.
+            let copy = match self.agent(self.focused) {
+                Some(agent) if agent.chat.is_some() => "⌃⌥C copia a conversa",
+                _ => "arraste para copiar",
+            };
             format!(
-                " {}{} ou ⌃⌥N nova instância · ⌃⌥W fecha · arraste para copiar",
+                " {}{} ou ⌃⌥N nova instância · ⌃⌥W fecha · {copy}",
                 self.sub_key(),
                 self.agents.len() + 1
             )
@@ -2282,20 +3384,21 @@ impl App {
         let views = view.tab.views(&self.extensions);
         let title = match (view.tab, views.get(view.index)) {
             (Tab::Config, _) => Config::path().map_or_else(
-                |_| "Config".to_string(),
-                |p| format!("Config · {}", p.display()),
+                |_| "Configurações".to_string(),
+                |p| format!("Configurações · {}", p.display()),
             ),
             (Tab::Extensions, Some((ext, _))) => format!("Extensões · {ext}"),
             (Tab::Extensions, None) => "Extensões".to_string(),
             (_, Some((ext, _))) if !ext.is_empty() => format!("Consumo · {ext}"),
-            _ if self.agents.len() > 1 => {
-                format!("Consumo de tokens · {} {}", self.agent, self.focused)
-            }
+            _ if self.agents.len() > 1 => match self.agent(self.focused) {
+                Some(agent) => format!("Consumo de tokens · {} {}", agent.name, agent.id),
+                None => "Consumo de tokens".to_string(),
+            },
             _ => "Consumo de tokens".to_string(),
         };
         let hint = match view.tab {
             Tab::Config => {
-                " ↑↓ campo · ←→/Enter altera · dígitos editam · Del padrão · r relê · Esc agente "
+                " ↑↓ campo · ←→/Espaço altera · dígitos editam · Del padrão · o/clique abre a UI · r relê · Esc agente "
                     .to_string()
             }
             _ if views.len() > 1 => format!(
@@ -2306,6 +3409,7 @@ impl App {
         };
         let block = Block::bordered()
             .title(Line::from(format!(" {title} ")).bold().cyan())
+            .title(self.spent_line())
             .title_bottom(Line::from(hint).dark_gray())
             .border_style(Style::new().cyan());
         let inner = block.inner(area);
@@ -2366,11 +3470,39 @@ fn sub_tab_spans(labels: &[(&str, String)], current: usize, key: &str) -> Vec<Sp
     spans
 }
 
-/// Uma barra por limite, no estilo do Claude Code: o título traz o limite
-/// total de tokens (quando há) e a barra verde vai encurtando a cada consumo.
-fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
+/// Agente com instância aberta na sub-aba Limites: nome, adapter, início e
+/// sessão (os da instância usada para ler o consumo).
+type Router = (String, &'static dyn Adapter, SystemTime, Option<String>);
+
+/// Sub-aba Limites (`docs/tui/consumo/consumo.feature.md`): um bloco
+/// `Router <nome>` por agente aberto, com as barras dos limites dele.
+fn format_routers(routers: &[Router], cwd: &Path) -> Text<'static> {
     let budget = Config::load().map(|c| c.budget).unwrap_or_default();
-    let limits = limits::collect(adapter, usage, &budget);
+    let mut lines: Vec<Line> = Vec::new();
+    for (name, adapter, launched, session) in routers {
+        lines.push(Line::from(vec![
+            Span::raw("Router ").dark_gray(),
+            Span::raw(name.clone()).cyan().bold(),
+        ]));
+        lines.push(Line::default());
+        match adapter.usage(cwd, *launched, session.as_deref()) {
+            Ok(usage) => lines.extend(format_limits(*adapter, &usage, &budget)),
+            Err(err) => lines.push(Line::raw(format!("✘ {err:#}")).red()),
+        }
+        lines.push(Line::default());
+    }
+    Text::from(lines)
+}
+
+/// Uma barra por limite, no estilo do Claude Code: o título traz quando o
+/// limite zera, o limite total de tokens (quando há) e a barra verde vai
+/// encurtando a cada consumo.
+fn format_limits(
+    adapter: &dyn Adapter,
+    usage: &usage::Usage,
+    budget: &Budget,
+) -> Vec<Line<'static>> {
+    let limits = limits::collect(adapter, usage, budget);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -2380,7 +3512,12 @@ fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
         let mut title = vec![Span::raw(limit.label.clone()).bold()];
         if let Some(at) = limit.resets_at {
             title.push(
-                Span::raw(format!("  · zera em {}", duration(at.saturating_sub(now)))).dark_gray(),
+                Span::raw(format!(
+                    " - zera em {} - {}",
+                    duration(at.saturating_sub(now)),
+                    local_date(at)
+                ))
+                .dark_gray(),
             );
         }
         if let Some((used, max)) = limit.tokens {
@@ -2452,7 +3589,18 @@ fn format_limits(adapter: &dyn Adapter, usage: &usage::Usage) -> Text<'static> {
         })
         .dark_gray(),
     );
-    Text::from(lines)
+    lines
+}
+
+/// Segundos desde a época Unix → `DD/MM/AAAA - HH:MM` no fuso local.
+fn local_date(secs: u64) -> String {
+    chrono::DateTime::from_timestamp(secs as i64, 0)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%d/%m/%Y - %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 /// Barra no estilo do Claude Code: o verde começa cheio em 100% e vai
@@ -2730,6 +3878,20 @@ fn tab_shortcut(key: KeyEvent) -> Option<Tab> {
     tab_by_shortcut(n)
 }
 
+/// Troca de aba pelas setas: `Ctrl+Shift+←/→` em qualquer aba (o `←`/`→`
+/// sozinho continua indo para o agente; nas visões ele também troca de aba).
+fn tab_step(key: KeyEvent) -> Option<isize> {
+    let m = key.modifiers;
+    if !m.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Left => Some(-1),
+        KeyCode::Right => Some(1),
+        _ => None,
+    }
+}
+
 /// Sub-aba 1–9 pedida pela tecla: `Ctrl+Alt+1`–`9` ou `Alt+1`–`9` (sem o
 /// protocolo do kitty, `Ctrl+Alt+dígito` costuma chegar como `Alt+dígito`).
 fn sub_tab_number(key: KeyEvent) -> Option<usize> {
@@ -2771,12 +3933,13 @@ fn shortcuts(enhanced: bool) -> String {
     format!(
         "ABAS
 {abas}
+  Ctrl+Shift+← / →       aba anterior / próxima (nas visões Consumo e Extensões, ← / → sozinhas)
+  clique no menu         abre a aba · Sair encerra
 
 SUB-ABAS (instâncias do agente, visões do consumo, relatórios)
   Ctrl+Alt+Tab           próxima sub-aba (com Shift, a anterior)
   Ctrl+Alt+1–9           vai para a sub-aba (alternativas: Alt+1–9, Shift+Alt+1–9)
   Ctrl+PgUp / Ctrl+PgDn  sub-aba anterior / próxima
-  ← / →                  sub-aba anterior / próxima (nas visões: Consumo, Extensões, Config)
   Na aba do agente, Ctrl+Alt+<número> além da última instância abre uma nova.
 
 INSTÂNCIAS DO AGENTE
@@ -2797,7 +3960,7 @@ HISTÓRICO DO AGENTE
 
 ABAS DE CONTEÚDO
   ↑↓ j k PgUp PgDn g     rolar · r recarregar · Esc ou q volta ao agente
-  Config: ↑↓ campo · ←→/Enter altera · dígitos editam números · Del padrão
+  Configurações: ↑↓ campo · ←→/Enter altera · dígitos editam números · Del padrão
 
 GERAL
   Ctrl+Alt+K             esta lista
@@ -2900,9 +4063,13 @@ fn cursor_queries(bytes: &[u8]) -> usize {
     bytes.windows(4).filter(|w| w == b"\x1b[6n").count()
 }
 
-/// Instruções como teclas: quebra de linha vira `Alt+Enter` (não envia o
-/// prompt no meio das instruções) e termina com Enter, que envia.
-fn prompt_bytes(instructions: &str) -> Vec<u8> {
+/// Instruções como colagem, sem o Enter (mandado depois, ver
+/// [`Agent::deliver_pending`]): com `bracketed`, entre `ESC[200~`/`ESC[201~`;
+/// sem, cada quebra de linha vira `Alt+Enter` (não envia no meio).
+fn prompt_bytes(instructions: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        return format!("\x1b[200~{instructions}\x1b[201~").into_bytes();
+    }
     let mut bytes = Vec::new();
     for (i, line) in instructions.split('\n').enumerate() {
         if i > 0 {
@@ -2910,12 +4077,13 @@ fn prompt_bytes(instructions: &str) -> Vec<u8> {
         }
         bytes.extend(line.as_bytes());
     }
-    bytes.push(b'\r');
     bytes
 }
 
-/// Servidor de controle: recebe do MCP `POST /spawn` (subagente) e
-/// `POST /message` (mensagem para uma instância) e os repassa ao loop da TUI.
+/// Servidor de controle: recebe do MCP `POST /spawn` (subagente),
+/// `POST /message` (mensagem para uma instância), `POST /open` e
+/// `POST /close` (abrir e fechar instâncias) e `POST /focus` (a janela
+/// flutuante pediu a instância) e os repassa ao loop da TUI.
 fn control_server(listener: std::net::TcpListener, tx: Sender<Msg>) {
     use std::io::Write;
 
@@ -2947,6 +4115,18 @@ fn control_server(listener: std::net::TcpListener, tx: Sender<Msg>) {
                 instance_id: text("instance_id"),
                 from: text("from"),
                 text: text("text"),
+            },
+            "/focus" => Msg::Focus {
+                instance_id: text("instance_id"),
+            },
+            "/open" => Msg::Open {
+                instance_id: text("instance_id"),
+                from: text("from"),
+                text: v["text"].as_str().map(str::to_string),
+            },
+            "/close" => Msg::Close {
+                instance_id: text("instance_id"),
+                from: text("from"),
             },
             _ => continue,
         };
@@ -2988,19 +4168,37 @@ fn read_request(stream: &mut impl std::io::Read) -> Option<(String, String)> {
 
 /// Faz um POST HTTP simples sem esperar a resposta (fire-and-forget).
 fn http_post_fire(addr: &str, path: &str, body: &str) {
-    use std::io::Write;
+    http_post(addr, path, body);
+}
+
+/// POST sem esperar mais que 500ms; devolve o status HTTP da resposta, ou
+/// `None` se o daemon não respondeu (fora do ar).
+fn http_post(addr: &str, path: &str, body: &str) -> Option<u16> {
+    use std::io::{Read, Write};
     use std::net::TcpStream;
-    if let Ok(mut stream) = TcpStream::connect(addr) {
-        let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-        let request = format!(
-            "POST {} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            path,
-            addr,
-            body.len(),
-            body
-        );
-        let _ = stream.write_all(request.as_bytes());
-    }
+    let mut stream = TcpStream::connect(addr).ok()?;
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let request = format!(
+        "POST {} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        path,
+        addr,
+        body.len(),
+        body
+    );
+    // Espera a resposta antes de fechar: o hyper do daemon trata o fim
+    // da conexão como pedido cancelado e descarta o handler, então um
+    // `/register` ou `/instances/register` sem resposta lida se perdia.
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut head = [0; 64];
+    let n = stream.read(&mut head).ok()?;
+    // `HTTP/1.1 404 Not Found`
+    std::str::from_utf8(&head[..n])
+        .ok()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 
 /// Envia o resultado de um subagente de volta ao daemon MCP.
@@ -3018,13 +4216,13 @@ fn send_spawn_result(mcp_port: u16, spawn_id: &str, output: &str, exit_code: i32
     });
 }
 
-/// Área do agente: a tela menos a linha do menu e a das sub-abas.
+/// Área do agente: a tela menos a linha do menu, a das sub-abas e o rodapé.
 fn body_size(area: Rect) -> Rect {
     Rect::new(
         0,
         0,
         area.width.max(1),
-        area.height.saturating_sub(2).max(1),
+        area.height.saturating_sub(3).max(1),
     )
 }
 
@@ -3083,6 +4281,30 @@ fn builder(command: &Command, cwd: &std::path::Path) -> CommandBuilder {
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
     builder
+}
+
+/// O mesmo `Command` do core com a entrada e as saídas em pipes, para o
+/// modo Middleware; `ignored` são argumentos que o modo não quer (ex.: o
+/// `--standalone` do OpenCode, que o `acp` recusa).
+fn piped(command: &Command, cwd: &std::path::Path, ignored: &[&str]) -> Command {
+    let mut piped = Command::new(command.get_program());
+    piped.args(
+        command
+            .get_args()
+            .filter(|arg| !ignored.contains(&arg.to_str().unwrap_or_default())),
+    );
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => piped.env(key, value),
+            None => piped.env_remove(key),
+        };
+    }
+    piped
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    piped
 }
 
 /// `Ctrl+Alt` com um caractere que não é letra é AltGr no Windows (`@`, `\`,
@@ -3174,8 +4396,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn http_post_returns_the_status_or_none_when_offline() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.read(&mut [0; 512]);
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n")
+                .unwrap();
+        });
+        assert_eq!(http_post(&addr, "/heartbeat", "{}"), Some(404));
+        server.join().unwrap();
+        // A porta foi fechada junto com o listener.
+        assert_eq!(http_post(&addr, "/heartbeat", "{}"), None);
+    }
+
+    #[test]
     fn clip_input_is_utf16le_with_bom() {
         assert_eq!(utf16le_with_bom("aç"), [0xFF, 0xFE, b'a', 0, 0xE7, 0]);
+    }
+
+    #[test]
+    fn piped_drops_the_args_the_middleware_does_not_want() {
+        // O `--standalone` é do `opencode run`; o `opencode acp` recusa a flag.
+        let mut command = std::process::Command::new("opencode");
+        command.args(["--standalone", "acp"]);
+        let piped = piped(&command, std::path::Path::new("."), &["--standalone"]);
+        let args: Vec<String> = piped
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["acp"]);
     }
 
     #[test]
@@ -3249,7 +4502,28 @@ mod tests {
         assert_eq!(usage[USAGE_VIEWS.len()], ("RTK", "Economia"));
         assert_eq!(Tab::Usage.views(&[]).len(), USAGE_VIEWS.len());
         assert!(Tab::Config.views(&both).is_empty());
-        assert_eq!(Tab::Agent.label("claude"), "claude");
+        assert_eq!(Tab::Agent.label("claude"), "Agente (claude)");
+        assert_eq!(Tab::Config.label("claude"), "Configurações");
+    }
+
+    #[test]
+    fn ctrl_shift_arrows_step_tabs() {
+        let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(tab_step(KeyEvent::new(KeyCode::Left, cs)), Some(-1));
+        assert_eq!(tab_step(KeyEvent::new(KeyCode::Right, cs)), Some(1));
+        // Setas sozinhas, com Ctrl (palavra) ou Ctrl+Alt (desktop) seguem adiante.
+        assert_eq!(
+            tab_step(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            tab_step(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            tab_step(KeyEvent::new(KeyCode::Left, cs | KeyModifiers::ALT)),
+            None
+        );
     }
 
     #[test]
@@ -3402,30 +4676,62 @@ mod tests {
     }
 
     #[test]
-    fn config_fields_cycle_set_and_reset() {
+    fn config_fields_set_and_reset() {
         let mut config = Config::default();
-        Field::Mode.step(&mut config, 1);
-        assert_eq!(config.mode, Mode::None);
-        Field::Mode.step(&mut config, -1);
-        assert_eq!(config.mode, Mode::Hybrid);
-        Field::Jail.step(&mut config, 1);
-        assert!(config.jail);
-        Field::Mouse.step(&mut config, 1);
-        assert!(!config.tui.mouse);
+        config.tui.mouse = false;
+        config.mcp.ui = true;
+        config.tui.middleware = true;
+        assert_eq!(Field::Mouse.value(&config), "não");
+        assert_eq!(Field::Middleware.value(&config), "sim");
+        assert_eq!(Field::Middleware.section(), Section::Agent);
 
-        Field::BudgetWeek.set(&mut config, "300.000.000").unwrap();
-        assert_eq!(config.budget.week, Some(300_000_000));
-        assert_eq!(Field::BudgetWeek.value(&config), "300.000.000");
-        Field::BudgetWeek.set(&mut config, "").unwrap();
-        assert_eq!(config.budget.week, None);
+        Field::BudgetFiveHours.set(&mut config, "300.000").unwrap();
+        assert_eq!(Field::BudgetFiveHours.value(&config), "300.000");
+        assert_eq!(Field::BudgetDay.value(&config), "1.440.000 (calculado)");
+        assert_eq!(Field::BudgetWeek.value(&config), "10.080.000 (calculado)");
         assert!(Field::McpMax.set(&mut config, "abc").is_err());
         Field::McpMax.set(&mut config, "0").unwrap();
         assert_eq!(config.mcp.max_simultaneous_subagents, 1);
 
-        for field in FIELDS {
+        let form = Form {
+            config,
+            space: None,
+            prefs: Preferences::default(),
+            accounts: Vec::new(),
+            custom: true,
+            index: 0,
+            editing: None,
+            router: None,
+            message: None,
+        };
+        for field in form.fields() {
             field.reset(&mut config);
         }
         assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn router_switches_only_to_another_agent() {
+        let mut form = Form {
+            config: Config::default(),
+            space: None,
+            prefs: Preferences::default(),
+            accounts: Vec::new(),
+            custom: false,
+            index: 0,
+            editing: None,
+            router: None,
+            message: None,
+        };
+        assert!(!form.leave_router());
+        // Voltou ao agente de antes: nada a trocar.
+        form.router = Some(form.config.provider);
+        assert!(!form.leave_router());
+        assert_eq!(form.router, None);
+        form.router = Some(Provider::OpenCode);
+        form.config.provider = Provider::Claude;
+        assert!(form.leave_router());
+        assert_eq!(form.router, None);
     }
 
     #[test]
@@ -3506,7 +4812,7 @@ mod tests {
 
     #[test]
     fn body_leaves_room_for_the_menu_and_instances() {
-        assert_eq!(body_size(Rect::new(0, 0, 80, 24)), Rect::new(0, 0, 80, 22));
+        assert_eq!(body_size(Rect::new(0, 0, 80, 24)), Rect::new(0, 0, 80, 21));
         assert_eq!(body_size(Rect::new(0, 0, 0, 0)), Rect::new(0, 0, 1, 1));
     }
 
@@ -3535,11 +4841,12 @@ mod tests {
     }
 
     #[test]
-    fn prompt_ends_with_enter_and_does_not_submit_midway() {
-        // Quebra de linha → Alt+Enter (não envia); só o final envia.
-        assert_eq!(prompt_bytes("olá"), "olá\r".as_bytes());
-        assert_eq!(prompt_bytes("l1\nl2"), b"l1\x1b\rl2\r");
-        assert_eq!(prompt_bytes("l1\n\nl3"), b"l1\x1b\r\x1b\rl3\r");
+    fn prompt_is_pasted_without_enter() {
+        // O Enter vai separado; sem bracketed paste, quebra de linha → Alt+Enter.
+        assert_eq!(prompt_bytes("olá", false), "olá".as_bytes());
+        assert_eq!(prompt_bytes("l1\nl2", false), b"l1\x1b\rl2");
+        assert_eq!(prompt_bytes("l1\n\nl3", false), b"l1\x1b\r\x1b\rl3");
+        assert_eq!(prompt_bytes("l1\nl2", true), b"\x1b[200~l1\nl2\x1b[201~");
     }
 
     #[test]
@@ -3559,8 +4866,10 @@ mod tests {
                 account: None,
             },
             accounts: Vec::new(),
+            custom: false,
             index: 0,
             editing: None,
+            router: None,
             message: None,
         };
         // As preferências do space vencem o config.toml, que completa o resto.
@@ -3568,12 +4877,15 @@ mod tests {
         assert_eq!(effective.provider, Provider::OpenCode);
         assert_eq!(effective.mode, Mode::Eco);
         assert!(effective.jail);
-        // Só agente, modo e jail vão para as preferências.
+        // RTK + AI Jail não é preset: o modo aparece como custom.
+        assert_eq!(form.preset(), CliMode::Custom);
+        // Só agente, modo e conta vão para as preferências.
         assert!(form.in_space(Field::Provider));
         assert!(form.in_space(Field::Mode));
-        assert!(form.in_space(Field::Jail));
+        assert!(form.in_space(Field::Extension(Extension::Rtk)));
+        assert!(form.in_space(Field::Account));
         assert!(!form.in_space(Field::BudgetFiveHours));
-        assert!(!form.in_space(Field::Mouse));
+        assert!(!form.in_space(Field::Pet));
         // Fora de space, tudo continua no config.toml.
         let global = Form {
             space: None,
@@ -3582,7 +4894,43 @@ mod tests {
         };
         assert!(!global.in_space(Field::Provider));
         assert_eq!(global.effective().provider, Provider::Claude);
-        assert_eq!(global.effective().mode, Mode::Eco);
-        assert!(!global.effective().jail);
+        assert_eq!(global.preset(), CliMode::Eco);
+        assert_eq!(global.account_display(), "default");
+    }
+
+    #[test]
+    fn form_shows_custom_boxes_only_in_custom_mode() {
+        let mut form = Form {
+            config: Config::default(),
+            space: None,
+            prefs: Preferences::default(),
+            accounts: Vec::new(),
+            custom: false,
+            index: 0,
+            editing: None,
+            router: None,
+            message: None,
+        };
+        assert!(!form.fields().contains(&Field::Extension(Extension::Rtk)));
+        form.custom = true;
+        assert!(form.fields().contains(&Field::Extension(Extension::Rtk)));
+        assert!(
+            form.fields()
+                .contains(&Field::Extension(Extension::AiMemory))
+        );
+    }
+
+    #[test]
+    fn budget_follows_the_five_hour_window() {
+        let mut config = Config::default();
+        Field::BudgetFiveHours
+            .set(&mut config, "1.000.000")
+            .unwrap();
+        assert_eq!(config.budget.five_hours, Some(1_000_000));
+        assert_eq!(budget_for(1_000_000, 24), 4_800_000);
+        assert_eq!(config.budget.week, Some(33_600_000));
+        Field::BudgetFiveHours.set(&mut config, "").unwrap();
+        assert_eq!(config.budget.five_hours, None);
+        assert_eq!(config.budget.week, None);
     }
 }

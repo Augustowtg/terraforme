@@ -14,6 +14,11 @@
 //! json` devolve, em `command.data.groups`, cada grupo de modelos com suas
 //! janelas (`buckets`): quanto da janela ainda resta (`remaining_fraction`) e
 //! quando ela zera (`reset_time`).
+//!
+//! No modo Middleware ([`crate::chat`]) o `agy` fala o mesmo `stream-json` nos
+//! dois sentidos, sem `-p`: o processo abre no stdin e continua vivo entre os
+//! turnos, como no terminal. Ele não tem permissão interativa — no modo print
+//! as ferramentas rodam liberadas.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::{Adapter, Mode, Setup, home};
+use crate::chat;
 use crate::limits::Quota;
 use crate::usage::{Summary, Tokens, Usage, UsageSource, parse_timestamp};
 use anyhow::{Context, Result, bail};
@@ -39,6 +45,18 @@ impl Adapter for Antigravity {
 
     fn setup(&self, _mode: Mode) -> Result<Setup> {
         Ok(Setup::default())
+    }
+
+    fn chat_args(&self) -> Option<Vec<String>> {
+        Some(chat::AGY_ARGS.iter().map(|a| a.to_string()).collect())
+    }
+
+    fn chat_input(&self, text: &str, _ctx: &chat::ChatCtx) -> String {
+        chat::agy_input(text)
+    }
+
+    fn chat_events(&self, line: &str, _ctx: &chat::ChatCtx) -> Vec<chat::ChatEvent> {
+        chat::agy_events(line)
     }
 
     /// O `agy` gerencia sessões internamente; não passamos `--session`.

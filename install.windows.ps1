@@ -3,6 +3,7 @@
 #   .\install.windows.ps1                 # compila o código local e instala em %LOCALAPPDATA%\Programs\terraforme\bin
 #   .\install.windows.ps1 -Update         # git pull (fast-forward) antes de compilar
 #   .\install.windows.ps1 -Dist           # build otimizada (LTO, mais lenta para compilar)
+#   .\install.windows.ps1 -Restart        # reinicia o terraforme no fim sem perguntar (terraforme restart)
 #   $env:PREFIX='C:\tools'; .\install.windows.ps1   # instala em C:\tools\bin
 #   .\install.windows.ps1 -Uninstall      # remove (e tira a pasta do PATH do usuário)
 #
@@ -15,6 +16,7 @@ param(
     [switch]$Update,
     [switch]$Dist,
     [switch]$Uninstall,
+    [switch]$Restart,
     [switch]$Help
 )
 
@@ -37,7 +39,7 @@ function Warn($msg) { Write-Host '! ' -ForegroundColor Yellow -NoNewline; Write-
 function Die($msg)  { Write-Host '✘ ' -ForegroundColor Red -NoNewline; Write-Host $msg; exit 1 }
 
 function Usage {
-    Get-Content $PSCommandPath | Select-Object -Skip 1 -First 11 | ForEach-Object { $_ -replace '^# ?', '' }
+    Get-Content $PSCommandPath | Select-Object -Skip 1 -First 12 | ForEach-Object { $_ -replace '^# ?', '' }
 }
 
 if ($Help) { Usage; exit 0 }
@@ -112,9 +114,6 @@ Info "Instalando em $Target"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 Install-Exe $BinName $Target
 Install-Exe 'terraforme-mcp.exe' $McpTarget
-if (Get-Process -Name 'terraforme-mcp' -ErrorAction SilentlyContinue) {
-    Warn 'terraforme-mcp antigo ainda rodando: feche os `terraforme cli` abertos (ou Stop-Process -Name terraforme-mcp) para o novo subir.'
-}
 
 $current = (& $Target version | Out-String).Trim()
 if ($previous -eq $current) {
@@ -137,6 +136,23 @@ if ($previous -eq $current) {
     }
 } else {
     Ok "Instalado: $current"
+}
+
+# Daemon MCP da versão antiga no ar: reinicia com o binário novo (os
+# `terraforme cli` abertos se reconectam sozinhos). TERRAFORME_RESTART=1
+# (`terraforme upgrade --restart`) ou -Restart reiniciam sem perguntar, 0 não reinicia.
+if (Get-Process -Name 'terraforme-mcp' -ErrorAction SilentlyContinue) {
+    $restartNow = if ($Restart) { '1' } else { $env:TERRAFORME_RESTART }
+    if (-not $restartNow -and [Environment]::UserInteractive) {
+        $answer = Read-Host 'Reiniciar o terraforme agora (daemon MCP)? [S/n]'
+        $restartNow = if ($answer -match '^[NnTt]') { '0' } else { '1' }
+    }
+    if ($restartNow -eq '1') {
+        & $Target restart
+        if ($LASTEXITCODE -ne 0) { Warn 'Falha ao reiniciar: rode `terraforme restart`.' }
+    } else {
+        Warn 'terraforme-mcp antigo ainda rodando: rode `terraforme restart` para subir o novo.'
+    }
 }
 
 if (-not (Test-InPath (Get-UserPath) $BinDir)) {

@@ -82,8 +82,21 @@
         } else {
             Ok "Instalado: terraforme $version"
         }
+        # Daemon MCP da versao antiga no ar: reinicia com o binario novo (os
+        # `terraforme cli` abertos se reconectam sozinhos). TERRAFORME_RESTART=1
+        # reinicia sem perguntar (`terraforme upgrade --restart`), 0 nao reinicia.
         if (Get-Process -Name 'terraforme-mcp' -ErrorAction SilentlyContinue) {
-            Warn 'terraforme-mcp antigo ainda rodando: feche os `terraforme cli` abertos (ou Stop-Process -Name terraforme-mcp).'
+            $restart = $env:TERRAFORME_RESTART
+            if (-not $restart -and [Environment]::UserInteractive) {
+                $answer = Read-Host 'Reiniciar o terraforme agora (daemon MCP)? [S/n]'
+                $restart = if ($answer -match '^[NnTt]') { '0' } else { '1' }
+            }
+            if ($restart -eq '1') {
+                & $Exe restart
+                if ($LASTEXITCODE -ne 0) { Warn 'Falha ao reiniciar: rode `terraforme restart`.' }
+            } else {
+                Warn 'terraforme-mcp antigo ainda rodando: rode `terraforme restart` para subir o novo.'
+            }
         }
     }
 

@@ -1,37 +1,61 @@
-# Configuração interativa de agentes e extensões
+# Setup interativo
 
-Esta página descreve o fluxo implementado por `terraforme extension --setup`.
+Como funciona o `terraforme extension --setup`, para quem quer escolher à mão quais agentes e
+extensões configurar. O setup automático e o que cada configuração altera estão em
+[Setup](setup.md).
 
-## Objetivo
+## Quando usar
 
-Permitir que a pessoa escolha os agentes instalados que quer configurar e, em seguida, quais extensões deseja integrar a eles. O terraforme deve executar os comandos e preparar os arquivos necessários, sem exigir que a pessoa descubra ou rode manualmente etapas específicas de cada agente.
+- Configurar só alguns agentes ou só algumas extensões.
+- Integrar um agente instalado depois do setup inicial.
+- Refazer a integração por agente quando ela parou de funcionar (ex.: depois de atualizar o
+  agente).
 
-## Fluxo interativo
+Diferente do `terraforme setup`, nada é instalado: as extensões escolhidas precisam estar
+instaladas (`terraforme extension <ext> --install`). Exige terminal interativo.
 
-1. Ao executar `terraforme extension --setup` sem informar uma extensão, procurar no `PATH` os agentes implementados: Claude Code (`claude`) e OpenCode (`opencode`). Mostrar somente os encontrados e permitir selecionar um ou mais, informando os números separados por vírgula (por exemplo, `1,2`).
-2. Perguntar quais extensões configurar: RTK, AI Memory e/ou AI Jail, também por números separados por vírgula. RTK e AI Memory são configuradas para os agentes selecionados; AI Jail é uma configuração da máquina e pode ser escolhida mesmo sem agentes detectados. Enter seleciona nenhum item; `q` cancela sem fazer alterações.
-3. Não mudar o agente padrão definido em `terraforme config` nem configurar integrações RTK/AI Memory para agentes que não foram selecionados.
-4. Verificar se cada extensão escolhida está instalada. Se faltar alguma, informar qual e orientar a instalação com `terraforme extension <extensão> --install`; não instalar binários sem uma escolha explícita.
-5. Executar automaticamente a configuração necessária e informar o resultado por extensão e agente. Uma falha deve identificar a etapa que falhou, sem ocultar configurações que já tenham sido concluídas.
+## Fluxo
 
-O comando existente `terraforme extension <extensão> --setup` deve continuar disponível para refazer a configuração de uma extensão individual.
+```bash
+terraforme extension --setup
+```
 
-## Requisitos por integração
+1. **Agentes** — mostra numerados os agentes implementados que estão no `PATH` (Claude Code,
+   OpenCode, Antigravity). Sem nenhum, avisa e segue (ainda dá para configurar o AI Jail).
+2. **Seleção de agentes** — números separados por vírgula ou espaço (ex.: `1,2`).
+3. **Extensões** — RTK, AI Memory e AI Jail, escolhidas do mesmo jeito. Sem agentes selecionados,
+   só o AI Jail aparece: ele é configuração da máquina e não depende de agente.
+4. **Execução** — configura cada extensão escolhida e mostra o resultado por extensão e agente
+   (`✔`, `ℹ` avisos, `⚠` alertas, `✘` falhas).
 
-- **Claude Code + RTK:** executar a configuração do RTK para o Claude (`rtk init -g`).
-- **Claude Code + AI Memory:** executar `ai-memory setup`, que prepara a integração com o Claude.
-- **OpenCode + AI Memory:** executar `ai-memory install-hooks --agent opencode2 --apply` para preparar o plugin compatível com OpenCode 2.
-- **OpenCode + RTK:** preparar o plugin compatível gerenciado pelo terraforme. Não usar como substituto o plugin legado de `rtk init --opencode`: o código atual documenta que ele usa o formato do OpenCode 1, incompatível com OpenCode 2.
-- **AI Jail:** executar o setup existente uma vez, independentemente das extensões de agente: verificar a versão e, no Linux, `bwrap`; criar `~/.ai-jail` se não existir ou completar as seções de agentes ausentes. O comportamento atual completa as seções de todos os agentes implementados.
+| Resposta | Efeito |
+| --- | --- |
+| `1,3` ou `1 3` | seleciona esses itens (repetidos são ignorados) |
+| `Enter` ou `nenhum`/`nenhuma` | nenhum item |
+| `q` ou `cancelar` | cancela sem alterar nada |
 
-As etapas de RTK e AI Memory devem ser limitadas aos agentes escolhidos; o AI Jail segue o comportamento global descrito acima. Preservar configurações e dados existentes; comunicar claramente qualquer backup ou alteração inevitável. As regras de integração existentes nos adapters em `crates/terraforme-core/src/agent/` são a referência para os detalhes específicos de cada agente.
+Número fora da lista ou texto inválido encerra com erro, sem alterar nada. Sem nenhuma extensão
+selecionada, nada é alterado.
 
-## Critérios de aceite
+## Comportamento
 
-- `terraforme extension --setup` inicia o fluxo interativo sem exigir nome de extensão.
-- A lista de agentes é detectada no computador e contém apenas Claude Code e/ou OpenCode quando seus executáveis estão disponíveis.
-- A seleção de agentes acontece antes da seleção de extensões; ambas permitem escolher mais de uma opção. Sem agentes detectados, ainda é possível configurar apenas o AI Jail.
-- Somente as integrações RTK/AI Memory selecionadas são configuradas para os agentes escolhidos. O AI Jail, se selecionado, roda uma vez como setup da máquina.
-- Cancelar antes da execução não altera configurações; sucesso e falhas parciais são reportados claramente.
-- As etapas específicas de AI Memory são executadas automaticamente para cada agente selecionado, com sucesso ou erro informado por etapa.
-- A forma explícita `terraforme extension <extensão> --setup` e o setup separado do AI Jail continuam funcionando.
+- RTK e AI Memory são configurados **só** nos agentes selecionados; os outros não são tocados.
+- O AI Jail roda uma vez, como setup da máquina, e completa as seções de todos os agentes que ele
+  conhece no `~/.ai-jail` (Claude Code e OpenCode).
+- O agente padrão do `terraforme config` não muda.
+- Extensão não instalada: a etapa falha com `<extensão> não está instalado — use
+  terraforme extension <ext> --install`.
+- Uma falha não interrompe as demais: cada etapa é tentada e, no fim, o comando informa quantas
+  falharam.
+- O que cada integração executa (`rtk init -g`, `ai-memory setup`, `ai-memory install-hooks
+  --agent opencode2 --apply`, plugins do terraforme) está em
+  [O que cada configuração faz](setup.md#o-que-cada-configuração-faz).
+- A integração de RTK e AI Memory com o Antigravity ainda não existe: selecioná-lo faz essas
+  etapas falharem.
+
+## Relação com os outros comandos
+
+| Comando | Diferença |
+| --- | --- |
+| `terraforme setup` | sem perguntas; instala agentes e extensões que faltam e copia as skills ([Setup](setup.md#terraforme-setup)) |
+| `terraforme extension <ext> --setup` | só o comando global de uma extensão, sem passar pelos agentes ([Setup](setup.md#reconfigurar-uma-extensão)) |

@@ -239,12 +239,14 @@ fn require() -> Result<(PathBuf, Option<String>)> {
     Ok((bin, version))
 }
 
-/// Comando que roda `agent` com `agent_args` dentro do ai-jail, enxergando os
+/// Comando que roda `agent` (o executável `agent_bin`) com `agent_args` dentro
+/// do ai-jail, enxergando os
 /// `plugins` (extensão → pasta do plugin) do modo e as variáveis `env` (o
 /// ai-jail só repassa uma lista segura; o valor vem do ambiente do comando).
 /// Devolve também avisos para o usuário.
 pub(crate) fn wrap(
     agent: &str,
+    agent_bin: &Path,
     plugins: &[(Extension, PathBuf)],
     maps: &[PathBuf],
     env: &[&str],
@@ -270,7 +272,7 @@ pub(crate) fn wrap(
     for path in maps {
         command.arg("--map").arg(path);
     }
-    for map in tool_maps() {
+    for map in tool_maps().into_iter().chain(agent_map(agent, agent_bin)) {
         command.arg("--map").arg(map);
     }
     let mut ports = Vec::new();
@@ -369,6 +371,39 @@ fn tool_maps() -> Vec<OsString> {
     maps
 }
 
+/// O binário do agente, quando a sandbox não o enxerga: um executável nativo
+/// fora das pastas do sistema e do `~/.local/bin` (ex.: o Claude do Homebrew,
+/// `/home/linuxbrew/.linuxbrew/bin/claude` → Caskroom) é montado em
+/// `~/.local/bin` com o nome do comando. Scripts (npm) ficam de fora: dependem
+/// da pasta do pacote, e o ai-jail já monta o node do nvm.
+fn agent_map(agent: &str, bin: &Path) -> Option<OsString> {
+    let bin_dir = crate::agent::home().ok()?.join(".local/bin");
+    if bin.parent() == Some(bin_dir.as_path())
+        || ["/usr", "/bin", "/sbin"]
+            .iter()
+            .any(|dir| bin.starts_with(dir))
+    {
+        return None;
+    }
+    let target = fs::canonicalize(bin).ok()?;
+    if !is_native(&target) {
+        return None;
+    }
+    let mut map = target.into_os_string();
+    map.push(":");
+    map.push(bin_dir.join(agent));
+    Some(map)
+}
+
+/// Executável ELF (e não um script com shebang).
+fn is_native(path: &Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 4];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .is_ok_and(|()| magic == *b"\x7fELF")
+}
+
 /// Argumento do `--map` que monta `source` em `dir` com o mesmo nome
 /// (`ORIGEM:DESTINO`), ou só `source` quando ele já está em `dir`.
 fn bind_into(source: &Path, dir: &Path) -> OsString {
@@ -447,6 +482,29 @@ mod tests {
             bind_into(Path::new("/home/u/.local/bin/bun"), bin),
             "/home/u/.local/bin/bun"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maps_only_native_agents_outside_the_system() {
+        let dir = env::temp_dir().join(format!("terraforme-agent-map-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let native = dir.join("claude");
+        fs::write(&native, b"\x7fELF\x02\x01\x01").unwrap();
+        let script = dir.join("opencode");
+        fs::write(&script, "#!/usr/bin/env node\n").unwrap();
+
+        let map = agent_map("claude", &native).unwrap();
+        let home = crate::agent::home().unwrap();
+        let expected = format!(
+            "{}:{}",
+            native.display(),
+            home.join(".local/bin/claude").display()
+        );
+        assert_eq!(map, OsString::from(expected));
+        assert_eq!(agent_map("opencode", &script), None);
+        assert_eq!(agent_map("sh", Path::new("/usr/bin/sh")), None);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -41,6 +41,12 @@ impl Tokens {
         self.input + self.output + self.reasoning + self.cache_write + self.cache_read
     }
 
+    /// Só entrada e saída (o raciocínio conta como saída), sem os tokens de
+    /// cache.
+    pub fn io(&self) -> u64 {
+        self.input + self.output + self.reasoning
+    }
+
     pub(crate) fn add(&mut self, other: &Tokens) {
         self.input += other.input;
         self.output += other.output;
@@ -179,6 +185,96 @@ pub fn collect(cwd: &Path, launched: SystemTime, session: Option<&str>) -> Resul
     }
     usage.session = (session_summary.responses > 0).then_some(session_summary);
     Ok(usage)
+}
+
+/// Consumo da sessão em andamento, lido a cada poucos segundos para o rodapé
+/// da TUI; mais leve que [`collect`], que lê a semana de todos os projetos.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Live {
+    /// A sessão inteira (com os subagentes).
+    pub session: Summary,
+    /// Só o que foi gasto desde a abertura: uma sessão retomada já traz o
+    /// consumo de antes.
+    pub launched: Summary,
+    /// Desde o último prompt do usuário: o que está em andamento ou o último.
+    pub turn: Summary,
+}
+
+/// [`Live`] da sessão `session` (sem ela, a iniciada em `launched`); `None`
+/// enquanto não há transcript.
+pub fn live(cwd: &Path, launched: SystemTime, session: Option<&str>) -> Result<Option<Live>> {
+    let project = claude_config_dir()?
+        .join("projects")
+        .join(project_dir_name(cwd));
+    let Some(session) = session
+        .map(str::to_string)
+        .or_else(|| newest_transcript(&project, launched))
+    else {
+        return Ok(None);
+    };
+    let main = project.join(format!("{session}.jsonl"));
+    let mut files = vec![main.clone()];
+    find_jsonl(
+        &project.join(&session).join("subagents"),
+        UNIX_EPOCH,
+        &mut files,
+    );
+
+    let mut entries: HashMap<String, Entry> = HashMap::new();
+    let mut prompt = 0;
+    for path in files {
+        let Ok(file) = fs::File::open(&path) else {
+            continue;
+        };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            if let Some((key, entry)) = parse_line(&line) {
+                entries.insert(key, entry);
+            } else if path == main
+                && let Some(time) = parse_prompt(&line)
+            {
+                prompt = prompt.max(time);
+            }
+        }
+    }
+
+    let launched = secs(launched);
+    let mut live = Live::default();
+    for entry in entries.values().filter(|e| e.session == session) {
+        live.session.add(entry);
+        if entry.time >= launched {
+            live.launched.add(entry);
+        }
+        if entry.time >= prompt {
+            live.turn.add(entry);
+        }
+    }
+    Ok(Some(live))
+}
+
+/// Momento de uma linha que é um prompt digitado pelo usuário (não o
+/// resultado de uma ferramenta, uma mensagem interna nem um subagente).
+fn parse_prompt(line: &str) -> Option<u64> {
+    if !line.contains("\"user\"") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("type")?.as_str()? != "user"
+        || value.get("agentId").is_some()
+        || value.get("isMeta").and_then(Value::as_bool) == Some(true)
+    {
+        return None;
+    }
+    let typed = match value.get("message")?.get("content")? {
+        Value::String(_) => true,
+        Value::Array(blocks) => blocks
+            .iter()
+            .any(|b| b.get("type").and_then(Value::as_str) == Some("text")),
+        _ => false,
+    };
+    if !typed {
+        return None;
+    }
+    parse_timestamp(value.get("timestamp")?.as_str()?)
 }
 
 /// Principal primeiro; subagentes por consumo, com tipo e descrição lidos de
@@ -389,6 +485,25 @@ mod tests {
 
         let sub = line.replace(r#""sessionId""#, r#""agentId":"a1","sessionId""#);
         assert_eq!(parse_line(&sub).unwrap().1.agent.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn prompts_are_typed_user_lines_only() {
+        let typed = r#"{"type":"user","message":{"role":"user","content":"oi"},"sessionId":"s1","timestamp":"1970-01-01T00:00:10Z"}"#;
+        assert_eq!(parse_prompt(typed), Some(10));
+        let blocks = r#"{"type":"user","message":{"content":[{"type":"text","text":"oi"}]},"timestamp":"1970-01-01T00:00:11Z"}"#;
+        assert_eq!(parse_prompt(blocks), Some(11));
+
+        let tool = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]},"timestamp":"1970-01-01T00:00:12Z"}"#;
+        assert_eq!(parse_prompt(tool), None);
+        let meta = typed.replace(r#""type":"user","#, r#""type":"user","isMeta":true,"#);
+        assert_eq!(parse_prompt(&meta), None);
+        let sub = typed.replace(r#""sessionId""#, r#""agentId":"a1","sessionId""#);
+        assert_eq!(parse_prompt(&sub), None);
+        assert_eq!(
+            parse_prompt(r#"{"type":"assistant","message":{"content":"user"}}"#),
+            None
+        );
     }
 
     #[test]

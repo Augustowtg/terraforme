@@ -97,6 +97,29 @@ impl LockFile {
             .with_context(|| format!("gravando {}", path.display()))
     }
 
+    /// Grava o lock file deste daemon, a menos que outro daemon vivo e
+    /// aceitando conexões já esteja nele (dois `terraforme cli` subiram um
+    /// daemon ao mesmo tempo). `false` quando o lock é do outro.
+    pub fn claim(pid: u32, port: u16) -> Result<bool> {
+        if let Some(other) = Self::read()?
+            && other.pid != pid
+            && is_healthy(&other)
+        {
+            return Ok(false);
+        }
+        Self::write(pid, port)?;
+        Ok(true)
+    }
+
+    /// Remove o lock file se ele ainda é do daemon `pid`: um daemon que
+    /// encerra não pode apagar o de outro que já o substituiu.
+    pub fn release(pid: u32) -> Result<()> {
+        match Self::read()? {
+            Some(lock) if lock.pid == pid => Self::delete(),
+            _ => Ok(()),
+        }
+    }
+
     /// Remove o lock file, ignorando se não existir.
     pub fn delete() -> Result<()> {
         let path = Self::path()?;
@@ -143,21 +166,32 @@ pub fn ensure_running(config: &McpConfig) -> Result<LockFile> {
     start(config)
 }
 
-/// O `terraforme-mcp` instalado ao lado do binário atual (as instalações põem
-/// os dois na mesma pasta) ou, sem ele, o do `PATH`.
-fn daemon_bin() -> PathBuf {
-    let name = format!("terraforme-mcp{}", env::consts::EXE_SUFFIX);
+/// O binário `bin` (ex.: `terraforme-mcp`) instalado ao lado do atual (as
+/// instalações põem todos na mesma pasta) ou, sem ele, o do `PATH`.
+pub(crate) fn sibling_bin(bin: &str) -> PathBuf {
+    let name = format!("{bin}{}", env::consts::EXE_SUFFIX);
     env::current_exe()
         .ok()
         .and_then(|exe| Some(exe.parent()?.join(&name)))
         .filter(|path| path.is_file())
-        .or_else(|| crate::status::find_in_path("terraforme-mcp"))
+        .or_else(|| crate::status::find_in_path(bin))
         .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// Encerra todos os daemons `terraforme-mcp` (o do lock e órfãos de versões
+/// antigas) e sobe um novo, com o binário instalado agora. Os `terraforme
+/// cli` abertos se registram de novo nele sozinhos (veem o heartbeat
+/// falhar). Devolve quantos daemons foram encerrados e o lock do novo.
+pub fn restart(config: &McpConfig) -> Result<(usize, LockFile)> {
+    let stopped =
+        crate::platform::kill_all("terraforme-mcp").context("encerrando o terraforme-mcp")?;
+    LockFile::delete()?;
+    Ok((stopped, ensure_running(config)?))
 }
 
 /// Inicia o `terraforme-mcp` em background e aguarda até 2s pelo lock file.
 pub fn start(config: &McpConfig) -> Result<LockFile> {
-    let mut cmd = process::Command::new(daemon_bin());
+    let mut cmd = process::Command::new(sibling_bin("terraforme-mcp"));
     cmd.arg("--grace-seconds")
         .arg(config.grace_seconds.to_string())
         .arg("--subagent-timeout")

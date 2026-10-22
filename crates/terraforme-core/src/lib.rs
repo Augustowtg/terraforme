@@ -3,13 +3,16 @@
 
 pub mod accounts;
 pub mod agent;
+pub mod chat;
 pub mod config;
 pub mod extension;
 pub mod history;
 pub mod jail;
 pub mod limits;
 pub mod mcp;
+pub mod pet;
 pub mod platform;
+pub mod plugin;
 pub mod skill;
 pub mod space;
 pub mod status;

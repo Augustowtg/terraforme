@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Instâncias terraforme</title>
+<title>Terraforme instâncias</title>
 <style>
   :root {
     --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -39,16 +39,20 @@
   }
   h2 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase;
        letter-spacing: .04em; color: var(--muted); }
-  .space { margin: 12px 0 4px; font-weight: 600; }
-  .space:first-of-type { margin-top: 0; }
+  .spaces td { vertical-align: top; text-align: left; white-space: normal; }
+  .spaces td:first-child { font-weight: 600; white-space: nowrap; }
+  .spaces td:first-child small { display: block; white-space: normal; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
+  .agents { display: flex; flex-wrap: wrap; gap: 6px; }
   .instance {
-    display: block; width: 100%; text-align: left; cursor: pointer;
-    background: none; border: 1px solid transparent; border-radius: 6px;
-    padding: 6px 8px; color: inherit; font: inherit;
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 10px; color: inherit; font: inherit;
   }
   .instance:hover, .instance.selected { border-color: var(--accent); background: var(--accent-soft); }
-  .instance code { font-size: 13px; }
-  .instance small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.working { background: var(--accent); }
+  .dot.done { background: var(--web); }
+  .dot.waiting { background: var(--error); }
   .empty { color: var(--muted); }
   #messages { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
   .message { border-left: 3px solid var(--accent); padding: 4px 10px; }
@@ -79,15 +83,15 @@
 </head>
 <body>
 <header>
-  <h1>Instâncias terraforme</h1>
+  <h1>Terraforme instâncias</h1>
   <span class="meta" id="meta">carregando…</span>
 </header>
 <main>
-  <section>
-    <h2>Instâncias</h2>
-    <div id="instances"><p class="empty">Nenhuma instância aberta.</p></div>
+  <section class="wide">
+    <h2>Instâncias abertas no computador</h2>
+    <div class="table" id="instances"><p class="empty">Nenhuma instância aberta.</p></div>
   </section>
-  <section>
+  <section class="wide">
     <h2>Mensagens</h2>
     <div id="messages"><p class="empty">Nenhuma mensagem ainda.</p></div>
     <form id="send">
@@ -112,11 +116,15 @@ const el = (tag, props = {}, ...children) => {
   return node;
 };
 const time = (secs) => new Date(secs * 1000).toLocaleTimeString();
+const ACTIVITY = { idle: "parada", working: "trabalhando", done: "terminou", waiting: "pede atenção" };
+const title = (name) => name.charAt(0).toUpperCase() + name.slice(1);
 let lastMessages = -1;
 let lastInstances = "";
 
+// Uma linha por space com os agentes abertos nele, numerados na ordem em
+// que abriram: `Agente 1 (Claude)  Agente 2 (Opencode)`.
 function renderInstances(instances) {
-  const key = JSON.stringify(instances.map((i) => i.handle));
+  const key = JSON.stringify(instances.map((i) => [i.handle, i.activity]));
   if (key === lastInstances) return;
   lastInstances = key;
   const box = $("instances");
@@ -129,21 +137,34 @@ function renderInstances(instances) {
   }
   const groups = new Map();
   for (const i of instances) {
-    const name = i.space || "(fora de space)";
+    const name = i.space || i.cwd;
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name).push(i);
   }
+  const rows = [];
   for (const [space, list] of groups) {
-    box.append(el("div", { className: "space", textContent: space }));
-    for (const i of list) {
-      const button = el("button", { type: "button", className: "instance" },
-        el("code", { textContent: i.handle }),
-        el("small", { textContent: `${i.agent} · ${i.cwd} · desde ${time(i.since)}` }));
+    list.sort((a, b) => a.since - b.since || a.handle.localeCompare(b.handle));
+    const agents = el("div", { className: "agents" });
+    list.forEach((i, n) => {
+      const label = `Agente ${n + 1} (${title(i.agent)})`;
+      const activity = ACTIVITY[i.activity] || i.activity;
+      const button = el("button", {
+        type: "button", className: "instance",
+        title: `${i.handle} · ${activity} · ${i.cwd} · desde ${time(i.since)}`,
+      }, el("span", { className: `dot ${i.activity}` }), label);
       button.addEventListener("click", () => { to.value = i.handle; highlight(); $("text").focus(); });
       button.dataset.handle = i.handle;
-      box.append(button);
-      to.append(el("option", { value: i.handle, textContent: i.handle }));
-    }
+      agents.append(button);
+      to.append(el("option", { value: i.handle, textContent: `${space} · ${label} — ${i.handle}` }));
+    });
+    const name = el("td", {}, list[0].space || "(fora de space)");
+    if (list[0].space) name.append(el("small", { textContent: list[0].cwd }));
+    else name.append(el("small", { textContent: space }));
+    rows.push(el("tr", {}, name, el("td", {}, agents)));
+  }
+  if (rows.length) {
+    const head = el("tr", {}, el("th", { textContent: "Space" }), el("th", { textContent: "Agentes" }));
+    box.append(el("table", { className: "spaces" }, el("thead", {}, head), el("tbody", {}, ...rows)));
   }
   if ([...to.options].some((o) => o.value === chosen)) to.value = chosen;
   $("send").querySelector("button").disabled = !instances.length;

@@ -77,8 +77,22 @@ if [ -n "$previous" ]; then
 else
     ok "Instalado: terraforme $version"
 fi
+# Daemon MCP da versão antiga no ar: reinicia com o binário novo (os
+# `terraforme cli` abertos se reconectam sozinhos). TERRAFORME_RESTART=1
+# reinicia sem perguntar (`terraforme upgrade --restart`), 0 não reinicia.
 if pgrep -x terraforme-mcp >/dev/null 2>&1; then
-    printf '\033[1;33m!\033[0m terraforme-mcp antigo ainda rodando: feche os `terraforme cli` abertos (ou `pkill -x terraforme-mcp`).\n'
+    restart="${TERRAFORME_RESTART:-}"
+    # Com `curl | sh` a entrada é o script: a resposta vem do terminal.
+    if [ -z "$restart" ] && (: </dev/tty) 2>/dev/null; then
+        printf 'Reiniciar o terraforme agora (daemon MCP)? [S/n] '
+        read -r answer </dev/tty || answer=n
+        case "$answer" in [NnTt]*) restart=0 ;; *) restart=1 ;; esac
+    fi
+    if [ "$restart" = 1 ]; then
+        "$BIN_DIR/terraforme" restart || printf '\033[1;33m!\033[0m Falha ao reiniciar: rode `terraforme restart`.\n'
+    else
+        printf '\033[1;33m!\033[0m terraforme-mcp antigo ainda rodando: rode `terraforme restart` para subir o novo.\n'
+    fi
 fi
 
 case ":$PATH:" in

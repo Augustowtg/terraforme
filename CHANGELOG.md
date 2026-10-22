@@ -5,6 +5,174 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.25.0 - 2026-10-22
+
+### Adicionado
+
+- Plugins: `terraforme plugin list|install|update|remove`. Cada plugin é um programa publicado
+  num repositório próprio, descrito por um `terraforme-plugin.toml` (nome, binário, repositório,
+  sistemas, versão mínima do terraforme). Os oficiais ficam num registro no core (instaláveis só
+  pelo nome) e qualquer `dono/repo` do GitHub com o manifesto também pode ser instalado. A
+  instalação tenta o binário da última GitHub Release (`<bin>-<target>.tar.gz`, conferido pelo
+  `.sha256`) e, sem ele, `cargo install --git`; vai para `~/.local/bin` (pasta do `terraforme`
+  no Windows) e os instalados ficam em `plugins.toml` na pasta de configuração.
+
+### Alterado
+
+- A janela flutuante (`terraforme-pet`) saiu deste repositório para
+  [Augustowtg/terraforme-pet](https://github.com/Augustowtg/terraforme-pet) e virou plugin:
+  instale com `terraforme plugin install pet`. O `install.linux.sh` não a compila mais (atualiza
+  a já instalada com `terraforme plugin update pet`), e `terraforme pet`/`terraforme status`
+  avisam quando ela não está instalada. Os sprites e GIFs do mascote (`assets/`) foram junto.
+
+## 0.24.0 - 2026-10-22
+
+### Adicionado
+
+- Middleware (experimental) também no **Antigravity** e no **OpenCode**, com a mesma tela e as
+  mesmas teclas do chat do Claude Code (`docs/tui/agente/agente.feature.md`):
+  - Antigravity (`agy`): `--input-format stream-json --output-format stream-json`, sem `-p` — o
+    processo fica vivo entre os turnos, o texto da resposta chega em tempo real (`step_update`) e
+    o `result` fecha cada turno. Não há pedido de permissão: no modo print as ferramentas rodam
+    liberadas.
+  - OpenCode: `opencode acp` (Agent Client Protocol, JSON-RPC por linha no stdio). O handshake
+    `initialize` → `session/new` abre a sessão da instância (`sessionId` guardada e repassada nos
+    pedidos seguintes); o que o usuário mandar antes dela fica guardado até abrir. As mensagens são
+    um `session/prompt`, a resposta chega em `session/update` e os pedidos de permissão das
+    ferramentas aparecem no chat como os do Claude (Sim / Sim e não perguntar de novo / Não).
+    A flag `--standalone`, que o `opencode run` pede, sai da linha de comando no modo Middleware
+    (o `acp` recusa a flag e sempre sobe o próprio servidor).
+
+## 0.23.0 - 2026-10-21
+
+### Adicionado
+
+- Consumo de tokens sempre à vista no `terraforme cli` (Claude Code), atualizado a cada 5s: no
+  rodapé, à esquerda o prompt atual (o em andamento ou o último: total, entrada e saída, somando
+  os subagentes) e à direita o total da sessão da instância aberta; no canto superior direito, ao
+  lado das sub-abas, o total desta sessão do terraforme (todas as instâncias desde que ele abriu,
+  inclusive as já fechadas). Esses contadores somam só entrada e saída, sem os tokens de cache (a
+  aba Consumo continua mostrando o cache).
+- MCP `terraforme` (Claude Code): ferramentas `open_instance` (abre uma instância nova numa
+  sub-aba do mesmo terminal, sem tirar o foco), `close_instance` (encerra outra instância, com
+  confirmação) e `delegate_task` (entrega uma tarefa a uma instância aberta ou a uma nova e
+  espera: o `send_message` de volta de quem trabalhou vira o `result` da chamada, até 30 min).
+  Com elas, uma instância cria e gerencia outros agentes.
+- Middleware (experimental), na seção Agente da aba Configurações (`[tui] middleware`): ligado, as
+  instâncias novas do Claude Code rodam sem a TUI dele (`claude -p` com `stream-json`) e a própria
+  TUI do terraforme desenha a conversa como um chat — as respostas (em tempo real), as ferramentas
+  chamadas e os resultados em cima, a caixa de mensagem embaixo (`Enter` envia, `Alt+Enter` quebra
+  a linha, `PgUp`/`PgDn` e a roda rolam, `Ctrl+Alt+C` copia a conversa). As mensagens do MCP
+  chegam direto no chat; os outros agentes continuam no terminal. No chat:
+  - as respostas aparecem com o Markdown formatado e os blocos de código com a cor da linguagem
+    (sintaxes do `bat`), na paleta do [VS-Claude](https://github.com/EstarinAzx/VS-Claude);
+  - `/` lista os comandos do agente (com descrição e argumentos) e `@` lista os arquivos da pasta
+    (respeitando o `.gitignore`), com `↑↓`, `Tab`/`Enter` e `Esc`;
+  - os pedidos de permissão das ferramentas aparecem no lugar da caixa de mensagem (Sim / Sim e
+    não perguntar de novo / Não), como no terminal do Claude;
+  - a aba do agente vira `Middleware`, com as instâncias de todos os routers como sub-abas.
+- `docs/MCP/mcp.feature.md` e a seção do MCP no `ROADMAP.md`, com o que falta para o OpenCode e
+  os outros agentes.
+
+### Corrigido
+
+- Janela flutuante no GNOME/Wayland: escolher uma instância no menu agora traz a janela do
+  terminal para frente, trocando de área de trabalho e tirando do minimizado. Antes só a sub-aba
+  mudava, porque no Wayland um app não pode ativar a janela de outro; o `install.linux.sh` instala
+  a extensão do GNOME Shell `terraforme@augustowtg.github.io`, que faz isso (vale depois de sair e
+  entrar na sessão).
+- Mensagens do MCP (`send_message`, `delegate_task`, `open_instance`) ficavam digitadas no prompt
+  sem serem enviadas: o texto ia num bloco só com o Enter, que o agente tratava como parte de uma
+  colagem. Agora o texto é colado (bracketed paste quando o agente liga) e o Enter vai 300 ms
+  depois, só quando o agente está pronto (bracketed paste ligado e saída parada há 500 ms).
+
+## 0.22.2 - 2026-10-21
+
+### Adicionado
+
+- `terraforme restart`: reinicia o terraforme em segundo plano com os binários instalados agora —
+  encerra todos os `terraforme-mcp` (inclusive órfãos de versões antigas), sobe o novo e reabre a
+  janela flutuante se ela estava aberta.
+- Depois de instalar, `install.linux.sh`, `install.windows.ps1`, `install.sh` e `install.ps1`
+  perguntam se reiniciam o terraforme quando há um daemon antigo no ar; `terraforme upgrade
+  --restart` (ou `--restart` / `-Restart` nos scripts, `TERRAFORME_RESTART=1`) reinicia sem
+  perguntar.
+
+### Corrigido
+
+- A UI web mostrava "Nenhuma instância aberta" com agentes abertos: um `terraforme cli` cujo daemon
+  MCP tinha saído (ex.: `pkill` depois de um upgrade) continuava mandando o heartbeat para a porta
+  morta e nunca se registrava no daemon novo. Agora o daemon responde 404 ao heartbeat de um
+  terminal que não conhece e o terminal, com o heartbeat falhando, acha ou sobe o daemon no ar e se
+  registra de novo nele com todas as instâncias. Os agentes já abertos só voltam a usar as
+  ferramentas MCP depois de reiniciados (`Ctrl+Alt+R`), porque o `--mcp-config` deles guarda a
+  porta antiga.
+- Dois daemons no ar ao mesmo tempo: o que encerrava apagava o lock file do outro, e o próximo
+  `terraforme cli` subia um terceiro. O daemon só apaga o lock se ele é seu, desiste de subir se
+  outro já está no lock e aceitando conexões, e encerra se ninguém se registrar nos primeiros 30s
+  (antes ficava no ar para sempre). `SIGTERM` também encerra limpo.
+
+## 0.22.1 - 2026-10-21
+
+### Alterado
+
+- UI web conforme `docs/tui/webserver/webserver.feature.md`: a página principal agora é
+  **Terraforme instâncias**, uma tabela `Space | Agentes` com uma linha por space e os agentes
+  abertos nele (`Agente 1 (Claude)`, `Agente 2 (Opencode)`…, com o estado de cada um); clicar num
+  agente o escolhe como destino da mensagem. `GET /` no daemon também abre a página.
+
+- Barra de abas da TUI conforme `docs/tui/tui.feature.md`: `Terraforme`, `Agente (claude)`,
+  `Consumo`, `Extensões`, `Configurações` e `Sair` em blocos no estilo do `Terraforme` (a aba ativa
+  verde como ele, as outras cinza), com `⌃⌥K Atalhos` do outro lado. Um clique no
+  menu abre a aba e `Sair` encerra (igual a `F10`).
+- Troca de aba pelas setas: `Ctrl+Shift+←/→` em qualquer aba e `←/→` sozinhas nas abas Consumo e
+  Extensões (antes trocavam de sub-aba, que segue em `Ctrl+PgUp/PgDn` e `Ctrl+Alt+Tab`).
+
+### Corrigido
+
+- UI web, janela flutuante e `list_instances` mostravam "Nenhuma instância aberta" com agentes
+  abertos: o terminal fechava a conexão logo após enviar `/register`, `/instances/register` e
+  `/instances/state`, e o daemon descartava o pedido. Agora ele espera a resposta antes de fechar.
+
+## 0.22.0 - 2026-10-21
+
+### Alterado
+
+- Sub-aba **Limites** do Consumo conforme `docs/tui/consumo/tue-consumo.feature.md`: um bloco
+  `Router <agente>` por agente com instância aberta (o da instância em foco primeiro), e cada
+  limite mostra quando zera e a data/hora local do reset (`Sessão · 5h - zera em 2h30min -
+  21/10/2026 - 18:30`), seguido da barra.
+- Aba Config reorganizada conforme `docs/tui/config/tue-config.feature.md`, em seções:
+  **Agente** (o campo **Router** escolhe o agente; a troca vale ao sair do campo ou da aba e abre
+  uma instância do novo, sem fechar as abertas; o modo
+  alterna entre os presets `eco`/`high`/`security`/`custom` com uma descrição, e o `custom` mostra
+  caixas AI Jail / RTK / AI Memory marcadas com Espaço; conta do agente com `default`),
+  **Orçamento** (só o limite de 5 horas é digitado, com separador de milhar; o diário e o de 7 dias
+  são calculados), **Plugins · config global** (UI web online/offline com o endereço clicável — ou
+  `o` — para abrir no navegador, mascote ativo/inativo que abre ou fecha a janela na hora, daemon
+  MCP online/offline) e **Avançado** (mouse, cópia e ajustes do daemon MCP). O modo e a conta
+  alterados valem nas próximas instâncias (`Ctrl+Alt+N`).
+
+### Adicionado
+
+- Janela flutuante com o mascote (`terraforme pet`, só no Linux por enquanto; #34): fica sobre as
+  outras janelas, muda de animação conforme os agentes de todos os `terraforme cli` (dormindo,
+  trabalhando, terminou, precisa de você), avisa com um balão e `notify-send` quando um agente
+  termina e, com um clique, mostra o menu dos agentes abertos; escolher um abre a sub-aba dele no
+  terminal certo e, no X11, traz a janela do terminal para frente (`xdotool`/`wmctrl`).
+  `terraforme config --pet true` (ou "Janela flutuante" na aba Config) a abre junto com o
+  `terraforme cli`. Instalada pelo `install.linux.sh` (binário `terraforme-pet`); o Windows e o
+  release estão no novo `ROADMAP.md`. Documentação em `docs/janela-flutuante.md`.
+- O terminal informa ao daemon MCP o estado de cada instância (`POST /instances/state`), detectado
+  pela saída do agente, e aceita `POST /focus` para abrir a sub-aba de uma instância.
+
+### Corrigido
+
+- `terraforme cli` com AI Jail voltava direto para o shell quando o agente é um executável nativo
+  fora das pastas que a sandbox enxerga (ex.: o Claude do Homebrew em
+  `/home/linuxbrew/.linuxbrew/bin`): o ai-jail falhava com `Failed to exec claude`. Agora o binário
+  é montado em `~/.local/bin` dentro da sandbox.
+
 ## 0.21.0 - 2026-10-20
 
 ### Adicionado

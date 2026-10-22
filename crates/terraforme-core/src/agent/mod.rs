@@ -31,7 +31,7 @@ use serde_json::{Map, Value};
 use crate::extension::Extension;
 use crate::limits::Quota;
 use crate::status::{Component, State, find_in, find_in_path, version_of};
-use crate::usage::Usage;
+use crate::usage::{Live, Usage};
 
 pub use antigravity::Antigravity;
 pub use claude::Claude;
@@ -64,6 +64,17 @@ pub trait Adapter: Sync {
         bail!("consumo ainda não disponível para este agente")
     }
 
+    /// Consumo da sessão em andamento e do prompt atual, para o rodapé da
+    /// TUI. `None` se o agente não informa (ou a sessão ainda não existe).
+    fn live_usage(
+        &self,
+        _cwd: &Path,
+        _launched: SystemTime,
+        _session: Option<&str>,
+    ) -> Result<Option<Live>> {
+        Ok(None)
+    }
+
     /// Limites de uso do plano/conta no formato padronizado do terraforme
     /// ([`Quota`]): o adapter só traduz o que o CLI informa (a API do plano,
     /// os transcripts, o `stats`) e o terraforme calcula o quanto falta e
@@ -89,6 +100,54 @@ pub trait Adapter: Sync {
     /// (`url`), com os cabeçalhos HTTP que a identificam. `None` se o agente
     /// não tem como receber um servidor MCP pela linha de comando.
     fn mcp_args(&self, _url: &str, _headers: &[(&str, &str)]) -> Option<Vec<OsString>> {
+        None
+    }
+
+    /// Argumentos que trocam a TUI do agente pelo texto estruturado do modo
+    /// Middleware ([`crate::chat`]); `None` se o agente não tem esse modo.
+    fn chat_args(&self) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Argumentos do agente que o modo Middleware não quer, tirados da linha
+    /// de comando antes de ele abrir (ex.: o `--standalone` do OpenCode, que
+    /// o `opencode acp` recusa).
+    fn chat_drop_args(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// `true` quando as mensagens só podem ser mandadas depois que o agente
+    /// abre a sessão ([`crate::chat::ChatEvent::Session`]); o chat guarda o
+    /// que o usuário mandar antes dela.
+    fn chat_waits_session(&self) -> bool {
+        false
+    }
+
+    /// Mensagem do usuário no formato da entrada do modo Middleware (uma
+    /// linha, sem o `\n`).
+    fn chat_input(&self, text: &str, _ctx: &crate::chat::ChatCtx) -> String {
+        text.to_string()
+    }
+
+    /// Traduz uma linha da saída do modo Middleware.
+    fn chat_events(&self, _line: &str, _ctx: &crate::chat::ChatCtx) -> Vec<crate::chat::ChatEvent> {
+        Vec::new()
+    }
+
+    /// Linhas mandadas ao agente logo que ele abre no modo Middleware (ex.:
+    /// o pedido dos comandos `/`).
+    fn chat_start(&self, _ctx: &crate::chat::ChatCtx) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Resposta a um pedido de permissão do modo Middleware (uma linha);
+    /// `None` se o agente não pergunta.
+    fn chat_permission(
+        &self,
+        _permission: &crate::chat::Permission,
+        _answer: crate::chat::Answer,
+        _ctx: &crate::chat::ChatCtx,
+    ) -> Option<String> {
         None
     }
 }
@@ -306,6 +365,17 @@ impl Mode {
         }
     }
 
+    /// O modo que usa exatamente estas extensões (o contrário de
+    /// [`Mode::uses`]).
+    pub fn with(rtk: bool, memory: bool) -> Mode {
+        match (rtk, memory) {
+            (false, false) => Mode::None,
+            (true, false) => Mode::Eco,
+            (false, true) => Mode::High,
+            (true, true) => Mode::Hybrid,
+        }
+    }
+
     pub fn uses(self, ext: Extension) -> bool {
         match self {
             Mode::None => false,
@@ -442,8 +512,14 @@ pub fn prepare(provider: Provider, mode: Mode, jail: bool, args: &[String]) -> R
 
     let mut command = if jail {
         let names: Vec<_> = env.iter().map(|(name, _)| *name).collect();
-        let (mut command, jail_notices) =
-            crate::jail::wrap(adapter.bin(), &plugins, &jail_maps, &names, &agent_args)?;
+        let (mut command, jail_notices) = crate::jail::wrap(
+            adapter.bin(),
+            &bin,
+            &plugins,
+            &jail_maps,
+            &names,
+            &agent_args,
+        )?;
         notices.extend(jail_notices);
         // O ai-jail leva o PATH do host para dentro da sandbox.
         if let Some(dir) = jail_path {

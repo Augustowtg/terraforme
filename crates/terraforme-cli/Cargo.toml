@@ -14,11 +14,16 @@ path = "src/main.rs"
 terraforme-core = { workspace = true, features = ["clap"] }
 anyhow.workspace = true
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap.workspace = true
 clap_complete.workspace = true
+ignore = "0.4"
 serde_json.workspace = true
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
 portable-pty = "0.9"
 ratatui = "0.30"
 tui-term = "0.3"
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 vt100 = "0.16"

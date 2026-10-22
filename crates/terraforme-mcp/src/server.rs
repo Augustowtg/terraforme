@@ -13,10 +13,12 @@ use tracing::warn;
 
 use terraforme_core::mcp::McpConfig;
 
+use terraforme_core::pet::Activity;
+
 use crate::hub::{Hub, Registration};
 use crate::lifecycle::ClientRegistry;
-use crate::tools::messaging;
 use crate::tools::spawn_subagent::{self, PendingSpawns, SpawnResult};
+use crate::tools::{manage, messaging};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -30,13 +32,16 @@ pub struct AppState {
 /// Monta o router axum com todas as rotas.
 pub fn router(state: AppState) -> axum::Router {
     axum::Router::new()
-        .route("/", post(mcp_handler))
+        .route("/", post(mcp_handler).get(crate::ui::page))
         .route("/register", post(register_handler))
         .route("/heartbeat", post(heartbeat_handler))
         .route("/unregister", post(unregister_handler))
         .route("/spawn-result", post(spawn_result_handler))
         .route("/instances/register", post(register_instance_handler))
         .route("/instances/unregister", post(unregister_instance_handler))
+        .route("/instances/state", post(instance_state_handler))
+        .route("/pet/state", get(crate::pet::state))
+        .route("/pet/focus", post(crate::pet::focus))
         .route("/ui", get(crate::ui::page))
         .route("/api/state", get(crate::ui::state))
         .route("/api/usage", get(crate::ui::usage))
@@ -135,6 +140,7 @@ async fn mcp_handler(
         }
         "tools/list" => {
             let mut tools = messaging::definitions();
+            tools.extend(manage::definitions());
             tools.push(spawn_subagent::definition());
             JsonRpcResponse::ok(id, json!({ "tools": tools }))
         }
@@ -148,6 +154,9 @@ async fn mcp_handler(
                 "spawn_subagent" => spawn_subagent::handle(&client_id, args, &state).await,
                 "list_instances" => Ok(messaging::list_instances(&instance_id, &state)),
                 "send_message" => messaging::send_message(&instance_id, args, &state).await,
+                "open_instance" => manage::open_instance(&instance_id, args, &state).await,
+                "close_instance" => manage::close_instance(&instance_id, args, &state).await,
+                "delegate_task" => manage::delegate_task(&instance_id, args, &state).await,
                 other => {
                     let message = format!("ferramenta '{other}' não encontrada");
                     return Json(JsonRpcResponse::err(id, -32601, message)).into_response();
@@ -202,8 +211,11 @@ async fn heartbeat_handler(
     State(state): State<AppState>,
     Json(body): Json<HeartbeatBody>,
 ) -> StatusCode {
-    state.registry.heartbeat(&body.client_id);
-    StatusCode::OK
+    if state.registry.heartbeat(&body.client_id) {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
 }
 
 #[derive(Deserialize)]
@@ -258,5 +270,21 @@ async fn unregister_instance_handler(
     Json(body): Json<UnregisterInstanceBody>,
 ) -> StatusCode {
     state.hub.unregister(&body.instance_id);
+    StatusCode::OK
+}
+
+#[derive(Deserialize)]
+struct InstanceStateBody {
+    instance_id: String,
+    activity: Activity,
+}
+
+/// O terminal informa a mudança de atividade de uma instância (para a janela
+/// flutuante).
+async fn instance_state_handler(
+    State(state): State<AppState>,
+    Json(body): Json<InstanceStateBody>,
+) -> StatusCode {
+    state.hub.set_activity(&body.instance_id, body.activity);
     StatusCode::OK
 }
