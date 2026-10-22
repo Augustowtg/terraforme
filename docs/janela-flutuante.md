@@ -1,8 +1,8 @@
 # Janela flutuante (mascote)
 
 Uso, estados, funcionamento e instalação do `terraforme pet`, a janela com o mascote (o tatu-peba)
-que acompanha os agentes de todos os `terraforme cli` abertos. Só no **Linux** por enquanto; o que
-falta, inclusive o Windows, está no [ROADMAP](../ROADMAP.md) (issue #34).
+que acompanha os agentes de todos os `terraforme cli` abertos. No **Linux** e no **Windows**; o que
+falta está no [ROADMAP](../ROADMAP.md) (issue #34).
 
 ## O que faz
 
@@ -81,7 +81,7 @@ terraforme cli (TUI) ──POST /instances/state──▶ terraforme-mcp (hub) �
    como visto) e tenta trazer a janela do terminal para frente.
 4. **Janela.** O `terraforme-pet` (egui/eframe) lê o lock file do daemon e consulta `/pet/state` a
    cada segundo. Quando uma instância passa a "terminou" ou "precisa de você", mostra o balão e
-   chama `notify-send` (se instalado).
+   chama `notify-send` (se instalado; no Windows, uma notificação do sistema pelo PowerShell).
 
 Os sprites são os de `assets/*_strip.png` do repositório [terraforme-pet](https://github.com/Augustowtg/terraforme-pet) (4 quadros de 48×34), embutidos no binário e desenhados
 em escala 3 sem suavização.
@@ -93,6 +93,7 @@ em escala 3 sem suavização.
 | GNOME (X11 e Wayland) | a extensão `terraforme@augustowtg.github.io` (instalada e habilitada pelo `install.linux.sh`) ativa a janela do processo pai mais próximo do `terraforme cli`: troca de área de trabalho, tira do minimizado e foca. No Wayland, saia e entre na sessão depois de instalar para o GNOME carregá-la. |
 | X11 | `xdotool windowactivate` (ou `wmctrl -i -a`) na janela de `$WINDOWID`; sem ela, procura a janela dos processos pais (`xdotool search --pid`). Instale `xdotool` ou `wmctrl`. |
 | Wayland fora do GNOME | o protocolo não deixa um app ativar a janela de outro: a sub-aba muda, mas a janela precisa ser trazida à mão. A notificação do sistema diz qual terminal. |
+| Windows | `SetForegroundWindow` na janela dona do console (a do Windows Terminal; no console clássico, o próprio console) ou, sem ela, na janela do primeiro processo pai que tiver uma (ex.: VS Code); tira do minimizado. A janela flutuante libera o foco (`AllowSetForegroundWindow`) antes de pedir. |
 
 - Em terminais com abas próprias (gnome-terminal, Konsole), a janela vem para frente, mas a aba do
   emulador não muda.
@@ -100,9 +101,13 @@ em escala 3 sem suavização.
 
 ## Instalação
 
-- Instalado pelo `install.linux.sh`, junto com `terraforme` e `terraforme-mcp` (veja o
-  [Guia](guia.md#do-código-fonte-linux)).
-- Os binários do release (`install.sh`) ainda não o trazem: a build estática com musl não carrega
-  as bibliotecas gráficas (X11/Wayland/OpenGL).
-- `terraforme pet` procura o binário ao lado do `terraforme` e depois no `PATH`.
-- Opcionais: `notify-send` (notificações), `xdotool` ou `wmctrl` (X11 fora do GNOME).
+- É um plugin: `terraforme plugin install pet` baixa o binário da release do
+  [terraforme-pet](https://github.com/Augustowtg/terraforme-pet) (`.tar.gz` glibc no Linux, `.zip`
+  no Windows) ou, sem ela, compila com `cargo install --git`. Vai para `~/.local/bin` (Linux) ou
+  para a pasta do `terraforme.exe` (Windows). `install.linux.sh` e `install.windows.ps1` o
+  atualizam quando já está instalado.
+- Os binários do release do terraforme (`install.sh`/`install.ps1`) não o trazem: a build estática
+  com musl não carrega as bibliotecas gráficas (X11/Wayland/OpenGL).
+- `terraforme pet` procura o binário na pasta de instalação dos plugins, depois ao lado do
+  `terraforme` e no `PATH`.
+- Opcionais no Linux: `notify-send` (notificações), `xdotool` ou `wmctrl` (X11 fora do GNOME).

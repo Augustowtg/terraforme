@@ -88,11 +88,12 @@ agente termina e leva à instância escolhida. Documentação: [docs/janela-flut
 
 ### Windows
 
-- [ ] Janela flutuante (`terraforme-pet` para `x86_64-pc-windows-msvc`), sempre no topo.
-- [ ] Trazer a janela do terminal para frente (`SetForegroundWindow` na janela do console /
-  Windows Terminal).
-- [ ] Notificação nativa (toast) quando um agente termina.
-- [ ] Incluir o binário no `install.windows.ps1`, no `install.ps1` e no release.
-
-Até lá, `terraforme pet` no Windows só avisa que a janela ainda não está disponível. O estado das
-instâncias já é enviado ao daemon também no Windows.
+- [x] Janela flutuante (`terraforme-pet` para `x86_64-pc-windows-msvc`), sempre no topo.
+- [x] Trazer a janela do terminal para frente (`SetForegroundWindow` na janela dona do console:
+  Windows Terminal, console clássico; ou na do processo pai, ex.: VS Code).
+- [x] Notificação nativa (toast) quando um agente termina.
+- [x] `terraforme plugin install pet` (`.zip` da release do plugin ou `cargo install --git`) e
+  atualização pelo `install.windows.ps1`.
+- [ ] Primeira release do plugin com o `.zip` do Windows (até lá, `cargo install --git`).
+- [ ] Incluir o mascote no `install.ps1` (binários do release, sem Rust).
+- [ ] Trazer para frente a aba certa no Windows Terminal (hoje vem a janela, na aba que estava).
