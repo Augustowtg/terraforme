@@ -16,7 +16,8 @@ cargo build -p terraforme-cli --release      # target/release/terraforme
 terraforme restart                           # kills every terraforme-mcp (also orphans), starts the new one, reopens the pet; install scripts ask for it at the end (`upgrade --restart` / `TERRAFORME_RESTART=1` skips the prompt)
 terraforme plugin install pet                # plugins from other repos (list/install/update/remove; `owner/repo` for third-party)
 terraforme pet                               # floating window with the mascot (Linux and Windows, plugin; `terraforme config --pet true` opens it with `terraforme cli`)
-terraforme upgrade                           # execs <repo>/install.linux.sh --update (install.windows.ps1 -Update on Windows) (repo = CARGO_MANIFEST_DIR/../.. at build time, or --repo / TERRAFORME_REPO); without that repo (release binary) it runs the install.sh / install.ps1 below from GitHub
+terraforme upgrade                           # always installs the latest GitHub release: runs the install.sh / install.ps1 below (no Rust, even from a clone)
+terraforme upgrade --dev                     # execs <repo>/install.linux.sh --update (install.windows.ps1 -Update on Windows) (repo = CARGO_MANIFEST_DIR/../.. at build time, or --repo / TERRAFORME_REPO); --dist/--no-pull require --dev
 curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.sh | sh    # release binaries, no Rust (Linux x86_64/aarch64 musl)
 irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex         # same on Windows; install.ps1 must stay ASCII and wrapped in `& { }` (runs in the user's session: no `exit`)
 

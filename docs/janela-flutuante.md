@@ -109,7 +109,7 @@ em escala 3 sem suavização.
   de instalação e o `terraforme upgrade` não o instalam e só o atualizam (`terraforme plugin
   sync`) quando ele já está instalado **e** ligado; desligado, continua como está.
 - No Linux, a extensão do GNOME só é instalada pelo `install.linux.sh` com o mascote ligado: depois
-  de `terraforme config --pet true`, rode `terraforme upgrade` (ou o script) para instalá-la.
+  de `terraforme config --pet true`, rode `terraforme upgrade --dev` (ou o script) para instalá-la.
 - Os binários do release do terraforme (`install.sh`/`install.ps1`) não o trazem: a build estática
   com musl não carrega as bibliotecas gráficas (X11/Wayland/OpenGL).
 - `terraforme pet` procura o binário na pasta de instalação dos plugins, depois ao lado do

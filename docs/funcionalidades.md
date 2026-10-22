@@ -287,16 +287,18 @@ Detalhes: [janela-flutuante.md](janela-flutuante.md).
 ## 12. Atualizar e reiniciar
 
 ```bash
-terraforme upgrade              # no repositório: git pull + compila + reinstala
-terraforme upgrade --no-pull    # só recompila
-terraforme upgrade --dist       # build com LTO (mais lenta)
-terraforme upgrade --repo DIR   # outro repositório (ou TERRAFORME_REPO)
-terraforme upgrade --restart    # reinicia o terraforme no fim, sem perguntar
+terraforme upgrade                   # baixa e instala a última release
+terraforme upgrade --dev             # pelo repositório: git pull + compila + reinstala
+terraforme upgrade --dev --no-pull   # só recompila
+terraforme upgrade --dev --dist      # build com LTO (mais lenta)
+terraforme upgrade --dev --repo DIR  # outro repositório (ou TERRAFORME_REPO)
+terraforme upgrade --restart         # reinicia o terraforme no fim, sem perguntar
 terraforme restart
 ```
 
-Sem o repositório (binário de release), o `upgrade` baixa a última release com o `install.sh` /
-`install.ps1`. O `restart` encerra todos os `terraforme-mcp`, sobe o novo e reabre a janela
+O `upgrade` sempre baixa a última release com o `install.sh` / `install.ps1` (sem Rust), mesmo
+num terraforme compilado de um clone; o repositório (git pull + compilação) só com `--dev`, e
+`--dist`/`--no-pull` só valem com ele. O `restart` encerra todos os `terraforme-mcp`, sobe o novo e reabre a janela
 flutuante; os terminais abertos se registram sozinhos no daemon novo, mas os agentes só voltam a
 usar o MCP depois de reiniciados (`Ctrl+Alt+R`). Terminais anteriores à 0.22.2 não se reconectam.
 
