@@ -43,6 +43,13 @@ pub struct TuiConfig {
     pub mouse: bool,
     /// Copia o texto para a área de transferência ao soltar o botão do mouse.
     pub copy_on_select: bool,
+    /// Abre a janela flutuante com o mascote (`terraforme pet`) junto com o
+    /// `terraforme cli`. Só no Linux por enquanto.
+    pub pet: bool,
+    /// Middleware (experimental): as instâncias novas conversam com o agente
+    /// por um chat desenhado pela própria TUI ([`crate::chat`]) em vez do
+    /// terminal dele. Só nos agentes com `Adapter::chat_args`.
+    pub middleware: bool,
 }
 
 impl Default for TuiConfig {
@@ -50,6 +57,8 @@ impl Default for TuiConfig {
         Self {
             mouse: true,
             copy_on_select: true,
+            pet: false,
+            middleware: false,
         }
     }
 }
@@ -147,5 +156,6 @@ mod tests {
         let config: Config = toml::from_str("[tui]\nmouse = false").unwrap();
         assert!(!config.tui.mouse);
         assert!(config.tui.copy_on_select);
+        assert!(!config.tui.middleware);
     }
 }

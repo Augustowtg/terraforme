@@ -56,14 +56,20 @@ impl ClientRegistry {
         let count = map.len();
         drop(map);
         if count == 0 {
-            self.schedule_shutdown();
+            self.schedule_shutdown(self.grace_seconds);
         }
     }
 
-    pub fn heartbeat(&self, client_id: &str) {
+    /// `false` se o cliente não está registrado (o terminal se registrou num
+    /// daemon que já encerrou): ele então se registra de novo.
+    pub fn heartbeat(&self, client_id: &str) -> bool {
         let mut map = self.clients.lock().unwrap();
-        if let Some(info) = map.get_mut(client_id) {
-            info.last_heartbeat = Instant::now();
+        match map.get_mut(client_id) {
+            Some(info) => {
+                info.last_heartbeat = Instant::now();
+                true
+            }
+            None => false,
         }
     }
 
@@ -80,9 +86,10 @@ impl ClientRegistry {
         self.clients.lock().unwrap().len()
     }
 
-    fn schedule_shutdown(&self) {
+    /// Encerra o daemon se, passados `grace` segundos, não houver clientes.
+    /// Chamado também ao subir: um daemon que ninguém usou não fica no ar.
+    pub fn schedule_shutdown(&self, grace: u64) {
         let tx = self.shutdown_tx.clone();
-        let grace = self.grace_seconds;
         let clients = self.clients.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(grace)).await;
@@ -133,5 +140,19 @@ impl ClientRegistry {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heartbeat_of_an_unknown_client_asks_it_to_register_again() {
+        let (tx, _rx) = watch::channel(false);
+        let registry = ClientRegistry::new(5, Arc::new(tx), Hub::default());
+        assert!(!registry.heartbeat("tui"));
+        registry.register("tui".into(), std::process::id(), "127.0.0.1:1".into());
+        assert!(registry.heartbeat("tui"));
     }
 }

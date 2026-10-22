@@ -1,5 +1,6 @@
 //! Ferramentas MCP expostas pelo daemon.
 
+pub mod manage;
 pub mod messaging;
 pub mod spawn_subagent;
 

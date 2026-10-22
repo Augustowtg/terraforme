@@ -1,0 +1,7 @@
+{
+  "uuid": "terraforme@augustowtg.github.io",
+  "name": "terraforme",
+  "description": "Deixa a janela flutuante do terraforme trazer para frente o terminal de uma instância (o Wayland não deixa um app ativar a janela de outro).",
+  "url": "https://github.com/Augustowtg/terraforme",
+  "shell-version": ["45", "46", "47", "48", "49"]
+}

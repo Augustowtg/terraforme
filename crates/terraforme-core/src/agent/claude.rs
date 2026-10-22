@@ -18,10 +18,11 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use super::{Adapter, Mode, Setup, home, read_json, write_json};
+use crate::chat;
 use crate::config::Config;
 use crate::extension::Extension;
 use crate::limits::Quota;
-use crate::usage::{Usage, parse_timestamp};
+use crate::usage::{Live, Usage, parse_timestamp};
 
 /// Nome do servidor MCP que o `ai-memory setup` registra no Claude.
 const AI_MEMORY_MCP: &str = "ai-memory";
@@ -88,10 +89,13 @@ impl Adapter for Claude {
         setup.args.push(
             json!({
                 "deniedMcpServers": [{ "serverName": AI_MEMORY_MCP }],
-                // A conversa entre instâncias não pede confirmação a cada mensagem.
+                // A conversa e a delegação entre instâncias não pedem
+                // confirmação a cada chamada; fechar uma instância pede.
                 "permissions": { "allow": [
                     format!("mcp__{TERRAFORME_MCP}__list_instances"),
                     format!("mcp__{TERRAFORME_MCP}__send_message"),
+                    format!("mcp__{TERRAFORME_MCP}__open_instance"),
+                    format!("mcp__{TERRAFORME_MCP}__delegate_task"),
                 ] },
             })
             .to_string()
@@ -118,6 +122,31 @@ impl Adapter for Claude {
         Some(vec!["--mcp-config".into(), config.to_string().into()])
     }
 
+    fn chat_args(&self) -> Option<Vec<String>> {
+        Some(chat::CLAUDE_ARGS.iter().map(|a| a.to_string()).collect())
+    }
+
+    fn chat_input(&self, text: &str, _ctx: &chat::ChatCtx) -> String {
+        chat::claude_input(text)
+    }
+
+    fn chat_events(&self, line: &str, _ctx: &chat::ChatCtx) -> Vec<chat::ChatEvent> {
+        chat::claude_events(line)
+    }
+
+    fn chat_start(&self, _ctx: &chat::ChatCtx) -> Vec<String> {
+        vec![chat::claude_initialize()]
+    }
+
+    fn chat_permission(
+        &self,
+        permission: &chat::Permission,
+        answer: chat::Answer,
+        _ctx: &chat::ChatCtx,
+    ) -> Option<String> {
+        Some(chat::claude_permission(permission, answer))
+    }
+
     fn session_args(&self, session: &str) -> Option<Vec<String>> {
         Some(vec!["--session-id".into(), session.into()])
     }
@@ -135,6 +164,15 @@ impl Adapter for Claude {
 
     fn usage(&self, cwd: &Path, launched: SystemTime, session: Option<&str>) -> Result<Usage> {
         crate::usage::collect(cwd, launched, session)
+    }
+
+    fn live_usage(
+        &self,
+        cwd: &Path,
+        launched: SystemTime,
+        session: Option<&str>,
+    ) -> Result<Option<Live>> {
+        crate::usage::live(cwd, launched, session)
     }
 
     /// Uso do plano em `api.anthropic.com/api/oauth/usage`, no formato

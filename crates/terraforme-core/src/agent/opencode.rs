@@ -24,6 +24,13 @@
 //! que já roda com a configuração dele; com a flag, cada sessão sobe o próprio
 //! servidor, que é quem lê a `OPENCODE_CONFIG_CONTENT` (e fica dentro do AI
 //! Jail junto com o agente).
+//!
+//! No modo Middleware ([`crate::chat`]) o `opencode acp` vira um servidor do
+//! Agent Client Protocol no stdio: a flag `--standalone` do `opencode run` não
+//! entra aqui ([`Adapter::chat_drop_args`]) e cada instância abre a própria
+//! sessão no handshake `initialize` → `session/new`. Os MCP do modo continuam
+//! no lugar: a `session/new` só acrescenta os servidores que o cliente manda,
+//! e o terraforme não manda nenhum.
 
 use std::env;
 use std::fs;
@@ -34,6 +41,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use super::{Adapter, Mode, Setup, home, read_json, write_json, write_private};
+use crate::chat;
 use crate::config::Config;
 use crate::extension::{Extension, strip_ansi};
 use crate::status::{State, find_in_path, version_of};
@@ -131,6 +139,43 @@ impl Adapter for OpenCode {
             setup.jail_maps = maps;
         }
         Ok(setup)
+    }
+
+    fn chat_args(&self) -> Option<Vec<String>> {
+        Some(chat::OPENCODE_ARGS.iter().map(|a| a.to_string()).collect())
+    }
+
+    /// O `--standalone` que o [`OpenCode::setup`] acrescenta é do `opencode
+    /// run`; o `opencode acp` recusa a flag.
+    fn chat_drop_args(&self) -> &'static [&'static str] {
+        &["--standalone"]
+    }
+
+    /// As mensagens vão num `session/prompt`, que precisa da `sessionId` que
+    /// o handshake abre.
+    fn chat_waits_session(&self) -> bool {
+        true
+    }
+
+    fn chat_input(&self, text: &str, ctx: &chat::ChatCtx) -> String {
+        chat::acp_input(text, ctx.session.as_deref())
+    }
+
+    fn chat_events(&self, line: &str, ctx: &chat::ChatCtx) -> Vec<chat::ChatEvent> {
+        chat::acp_events(line, ctx)
+    }
+
+    fn chat_start(&self, _ctx: &chat::ChatCtx) -> Vec<String> {
+        vec![chat::acp_initialize()]
+    }
+
+    fn chat_permission(
+        &self,
+        permission: &chat::Permission,
+        answer: chat::Answer,
+        _ctx: &chat::ChatCtx,
+    ) -> Option<String> {
+        Some(chat::acp_permission(permission, answer))
     }
 
     /// `--continue` e `--session` já escolhem a sessão.

@@ -1,5 +1,7 @@
-//! UI web do daemon (`/ui`): instâncias de todos os spaces, as mensagens
-//! entre elas e o consumo gravado por space e agente (`/api/usage`). Ligada por `[mcp] ui` no config.toml, lido a cada pedido, então
+//! UI web do daemon (`/ui`, também em `GET /`): a página principal
+//! "Terraforme instâncias" lista, por space, os agentes abertos no computador
+//! (`Agente 1 (Claude)`, `Agente 2 (Opencode)`…), seguida das mensagens
+//! entre eles e o consumo gravado por space e agente (`/api/usage`). Ligada por `[mcp] ui` no config.toml, lido a cada pedido, então
 //! ligar/desligar vale sem reiniciar o daemon.
 
 use axum::Json;
@@ -23,7 +25,7 @@ fn enabled() -> bool {
 
 /// Só aceita a própria página: `Host` local (contra DNS rebinding) e, se
 /// houver, `Origin` local (contra outro site postando no daemon).
-fn local(headers: &HeaderMap) -> bool {
+pub(crate) fn local(headers: &HeaderMap) -> bool {
     let is_local = |value: &str| {
         let host = value
             .strip_prefix("http://")
