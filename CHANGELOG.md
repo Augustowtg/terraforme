@@ -5,6 +5,28 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.26.0 - 2026-10-22
+
+### Adicionado
+
+- Windows: janela flutuante com o mascote (`terraforme pet`, plugin `pet`). `terraforme plugin
+  install pet` passa a funcionar no Windows: baixa `terraforme-pet-x86_64-pc-windows-msvc.zip` da
+  release do plugin (conferido pelo `.sha256`, pelo PowerShell) e, sem ele, compila com `cargo
+  install --git`. Um `.exe` do plugin em uso é renomeado para `.old` em vez de sobrescrito.
+- Windows: o aviso de agente que terminou vira uma notificação do sistema (toast), e escolher uma
+  instância na janela flutuante traz para frente a janela do terminal dela (Windows Terminal,
+  console clássico ou o terminal do VS Code).
+
+### Corrigido
+
+- `install.windows.ps1 -Update` (e `terraforme upgrade`) não aborta mais com `NativeCommandError`
+  quando a branch não tem upstream ou a pasta não é um clone git (ZIP): avisa e compila o código
+  local (#21, primeira parte).
+- `terraforme plugin remove pet` / `terraforme restart` fecham o mascote no Windows (`taskkill`, em
+  vez do `kill` que só existe no Unix).
+- `install.windows.ps1` atualiza o mascote quando ele já está instalado e o remove no
+  `-Uninstall`, como o `install.linux.sh`.
+
 ## 0.25.0 - 2026-10-22
 
 ### Adicionado

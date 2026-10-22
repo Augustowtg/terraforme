@@ -30,6 +30,9 @@ $Target = Join-Path $BinDir $BinName
 # Daemon MCP compartilhado (conversa entre instâncias, subagentes), iniciado
 # pelo `terraforme cli` a partir do PATH.
 $McpTarget = Join-Path $BinDir 'terraforme-mcp.exe'
+# Janela flutuante com o mascote (`terraforme pet`): plugin do repositório
+# Augustowtg/terraforme-pet, instalado por `terraforme plugin install pet`.
+$PetTarget = Join-Path $BinDir 'terraforme-pet.exe'
 $RepoDir = $PSScriptRoot
 $Profile_ = if ($Dist) { 'dist' } else { 'release' }
 
@@ -60,6 +63,7 @@ if ($Uninstall) {
     Remove-Item -Force $Target
     Remove-Item -Force -ErrorAction SilentlyContinue "$Target.old", "$Target.new"
     Remove-Item -Force -ErrorAction SilentlyContinue $McpTarget, "$McpTarget.old", "$McpTarget.new"
+    Remove-Item -Force -ErrorAction SilentlyContinue $PetTarget, "$PetTarget.old", "$PetTarget.new"
     $userPath = Get-UserPath
     if (Test-InPath $userPath $BinDir) {
         $kept = $userPath.Split(';') | Where-Object { $_ -and ($_.TrimEnd('\') -ine $BinDir.TrimEnd('\')) }
@@ -75,15 +79,28 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     Die 'cargo não encontrado. Instale o Rust: https://rustup.rs (com o "Desktop development with C++" do Visual Studio Build Tools)'
 }
 
+# `git` no repositório. No PowerShell 5.1, com `$ErrorActionPreference = 'Stop'`,
+# o stderr de um comando nativo (mesmo com `2>$null`) vira NativeCommandError e
+# encerra o script antes de o `$LASTEXITCODE` ser checado; aqui só vale o código
+# de saída (a preferência muda só dentro da função).
+function Invoke-Git {
+    $ErrorActionPreference = 'Continue'
+    & git -C $RepoDir @args 2>&1 | ForEach-Object { "$_" }
+}
+
 if ($Update) {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Die 'git não encontrado.' }
-    git -C $RepoDir rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null | Out-Null
+    Invoke-Git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Warn 'A branch atual não tem upstream — compilando o código local sem git pull.'
+        if (Test-Path (Join-Path $RepoDir '.git')) {
+            Warn 'A branch atual não tem upstream — compilando o código local sem git pull.'
+        } else {
+            Warn "$RepoDir não é um clone git (ZIP?) — compilando o código local sem git pull."
+        }
     } else {
-        $branch = git -C $RepoDir rev-parse --abbrev-ref HEAD
+        $branch = Invoke-Git rev-parse --abbrev-ref HEAD
         Info "Atualizando o repositório ($branch)…"
-        git -C $RepoDir pull --ff-only
+        Invoke-Git pull --ff-only
         if ($LASTEXITCODE -ne 0) {
             Die "git pull falhou (alterações locais ou branch divergente). Resolva em $RepoDir e rode de novo."
         }
@@ -114,6 +131,11 @@ Info "Instalando em $Target"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 Install-Exe $BinName $Target
 Install-Exe 'terraforme-mcp.exe' $McpTarget
+# O mascote é um plugin: atualiza o que já estava instalado.
+if (Test-Path $PetTarget) {
+    & $Target plugin update pet
+    if ($LASTEXITCODE -ne 0) { Warn 'Falha ao atualizar o mascote — rode `terraforme plugin update pet`.' }
+}
 
 $current = (& $Target version | Out-String).Trim()
 if ($previous -eq $current) {

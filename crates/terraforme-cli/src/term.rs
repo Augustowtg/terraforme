@@ -609,7 +609,9 @@ impl Field {
                 (true, None) => "online (daemon fora do ar)".into(),
                 (false, _) => "offline".into(),
             },
-            Field::Pet if !terraforme_core::pet::is_supported() => "só no Linux (roadmap)".into(),
+            Field::Pet if !terraforme_core::pet::is_supported() => {
+                "só no Linux e no Windows".into()
+            }
             Field::Pet if config.tui.pet => "ativo".into(),
             Field::Pet => "inativo".into(),
             Field::Mcp => daemon().map_or("offline".into(), |lock| {
@@ -1010,7 +1012,8 @@ impl Form {
         use terraforme_core::pet;
         if !pet::is_supported() {
             self.message = Some(Err(
-                "a janela flutuante só existe no Linux por enquanto (ROADMAP.md)".into(),
+                "a janela flutuante só existe no Linux e no Windows por enquanto (ROADMAP.md)"
+                    .into(),
             ));
             return;
         }

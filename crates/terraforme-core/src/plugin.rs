@@ -62,7 +62,7 @@ const KNOWN: &[Known] = &[Known {
     bin: "terraforme-pet",
     repo: "Augustowtg/terraforme-pet",
     min_terraforme: Some("0.25.0"),
-    platforms: &["linux"],
+    platforms: &["linux", "windows"],
 }];
 
 impl From<&Known> for Manifest {
@@ -209,7 +209,8 @@ pub trait Source {
 /// para a última tentativa.
 pub fn sources() -> Vec<Box<dyn Source>> {
     let mut list: Vec<Box<dyn Source>> = Vec::new();
-    if Release::target().is_some() && find_in_path("curl").is_some() {
+    // No Windows o download é pelo PowerShell, que sempre existe.
+    if Release::target().is_some() && (cfg!(windows) || find_in_path("curl").is_some()) {
         list.push(Box::new(Release));
     }
     if find_in_path("cargo").is_some() {
@@ -219,7 +220,8 @@ pub fn sources() -> Vec<Box<dyn Source>> {
 }
 
 /// Binário pronto do GitHub Release mais recente: o asset
-/// `<bin>-<target>.tar.gz`, conferido contra o `.sha256` publicado ao lado.
+/// `<bin>-<target>.tar.gz` (`.zip` no Windows), conferido contra o
+/// `.sha256` publicado ao lado.
 struct Release;
 
 /// Baixa `$1/$2` e `$2.sha256`, confere e instala o binário `$3` em `$4`.
@@ -236,6 +238,35 @@ install -m 755 "$3" "$4/$3.new"
 mv -f "$4/$3.new" "$4/$3"
 "#;
 
+/// O mesmo no Windows (PowerShell 5.1), com os valores nas variáveis
+/// `TF_URL`, `TF_ASSET` (`.zip`), `TF_BIN` (com `.exe`) e `TF_DIR`. Um `.exe`
+/// em uso não pode ser sobrescrito, mas pode ser renomeado: o atual vira
+/// `.old` e é apagado quando possível. ASCII só, pelo console.
+const RELEASE_PS1: &str = r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$tmp = Join-Path ([IO.Path]::GetTempPath()) ('terraforme-plugin-' + [Guid]::NewGuid())
+New-Item -ItemType Directory -Path $tmp | Out-Null
+try {
+    $zip = Join-Path $tmp $env:TF_ASSET
+    Invoke-WebRequest -UseBasicParsing "$env:TF_URL/$env:TF_ASSET" -OutFile $zip
+    Invoke-WebRequest -UseBasicParsing "$env:TF_URL/$env:TF_ASSET.sha256" -OutFile "$zip.sha256"
+    $expected = ((Get-Content -Raw "$zip.sha256").Trim() -split '\s+')[0]
+    $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash
+    if ($actual -ne $expected) { throw "sha256 de $env:TF_ASSET nao confere" }
+    Expand-Archive -Force $zip (Join-Path $tmp 'x')
+    New-Item -ItemType Directory -Force -Path $env:TF_DIR | Out-Null
+    $dest = Join-Path $env:TF_DIR $env:TF_BIN
+    Copy-Item -Force (Join-Path $tmp "x\$env:TF_BIN") "$dest.new"
+    Remove-Item -Force -ErrorAction SilentlyContinue "$dest.old"
+    if (Test-Path $dest) { Move-Item -Force $dest "$dest.old" }
+    Move-Item -Force "$dest.new" $dest
+    Remove-Item -Force -ErrorAction SilentlyContinue "$dest.old"
+} finally {
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tmp
+}
+"#;
+
 impl Release {
     /// Alvo (target triple) dos assets publicados para esta máquina. Os
     /// plugins com janela usam glibc (o musl não abre X11/Wayland/GL).
@@ -244,8 +275,19 @@ impl Release {
         match env::consts::OS {
             "linux" => Some(format!("{arch}-unknown-linux-gnu")),
             "macos" => Some(format!("{arch}-apple-darwin")),
+            "windows" => Some(format!("{arch}-pc-windows-msvc")),
             _ => None,
         }
+    }
+
+    /// Nome do asset do plugin para `target`.
+    fn asset(bin: &str, target: &str) -> String {
+        let ext = if target.contains("windows") {
+            "zip"
+        } else {
+            "tar.gz"
+        };
+        format!("{bin}-{target}.{ext}")
     }
 }
 
@@ -260,7 +302,21 @@ impl Source for Release {
             "https://github.com/{}/releases/latest/download",
             plugin.repo
         );
-        let asset = format!("{}-{target}.tar.gz", plugin.bin);
+        let asset = Self::asset(&plugin.bin, &target);
+        if cfg!(windows) {
+            return run(Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                ])
+                .args(["-Command", RELEASE_PS1])
+                .env("TF_URL", &url)
+                .env("TF_ASSET", &asset)
+                .env("TF_BIN", exe(&plugin.bin))
+                .env("TF_DIR", dir));
+        }
         run(Command::new("sh")
             .args(["-c", RELEASE_SH, "sh", &url, &asset, &plugin.bin])
             .arg(dir))
@@ -293,8 +349,7 @@ impl Source for Cargo {
             let tmp = dir.join(format!("{name}.new"));
             fs::copy(root.join("bin").join(&name), &tmp)
                 .with_context(|| format!("copiando {name} para {}", dir.display()))?;
-            fs::rename(&tmp, dir.join(&name))?;
-            Ok(())
+            replace(&tmp, &dir.join(&name))
         })();
         let _ = fs::remove_dir_all(&root);
         result
@@ -405,6 +460,20 @@ pub fn locate(bin: &str) -> Option<PathBuf> {
     (other.is_absolute() && other.is_file()).then_some(other)
 }
 
+/// Põe `new` no lugar de `dest`. O Windows não deixa sobrescrever um `.exe`
+/// em uso (ex.: a janela do mascote aberta), mas deixa renomeá-lo: o atual
+/// vira `.old`, apagado quando possível (ou na próxima instalação).
+fn replace(new: &Path, dest: &Path) -> Result<()> {
+    let old = dest.with_extension("old");
+    let _ = fs::remove_file(&old);
+    if cfg!(windows) && dest.exists() {
+        fs::rename(dest, &old).with_context(|| format!("renomeando {}", dest.display()))?;
+    }
+    fs::rename(new, dest).with_context(|| format!("instalando {}", dest.display()))?;
+    let _ = fs::remove_file(&old);
+    Ok(())
+}
+
 fn exe(bin: &str) -> String {
     format!("{bin}{}", env::consts::EXE_SUFFIX)
 }
@@ -441,7 +510,7 @@ description = "Janela flutuante com o mascote do terraforme"
 bin = "terraforme-pet"
 repo = "Augustowtg/terraforme-pet"
 min_terraforme = "0.24.0"
-platforms = ["linux"]
+platforms = ["linux", "windows"]
 "#,
         )
         .unwrap();
@@ -457,6 +526,31 @@ platforms = ["linux"]
         let mut m = Manifest::known("pet").unwrap();
         m.bin = "../evil".into();
         assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn release_asset_is_zip_on_windows() {
+        assert_eq!(
+            Release::asset("terraforme-pet", "x86_64-pc-windows-msvc"),
+            "terraforme-pet-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            Release::asset("terraforme-pet", "x86_64-unknown-linux-gnu"),
+            "terraforme-pet-x86_64-unknown-linux-gnu.tar.gz"
+        );
+    }
+
+    #[test]
+    fn replace_swaps_the_binary() {
+        let dir = env::temp_dir().join(format!("terraforme-replace-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (new, dest) = (dir.join("bin.new"), dir.join("bin.exe"));
+        fs::write(&dest, "velho").unwrap();
+        fs::write(&new, "novo").unwrap();
+        replace(&new, &dest).unwrap();
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "novo");
+        assert!(!new.exists() && !dir.join("bin.old").exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

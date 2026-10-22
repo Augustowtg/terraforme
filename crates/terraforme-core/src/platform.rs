@@ -74,6 +74,56 @@ pub fn detach(command: &mut Command) {
     let _ = command;
 }
 
+/// Roda o processo sem abrir uma janela de console no Windows (ex.: o
+/// `powershell` chamado pela janela flutuante, que não tem console).
+pub fn no_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+/// Pede ao processo `pid` para sair (`kill`/`SIGTERM` no Unix; `taskkill`
+/// no Windows, que fecha a janela de um programa gráfico como um clique no
+/// X e só força quando ele não sai). `true` se o pedido foi aceito.
+pub fn kill(pid: u32) -> std::io::Result<bool> {
+    use std::process::Stdio;
+
+    let run = |program: &str, args: &[&str]| {
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        no_window(&mut command);
+        command.status().map(|s| s.success())
+    };
+    let pid = pid.to_string();
+    if cfg!(windows) {
+        Ok(run("taskkill", &["/PID", &pid])? || run("taskkill", &["/F", "/PID", &pid])?)
+    } else {
+        run("kill", &[&pid])
+    }
+}
+
+/// Deixa qualquer processo trazer a própria janela para frente logo depois
+/// (o Windows só deixa quem recebeu o último clique fazer isso): a janela
+/// flutuante chama antes de pedir ao terminal para vir para frente
+/// ([`raise_terminal`]). Nada nos outros sistemas.
+pub fn allow_foreground() {
+    #[cfg(windows)]
+    // SAFETY: chamada sem ponteiros.
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+        AllowSetForegroundWindow(ASFW_ANY);
+    }
+}
+
 /// Encerra todos os processos do usuário com o executável `name` (sem
 /// extensão), menos este, e espera até 3s que saiam. Devolve quantos havia.
 /// No Linux procura em `/proc/<pid>/comm` e manda `SIGTERM` (`kill`); no
@@ -167,8 +217,11 @@ pub fn open_url(url: &str) -> std::io::Result<()> {
 /// uma, trocando de área de trabalho e saindo do minimizado — único jeito no
 /// Wayland, onde um app não pode ativar a janela de outro. Sem ela, só no X11,
 /// com `xdotool` ou `wmctrl`: a janela de `$WINDOWID` ou, sem ela, a do
-/// primeiro processo pai que tiver uma. O Windows ainda está no roadmap.
-/// Devolve `false` quando não conseguiu.
+/// primeiro processo pai que tiver uma. No Windows, a janela dona do console
+/// (a do Windows Terminal; no console clássico, o próprio console) ou, sem
+/// ela, a do primeiro processo pai que tiver uma (ex.: o VS Code), com
+/// `SetForegroundWindow` — funciona porque a janela flutuante chama
+/// [`allow_foreground`] antes. Devolve `false` quando não conseguiu.
 pub fn raise_terminal() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -227,8 +280,117 @@ pub fn raise_terminal() -> bool {
         quiet("xdotool", &["windowactivate", &window]).is_some()
             || quiet("wmctrl", &["-i", "-a", &window]).is_some()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        windows::raise_terminal()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     false
+}
+
+#[cfg(windows)]
+mod windows {
+    use windows_sys::Win32::Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE, LPARAM};
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GW_OWNER, GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        SW_RESTORE, SetForegroundWindow, ShowWindow,
+    };
+
+    pub fn raise_terminal() -> bool {
+        // SAFETY: só lê handles de janela devolvidos pelo próprio sistema.
+        let console = unsafe { GetConsoleWindow() };
+        let window = (!console.is_null())
+            .then(|| {
+                // No Windows Terminal o console é uma janela escondida cuja
+                // dona é a janela do terminal.
+                let owner = unsafe { GetWindow(console, GW_OWNER) };
+                if owner.is_null() { console } else { owner }
+            })
+            .filter(|&w| unsafe { IsWindowVisible(w) } != 0)
+            .or_else(|| ancestors().into_iter().find_map(window_of));
+        let Some(window) = window else {
+            return false;
+        };
+        // SAFETY: `window` é um handle de janela válido de `EnumWindows`/`GetWindow`.
+        unsafe {
+            if IsIconic(window) != 0 {
+                ShowWindow(window, SW_RESTORE);
+            }
+            SetForegroundWindow(window) != 0
+        }
+    }
+
+    /// PIDs dos processos pais deste, do mais próximo ao mais distante.
+    fn ancestors() -> Vec<u32> {
+        let mut parent = std::collections::HashMap::new();
+        // SAFETY: o snapshot é checado e fechado aqui; `entry` tem o `dwSize` certo.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Vec::new();
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+            let mut ok = Process32FirstW(snapshot, &mut entry) != 0;
+            while ok {
+                parent.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+                ok = Process32NextW(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+        }
+        let mut list = Vec::new();
+        let mut pid = std::process::id();
+        // O PID de um pai que já saiu pode ter sido reusado: o limite evita ciclos.
+        while let Some(&ppid) = parent.get(&pid) {
+            if ppid == 0 || list.len() >= 16 || list.contains(&ppid) {
+                break;
+            }
+            list.push(ppid);
+            pid = ppid;
+        }
+        list
+    }
+
+    /// A primeira janela principal visível do processo `pid`.
+    fn window_of(pid: u32) -> Option<HWND> {
+        struct Search {
+            pid: u32,
+            found: HWND,
+        }
+        unsafe extern "system" fn each(window: HWND, data: LPARAM) -> windows_sys::core::BOOL {
+            // SAFETY: `data` é o `&mut Search` passado a `EnumWindows` abaixo.
+            let search = unsafe { &mut *(data as *mut Search) };
+            let mut owner = 0u32;
+            unsafe { GetWindowThreadProcessId(window, &mut owner) };
+            let main = unsafe { GetWindow(window, GW_OWNER) }.is_null();
+            if owner == search.pid && main && unsafe { IsWindowVisible(window) } != 0 {
+                search.found = window;
+                return 0;
+            }
+            1
+        }
+        let mut search = Search {
+            pid,
+            found: std::ptr::null_mut(),
+        };
+        // SAFETY: `search` vive até o fim da enumeração, que é síncrona.
+        unsafe { EnumWindows(Some(each), &mut search as *mut Search as LPARAM) };
+        (!search.found.is_null()).then_some(search.found)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn ancestors_start_at_the_parent() {
+            // O `cargo test` sempre tem um pai vivo.
+            assert!(!super::ancestors().is_empty());
+        }
+    }
 }
 
 /// PIDs dos processos pais deste, do mais próximo ao mais distante.

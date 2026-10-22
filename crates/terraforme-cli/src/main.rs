@@ -247,7 +247,7 @@ Preferências por pasta: `terraforme space <nome> --mode/--jail/--agent/--accoun
         #[arg(long = "mcp-ui", value_name = "BOOL", action = clap::ArgAction::Set, help_heading = "UI web")]
         mcp_ui: Option<bool>,
         /// Abre (true) ou não (false) a janela flutuante com o mascote junto com o
-        /// `terraforme cli` (só no Linux)
+        /// `terraforme cli` (Linux e Windows)
         #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, help_heading = "Janela flutuante")]
         pet: Option<bool>,
         /// Sem valor, lista as contas; com `NOME=PASTA`, registra ou atualiza uma. A pasta é o
@@ -337,7 +337,7 @@ abertos neles só voltam a usar o MCP depois de reiniciados (Ctrl+Alt+R).
 Terminais abertos antes da 0.22.2 não se reconectam: feche e abra de novo.")]
     Restart,
     /// Abre a janela flutuante com o mascote: avisa quando os agentes terminam e, com um
-    /// clique, leva à instância escolhida (só no Linux por enquanto)
+    /// clique, leva à instância escolhida (Linux e Windows)
     #[command(after_help = "\
 Para abrir junto com o terraforme cli: terraforme config --pet true")]
     Pet,
@@ -857,7 +857,7 @@ fn config(
     };
     println!("  UI web    {ui}");
     let pet = if !pet::is_supported() {
-        "só no Linux por enquanto (veja o ROADMAP.md)"
+        "só no Linux e no Windows por enquanto (veja o ROADMAP.md)"
     } else if plugin::locate(pet::BIN).is_none() {
         "não instalada (instale com `terraforme plugin install pet`)"
     } else if config.tui.pet {
@@ -1274,12 +1274,8 @@ fn restart() -> Result<()> {
     };
     println!("✔ terraforme-mcp no ar na porta {}{old}", lock.port);
     if pet::running().is_some() {
+        // `stop` espera a janela antiga sair.
         pet::stop()?;
-        // A janela antiga leva um instante para apagar o lock.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while pet::running().is_some() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
         pet::start()?;
         println!("✔ Janela flutuante reaberta");
     }
