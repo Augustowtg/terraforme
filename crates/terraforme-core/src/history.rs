@@ -1,5 +1,6 @@
-//! Histórico do consumo de tokens por space e agente, num SQLite local
-//! (`<root>/usage.db`, [`crate::space::root`]).
+//! Histórico do terraforme num SQLite local (`<root>/usage.db`,
+//! [`crate::space::root`]): o consumo de tokens por space e agente e as
+//! pastas em que o `terraforme cli` foi aberto ([`History::record_launch`]).
 //!
 //! O `terraforme cli` grava uma linha por sessão de cada instância (o total
 //! dela até o momento, substituído a cada gravação) e a aba Consumo e a UI
@@ -35,7 +36,25 @@ CREATE TABLE IF NOT EXISTS sessions (
     responses   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_space_agent ON sessions (space, agent);
+CREATE TABLE IF NOT EXISTS launches (
+    path  TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    last  INTEGER NOT NULL
+);
 ";
+
+/// Pasta em que o `terraforme cli` foi aberto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    pub path: PathBuf,
+    /// Agente da última abertura.
+    pub agent: String,
+    /// Quantas vezes foi aberto ali.
+    pub count: u64,
+    /// Última abertura (segundos desde a época Unix).
+    pub last: u64,
+}
 
 /// Consumo de uma sessão a gravar.
 #[derive(Debug, Clone, Copy)]
@@ -128,6 +147,39 @@ impl History {
         Ok(())
     }
 
+    /// Registra uma abertura do `terraforme cli` na pasta `path`.
+    pub fn record_launch(&self, path: &Path, agent: &str) -> Result<()> {
+        self.record_launch_at(path, agent, secs(SystemTime::now()))
+    }
+
+    fn record_launch_at(&self, path: &Path, agent: &str, at: u64) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO launches (path, agent, count, last) VALUES (?1, ?2, 1, ?3)
+                 ON CONFLICT (path) DO UPDATE SET
+                     agent = excluded.agent, count = count + 1, last = excluded.last",
+                params![path.to_string_lossy(), agent, at as i64],
+            )
+            .context("gravando a pasta no histórico")?;
+        Ok(())
+    }
+
+    /// As `limit` pastas abertas mais recentemente, da mais nova para a mais antiga.
+    pub fn launches(&self, limit: usize) -> Result<Vec<Launch>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT path, agent, count, last FROM launches ORDER BY last DESC LIMIT ?1")?;
+        let rows = statement.query_map([limit as i64], |row| {
+            Ok(Launch {
+                path: PathBuf::from(row.get::<_, String>(0)?),
+                agent: row.get(1)?,
+                count: row.get::<_, i64>(2)? as u64,
+                last: row.get::<_, i64>(3)? as u64,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Consumo por space × agente, do space com mais tokens para o com menos.
     pub fn totals(&self) -> Result<Vec<SpaceUsage>> {
         self.totals_at(secs(SystemTime::now()))
@@ -215,6 +267,35 @@ mod tests {
             responses,
             ..Summary::default()
         }
+    }
+
+    #[test]
+    fn launches_keep_one_row_per_path_newest_first() {
+        let path = std::env::temp_dir().join(format!(
+            "terraforme-launches-{}/usage.db",
+            std::process::id()
+        ));
+        let db = History::open_at(&path).unwrap();
+        db.record_launch_at(Path::new("/w/web"), "claude", 10)
+            .unwrap();
+        db.record_launch_at(Path::new("/w/api"), "claude", 20)
+            .unwrap();
+        db.record_launch_at(Path::new("/w/web"), "opencode", 30)
+            .unwrap();
+
+        let launches = db.launches(10).unwrap();
+        let rows: Vec<_> = launches
+            .iter()
+            .map(|l| (l.path.to_str().unwrap(), l.agent.as_str(), l.count, l.last))
+            .collect();
+        assert_eq!(
+            rows,
+            [("/w/web", "opencode", 2, 30), ("/w/api", "claude", 1, 20)]
+        );
+        assert_eq!(db.launches(1).unwrap().len(), 1);
+
+        drop(db);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

@@ -10,6 +10,7 @@ use terraforme_core::accounts::{ClaudeAccounts, is_default_dir};
 use terraforme_core::agent::{self, CliMode, Mode, Provider};
 use terraforme_core::config::Config;
 use terraforme_core::extension::{Extension, Outcome};
+use terraforme_core::history::{History, Launch};
 use terraforme_core::jail;
 use terraforme_core::mcp;
 use terraforme_core::skill;
@@ -32,10 +33,16 @@ Primeiros passos:
   terraforme setup           configura a máquina (agentes, extensões e skills)
   terraforme cli             abre o agente no terminal do terraforme
   terraforme space --save    salva a pasta atual como space
+  terraforme --historico     pastas abertas pelo `terraforme cli` (spaces e recentes)
 
 Ajuda de um comando: terraforme <comando> --help"
 )]
 struct Cli {
+    /// Mostra as últimas pastas em que o `terraforme cli` foi aberto, divididas entre spaces e
+    /// recentes
+    #[arg(long, visible_alias = "history", display_order = 800)]
+    historico: bool,
+
     /// Exibe mensagens detalhadas
     #[arg(short, long, global = true, display_order = 900)]
     verbose: bool,
@@ -401,6 +408,9 @@ fn run(cli: Cli) -> Result<()> {
         eprintln!("[debug] {cli:?}");
     }
 
+    if cli.historico {
+        return print_history();
+    }
     let Some(command) = cli.command else {
         cli_command().print_help()?;
         return Ok(());
@@ -979,6 +989,14 @@ impl Choice {
         }
         let mut launch = agent::prepare(provider, mode, jail, args)?;
         launch.notices.extend(prepared);
+        // Histórico das pastas (`terraforme --historico`); falhar não impede a sessão.
+        if let Some(dir) = &cwd
+            && let Err(err) = History::open().and_then(|db| db.record_launch(dir, provider.id()))
+        {
+            launch
+                .warnings
+                .push(format!("histórico de pastas não gravado: {err:#}"));
+        }
         Ok(Resolved {
             provider,
             mode,
@@ -1753,6 +1771,81 @@ fn print_status() {
     }
 }
 
+/// Pastas recentes listadas em `terraforme --historico`, fora dos spaces.
+const RECENT_LIMIT: usize = 10;
+
+/// `terraforme --historico`: as pastas em que o `terraforme cli` foi aberto,
+/// primeiro os spaces (a abertura mais recente em cada um) e depois as
+/// pastas fora de space.
+fn print_history() -> Result<()> {
+    let launches = History::open()?.launches(500)?;
+    let spaces = Spaces::load()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (in_space, recent) = split_history(&launches, |path| {
+        spaces.name_containing(path).map(str::to_string)
+    });
+    let detail = |l: &Launch| format!("{} · {} · {}×", ago(now, l.last), l.agent, l.count);
+
+    println!("Spaces");
+    if in_space.is_empty() {
+        println!("  nenhum space aberto ainda — salve um com `terraforme space --save`");
+    }
+    let width = in_space
+        .iter()
+        .map(|(n, _)| n.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (name, launch) in &in_space {
+        println!(
+            "  {name:<width$}  {}  ({})",
+            launch.path.display(),
+            detail(launch)
+        );
+    }
+
+    println!("\nRecentes");
+    if recent.is_empty() {
+        println!("  nenhuma pasta fora de space");
+    }
+    for launch in recent.iter().take(RECENT_LIMIT) {
+        println!("  {}  ({})", launch.path.display(), detail(launch));
+    }
+    println!("\nAbrir um space: terraforme space <nome>");
+    Ok(())
+}
+
+/// Divide as aberturas (da mais nova para a mais antiga) entre os spaces —
+/// uma por space, a mais recente — e as pastas fora de space.
+fn split_history(
+    launches: &[Launch],
+    space_of: impl Fn(&std::path::Path) -> Option<String>,
+) -> (Vec<(String, &Launch)>, Vec<&Launch>) {
+    let mut spaces: Vec<(String, &Launch)> = Vec::new();
+    let mut recent = Vec::new();
+    for launch in launches {
+        match space_of(&launch.path) {
+            Some(name) if spaces.iter().all(|(n, _)| *n != name) => spaces.push((name, launch)),
+            Some(_) => {}
+            None => recent.push(launch),
+        }
+    }
+    (spaces, recent)
+}
+
+/// Tempo desde `then`, em português curto (`há 5 min`).
+fn ago(now: u64, then: u64) -> String {
+    match now.saturating_sub(then) {
+        s if s < 60 => "agora".into(),
+        s if s < 3600 => format!("há {} min", s / 60),
+        s if s < 86400 => format!("há {} h", s / 3600),
+        s if s < 2 * 86400 => "ontem".into(),
+        s => format!("há {} dias", s / 86400),
+    }
+}
+
 fn print_component(c: &Component) {
     match &c.state {
         State::Installed { path, version } => {
@@ -1790,6 +1883,46 @@ mod tests {
         let space = help_for(args(&["space", "--bogus"]));
         assert_eq!(space.get_bin_name(), Some("terraforme space"));
         assert_eq!(help_for(args(&["cli", "--", "space"])).get_name(), "cli");
+    }
+
+    #[test]
+    fn history_flag_is_accepted() {
+        assert!(parse(&["--historico"]).unwrap().historico);
+        assert!(parse(&["--history"]).unwrap().historico);
+    }
+
+    #[test]
+    fn history_splits_spaces_and_recent_paths() {
+        let launch = |path: &str, last| Launch {
+            path: std::path::PathBuf::from(path),
+            agent: "claude".into(),
+            count: 1,
+            last,
+        };
+        let launches = [
+            launch("/w/web/front", 50),
+            launch("/tmp/x", 40),
+            launch("/w/web", 30),
+            launch("/w/api", 20),
+        ];
+        let (spaces, recent) = split_history(&launches, |path| {
+            ["web", "api"]
+                .into_iter()
+                .find(|name| path.starts_with(format!("/w/{name}")))
+                .map(String::from)
+        });
+        let spaces: Vec<_> = spaces.iter().map(|(n, l)| (n.as_str(), l.last)).collect();
+        assert_eq!(spaces, [("web", 50), ("api", 20)]);
+        assert_eq!(recent.iter().map(|l| l.last).collect::<Vec<_>>(), [40]);
+    }
+
+    #[test]
+    fn ago_is_short_portuguese() {
+        assert_eq!(ago(100, 90), "agora");
+        assert_eq!(ago(1000, 700), "há 5 min");
+        assert_eq!(ago(10_000, 2_800), "há 2 h");
+        assert_eq!(ago(100_000, 0), "ontem");
+        assert_eq!(ago(900_000, 0), "há 10 dias");
     }
 
     #[test]

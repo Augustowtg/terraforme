@@ -16,6 +16,10 @@ em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
   a cada 60s, ao fechar ou reiniciar e ao sair. Aparece na nova sub-aba **Spaces** do Consumo e no
   box "Consumo por space" da UI web do MCP (`/api/usage`), com 24h, 7 dias, total e sessões. O
   OpenCode não informa o total da sessão e fica de fora (#29).
+- `terraforme --historico` (ou `--history`): cada `terraforme cli` guarda a pasta em que foi aberto
+  (no mesmo `usage.db`), e o comando lista as últimas divididas entre **Spaces** (a abertura mais
+  recente em cada space salvo) e **Recentes** (as 10 últimas fora de space), com quando, o agente e
+  quantas vezes.
 
 ### Alterado
 
