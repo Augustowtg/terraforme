@@ -104,8 +104,12 @@ em escala 3 sem suavização.
 - É um plugin: `terraforme plugin install pet` baixa o binário da release do
   [terraforme-pet](https://github.com/Augustowtg/terraforme-pet) (`.tar.gz` glibc no Linux, `.zip`
   no Windows) ou, sem ela, compila com `cargo install --git`. Vai para `~/.local/bin` (Linux) ou
-  para a pasta do `terraforme.exe` (Windows). `install.linux.sh` e `install.windows.ps1` o
-  atualizam quando já está instalado.
+  para a pasta do `terraforme.exe` (Windows).
+- É opcional e vem **desligado** (`[tui] pet = false`): instalar o plugin não o liga. Os scripts
+  de instalação e o `terraforme upgrade` não o instalam e só o atualizam (`terraforme plugin
+  sync`) quando ele já está instalado **e** ligado; desligado, continua como está.
+- No Linux, a extensão do GNOME só é instalada pelo `install.linux.sh` com o mascote ligado: depois
+  de `terraforme config --pet true`, rode `terraforme upgrade` (ou o script) para instalá-la.
 - Os binários do release do terraforme (`install.sh`/`install.ps1`) não o trazem: a build estática
   com musl não carrega as bibliotecas gráficas (X11/Wayland/OpenGL).
 - `terraforme pet` procura o binário na pasta de instalação dos plugins, depois ao lado do

@@ -83,6 +83,15 @@ enum PluginAction {
         #[arg(value_name = "PLUGIN")]
         name: String,
     },
+    /// Atualiza só os plugins já instalados e ligados (o mascote desligado fica como está); usado
+    /// pelos scripts de instalação e pelo `terraforme upgrade`
+    Sync,
+    /// Sai com 0 se o plugin está ligado na configuração, 1 se não (para scripts)
+    #[command(hide = true)]
+    Enabled {
+        #[arg(value_name = "PLUGIN")]
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -349,6 +358,7 @@ Exemplos:
   terraforme plugin install pet           instala a janela flutuante com o mascote
   terraforme plugin install dono/repo     instala um plugin de terceiros (repo com terraforme-plugin.toml)
   terraforme plugin update pet            baixa a última versão
+  terraforme plugin sync                  atualiza os instalados e ligados (o que o upgrade faz)
   terraforme plugin remove pet            remove")]
     Plugin {
         #[command(subcommand)]
@@ -469,6 +479,34 @@ fn plugin_command(action: PluginAction) -> Result<()> {
             );
             if out.manifest.bin == pet::BIN && pet::running().is_some() {
                 println!("  Reabra a janela para usar a versão nova: terraforme restart");
+            } else if !out.manifest.enabled(&Config::load()?) {
+                // Instalar não liga: o mascote continua opcional.
+                println!(
+                    "  Desligado: abra com `terraforme pet` ou ligue com `terraforme config --pet true`"
+                );
+            }
+        }
+        PluginAction::Sync => {
+            for synced in plugin::sync()? {
+                match synced {
+                    plugin::Synced::Updated(out) => {
+                        println!("✔ Plugin {} atualizado ({})", out.manifest.name, out.source)
+                    }
+                    plugin::Synced::Disabled(m) => println!(
+                        "  Plugin {} desligado: não atualizado (ligue com `terraforme config --{} true`)",
+                        m.name, m.name
+                    ),
+                    plugin::Synced::Failed(m, e) => eprintln!(
+                        "! Falha ao atualizar o plugin {} — rode `terraforme plugin update {}`: {e:#}",
+                        m.name, m.name
+                    ),
+                }
+            }
+        }
+        PluginAction::Enabled { name } => {
+            let manifest = plugin::Manifest::resolve(&name)?;
+            if !manifest.enabled(&Config::load()?) {
+                std::process::exit(1);
             }
         }
         PluginAction::Remove { name } => {

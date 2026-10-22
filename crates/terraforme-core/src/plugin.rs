@@ -53,6 +53,9 @@ struct Known {
     repo: &'static str,
     min_terraforme: Option<&'static str>,
     platforms: &'static [&'static str],
+    /// Se o usuário ligou o plugin na configuração; `None` = sempre ligado
+    /// quando instalado. [`sync`] só atualiza os ligados.
+    enabled: Option<fn(&Config) -> bool>,
 }
 
 /// Registro dos plugins conhecidos: um novo plugin oficial é só uma entrada.
@@ -63,6 +66,8 @@ const KNOWN: &[Known] = &[Known {
     repo: "Augustowtg/terraforme-pet",
     min_terraforme: Some("0.25.0"),
     platforms: &["linux", "windows"],
+    // Opcional: desligado até o usuário escolher (`terraforme config --pet true`).
+    enabled: Some(|config| config.tui.pet),
 }];
 
 impl From<&Known> for Manifest {
@@ -161,6 +166,16 @@ impl Manifest {
     /// Caminho do binário instalado, se houver.
     pub fn path(&self) -> Option<PathBuf> {
         locate(&self.bin)
+    }
+
+    /// O usuário quer este plugin ligado (ver [`Known::enabled`]); os de
+    /// terceiros estão ligados quando instalados.
+    pub fn enabled(&self, config: &Config) -> bool {
+        KNOWN
+            .iter()
+            .find(|k| k.name == self.name)
+            .and_then(|k| k.enabled)
+            .is_none_or(|enabled| enabled(config))
     }
 }
 
@@ -401,6 +416,38 @@ pub fn install(spec: &str) -> Result<Outcome> {
     )
 }
 
+/// O que [`sync`] fez com um plugin instalado.
+#[derive(Debug)]
+pub enum Synced {
+    /// Atualizado.
+    Updated(Outcome),
+    /// Desligado na configuração: o binário fica como está.
+    Disabled(Manifest),
+    /// A atualização falhou (o binário antigo fica).
+    Failed(Manifest, anyhow::Error),
+}
+
+/// Atualiza os plugins **já instalados** que o usuário deixou ligados, sem
+/// instalar nenhum novo nem mudar a configuração. É o que os scripts de
+/// instalação (e o `terraforme upgrade`) chamam, para um plugin desligado
+/// continuar desligado.
+pub fn sync() -> Result<Vec<Synced>> {
+    let config = Config::load()?;
+    Ok(list()?
+        .into_iter()
+        .filter(|(m, path)| path.is_some() && m.supported())
+        .map(|(manifest, _)| {
+            if !manifest.enabled(&config) {
+                return Synced::Disabled(manifest);
+            }
+            match install(&manifest.name) {
+                Ok(out) => Synced::Updated(out),
+                Err(e) => Synced::Failed(manifest, e),
+            }
+        })
+        .collect())
+}
+
 /// Remove o binário do plugin (só o instalado pelo terraforme) e o tira de
 /// `plugins.toml`. Devolve o caminho apagado.
 pub fn remove(name: &str) -> Result<Option<PathBuf>> {
@@ -526,6 +573,20 @@ platforms = ["linux", "windows"]
         let mut m = Manifest::known("pet").unwrap();
         m.bin = "../evil".into();
         assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn pet_is_off_until_the_user_turns_it_on() {
+        let pet = Manifest::known("pet").unwrap();
+        let mut config = Config::default();
+        assert!(!config.tui.pet);
+        assert!(!pet.enabled(&config));
+        config.tui.pet = true;
+        assert!(pet.enabled(&config));
+        // De terceiros: ligado quando instalado.
+        let mut other = pet.clone();
+        other.name = "outro".into();
+        assert!(other.enabled(&Config::default()));
     }
 
     #[test]
