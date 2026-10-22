@@ -1,7 +1,8 @@
 //! Janela flutuante com o mascote (`terraforme pet`): o estado de atividade
 //! de cada instância do agente, detectado pela TUI ([`Tracker`]) e enviado ao
 //! daemon MCP, e o cliente que a janela usa para ler esse estado e focar uma
-//! instância. Só o Linux tem a janela por enquanto (ver `ROADMAP.md`).
+//! instância. A janela existe no Linux e no Windows (o macOS está no
+//! `ROADMAP.md`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -227,6 +228,8 @@ pub fn focus(instance_id: &str) -> Result<()> {
     let Some(lock) = LockFile::read()? else {
         bail!("o daemon MCP não está rodando");
     };
+    // No Windows, só quem recebeu o clique pode passar o foco a outra janela.
+    crate::platform::allow_foreground();
     let body = serde_json::json!({ "instance_id": instance_id }).to_string();
     agent()
         .post(&format!("http://127.0.0.1:{}/pet/focus", lock.port))
@@ -236,8 +239,40 @@ pub fn focus(instance_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Notificação do sistema (`notify-send`, se instalado).
+/// Mostra uma notificação do Windows (toast) com o título `terraforme` e o
+/// texto de `TERRAFORME_NOTIFY` (variável, para o texto nunca virar código).
+/// Usa o AppUserModelID do PowerShell, que já vem registrado no sistema.
+const TOAST_PS1: &str = r#"$ErrorActionPreference = 'Stop'
+$m = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+$xml = $m::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$text = $xml.GetElementsByTagName('text')
+$text.Item(0).AppendChild($xml.CreateTextNode('terraforme')) > $null
+$text.Item(1).AppendChild($xml.CreateTextNode($env:TERRAFORME_NOTIFY)) > $null
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+$m::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show($toast)
+"#;
+
+/// Notificação do sistema: `notify-send` (se instalado) no Linux e toast no
+/// Windows (sem esperar o PowerShell, que leva um instante para abrir).
 pub fn notify(text: &str) {
+    if cfg!(windows) {
+        let mut cmd = process::Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            TOAST_PS1,
+        ])
+        .env("TERRAFORME_NOTIFY", text)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+        crate::platform::no_window(&mut cmd);
+        let _ = cmd.spawn();
+        return;
+    }
     if let Some(bin) = crate::status::find_in_path("notify-send") {
         let _ = process::Command::new(bin)
             .args(["--app-name=terraforme", "terraforme", text])
@@ -250,7 +285,7 @@ pub fn notify(text: &str) {
 
 /// Se a janela existe neste sistema.
 pub fn is_supported() -> bool {
-    cfg!(target_os = "linux")
+    cfg!(any(target_os = "linux", windows))
 }
 
 /// `<pasta de dados>/terraforme/pet.lock`, com o PID da janela aberta.
@@ -310,19 +345,19 @@ pub fn start() -> Result<bool> {
     Ok(true)
 }
 
-/// Fecha a janela aberta, se houver. Devolve `false` quando não havia.
+/// Fecha a janela aberta, se houver, e espera até 3s que o processo saia (no
+/// Windows o `.exe` só pode ser apagado ou trocado depois disso). Devolve
+/// `false` quando não havia.
 pub fn stop() -> Result<bool> {
     let Some(pid) = running() else {
         return Ok(false);
     };
-    let status = process::Command::new("kill")
-        .arg(pid.to_string())
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("falha ao fechar terraforme-pet")?;
-    if !status.success() {
+    if !crate::platform::kill(pid).context("falha ao fechar terraforme-pet")? {
         bail!("falha ao fechar terraforme-pet (pid {pid})");
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while crate::platform::is_pid_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
     }
     Ok(true)
 }
