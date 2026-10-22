@@ -1,26 +1,41 @@
 # Guia de uso
 
-## Instalação e atualização (Linux)
+Guia principal para quem usa o terraforme: instalação (Linux e Windows), extensões, agente e modos,
+o terminal do `terraforme cli` e os spaces. Detalhes internos estão em [Arquitetura](arquitetura.md).
+
+## Instalação
+
+### Binários do release (sem Rust)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
+```
+
+- Linux x86_64/aarch64 (musl) e Windows x86_64; instala `terraforme` e `terraforme-mcp` em
+  `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\terraforme\bin`).
+- Variáveis: `TERRAFORME_VERSION=v0.19.0` fixa a versão; `PREFIX` muda a pasta (`$PREFIX/bin`).
+- A [janela flutuante](janela-flutuante.md) não vem nos binários do release.
+
+### Do código-fonte (Linux)
 
 ```bash
 ./install.linux.sh                       # compila em release e instala em ~/.local/bin
 ./install.linux.sh --update              # git pull (fast-forward) + compila + instala
 ./install.linux.sh --dist                # build otimizada (LTO), mais lenta para compilar
+./install.linux.sh --restart             # reinicia o terraforme no fim sem perguntar
 PREFIX=/usr/local ./install.linux.sh     # em /usr/local/bin (usa sudo)
 ./install.linux.sh --uninstall           # remove
-
-terraforme upgrade                       # o mesmo que --update, a partir do próprio terraforme
-terraforme upgrade --no-pull             # só recompila (--repo DIR / TERRAFORME_REPO se o repositório mudou de lugar)
-
-terraforme                               # mostra a ajuda (mesmo que --help)
-terraforme --version                     # ou -V, ou `terraforme version`
-terraforme status                        # extensões (RTK, AI Memory, AI Jail) e pastas do terraforme
-terraforme --historico                   # pastas abertas pelo `terraforme cli`: spaces e recentes
 ```
 
-Depois de uma atualização, o script mostra as novidades do [`CHANGELOG.md`](../CHANGELOG.md).
+Instala `terraforme`, `terraforme-mcp` e `terraforme-pet` (e, com GNOME, a extensão do GNOME Shell
+usada pela janela flutuante). Depois de uma atualização, o script mostra as novidades do
+[`CHANGELOG.md`](../CHANGELOG.md).
 
-## Instalação e atualização (Windows)
+### Do código-fonte (Windows)
 
 Pré-requisitos: `git` e Rust ([rustup](https://rustup.rs), com o "Desktop development with C++"
 do Visual Studio Build Tools). No PowerShell, na pasta do repositório:
@@ -29,207 +44,286 @@ do Visual Studio Build Tools). No PowerShell, na pasta do repositório:
 .\install.windows.ps1                    # compila e instala em %LOCALAPPDATA%\Programs\terraforme\bin
 .\install.windows.ps1 -Update            # git pull (fast-forward) + compila + instala
 .\install.windows.ps1 -Dist              # build otimizada (LTO)
+.\install.windows.ps1 -Restart           # reinicia o terraforme no fim sem perguntar
 $env:PREFIX='C:\tools'; .\install.windows.ps1   # em C:\tools\bin
 .\install.windows.ps1 -Uninstall         # remove (e tira a pasta do PATH do usuário)
 ```
 
-Se a execução de scripts estiver bloqueada, use
-`powershell -ExecutionPolicy Bypass -File .\install.windows.ps1`. A pasta de instalação é
-adicionada ao `PATH` do usuário (abra um novo terminal depois). `terraforme upgrade` também
-funciona no Windows.
+- Script bloqueado: `powershell -ExecutionPolicy Bypass -File .\install.windows.ps1`.
+- A pasta de instalação entra no `PATH` do usuário: abra um terminal novo depois.
+- No Windows não há AI Jail nem janela flutuante.
+
+### Atualizar e reiniciar
+
+```bash
+terraforme upgrade                # no repositório: install.*.sh --update; por release: baixa a última
+terraforme upgrade --no-pull      # só recompila o código local
+terraforme upgrade --dist         # build otimizada (LTO)
+terraforme upgrade --repo DIR     # repositório em outro lugar (ou TERRAFORME_REPO)
+terraforme upgrade --restart      # reinicia no fim sem perguntar
+terraforme restart                # reinicia o daemon MCP e a janela flutuante com os binários novos
+```
+
+Depois do `restart`, os `terraforme cli` abertos se reconectam sozinhos; os agentes já abertos só
+voltam a usar o MCP depois de reiniciados (`Ctrl+Alt+R`).
+
+### Comandos gerais
+
+| Comando | O que faz |
+| --- | --- |
+| `terraforme` | mostra a ajuda (o mesmo que `--help`; `-h` resume) |
+| `terraforme help <comando>` | ajuda de um comando |
+| `terraforme --version` / `-V` / `version` | versão |
+| `terraforme status` | extensões instaladas (e versão) e as pastas do terraforme |
+| `terraforme --historico` (ou `--history`) | pastas em que o `terraforme cli` foi aberto: spaces e recentes |
+| `terraforme completions <shell>` | script de autocompletar do shell |
 
 ## Extensões
 
-[RTK](https://github.com/rtk-ai/rtk), [AI Memory](https://github.com/akitaonrails/ai-memory) e
-[AI Jail](https://github.com/akitaonrails/ai-jail):
+[RTK](https://github.com/rtk-ai/rtk) (economia de tokens),
+[AI Memory](https://github.com/akitaonrails/ai-memory) (memória entre sessões) e
+[AI Jail](https://github.com/akitaonrails/ai-jail) (sandbox):
 
 ```bash
-terraforme setup                           # configura tudo: agentes, extensões e skills
-terraforme extension --status              # status e versão de todas
-terraforme extension rtk --status          # de uma só
-terraforme extension --install             # instala todas (pula as já instaladas)
-terraforme extension ai-memory --install   # instala uma só
-terraforme extension --setup                # detecta agentes e configura as extensões escolhidas
-terraforme extension ai-memory --setup      # refaz o setup individual da extensão
-terraforme extension rtk --update          # atualiza (nome obrigatório)
-terraforme extension rtk --delete          # remove (nome obrigatório; -y pula a confirmação)
+terraforme setup                            # configura tudo: agentes, extensões e skills
+terraforme extension --status               # status e versão de todas
+terraforme extension rtk --status           # de uma só
+terraforme extension --install              # instala todas (pula as já instaladas)
+terraforme extension ai-memory --install    # instala uma só
+terraforme extension --setup                # escolhe agentes e extensões e configura
+terraforme extension ai-memory --setup      # refaz a configuração de uma extensão
+terraforme extension rtk --update           # atualiza (nome obrigatório)
+terraforme extension rtk --delete           # remove (nome obrigatório; -y pula a confirmação)
+terraforme extension ai-jail --project      # cria o .ai-jail na pasta atual
+terraforme extension ai-jail --default true # liga o AI Jail por padrão (false desliga)
 ```
 
-`terraforme setup` é o caminho mais curto para deixar a máquina pronta: identifica os agentes no
-`PATH`, instala as extensões que faltarem e as configura em cada agente e, por fim, instala as
-skills embutidas no binário na pasta global de skills de cada agente (`~/.claude/skills`,
-`~/.config/opencode/skills`). Se não houver nenhum agente, ele mostra a lista para marcar quais
-instalar (`↑`/`↓` movem, `Espaço` marca, `Enter` confirma) e roda o instalador oficial de cada um
-(Claude Code: `claude.ai/install.sh` / `install.ps1`; OpenCode: `opencode.ai/install`, ou
-`npm install -g opencode-ai` no Windows).
+- `terraforme setup` é o caminho mais curto para deixar a máquina pronta; o passo a passo e o que
+  cada configuração altera estão em [Setup](setup.md), e o fluxo de `extension --setup` em
+  [Setup interativo](setup-interativo.md).
+- A instalação usa os scripts oficiais de cada projeto (em `~/.local/bin`) e já configura a
+  extensão (`rtk init -g` / `ai-memory setup`).
+- A remoção desfaz essa configuração e apaga o binário; os dados do AI Memory (wiki, banco) são
+  preservados.
+- O RTK instala por padrão a edição BUSL-1.1. Para a Apache-2.0:
+  `RTK_EDITION=oss terraforme extension rtk --install`.
 
-A instalação usa os scripts oficiais de cada projeto (em `~/.local/bin`) e já configura os agentes
-(`rtk init -g` / `ai-memory setup`). A remoção desfaz essa configuração e apaga o binário; os dados
-do AI Memory (wiki, banco) são preservados. O RTK instala por padrão a edição BUSL-1.1 — para a
-Apache-2.0: `RTK_EDITION=oss terraforme extension rtk --install`.
+### AI Jail
 
-`extension --setup` não instala binários: detecta os agentes no `PATH`, pergunta quais agentes e
-extensões configurar e executa as etapas específicas de cada integração. Consulte a
-[documentação do setup interativo](setup-interativo.md) para os detalhes.
+- Não tem script de instalação: o terraforme baixa o binário do último release (Linux x86_64 ou
+  macOS arm64), confere o `.sha256` publicado e o instala em `~/.local/bin`.
+- No Linux precisa do `bwrap` (pacote `bubblewrap`); o terraforme exige a versão 2.9+.
+- Update/delete só mexem nessa cópia; uma instalada por Homebrew/AUR/cargo/Nix é atualizada pelo
+  próprio gerenciador.
+- A instalação cria uma configuração padrão em `~/.ai-jail` se ainda não houver uma (a remoção a
+  preserva).
+- Não existe no Windows: um AI Jail vindo do config, de um space ou de um `.ai-jail` é ignorado com
+  um aviso; só `terraforme cli --jail` dá erro.
 
-O AI Jail não tem script de instalação: o terraforme baixa o binário do último release (Linux x86_64
-ou macOS arm64), confere o `.sha256` publicado e o instala em `~/.local/bin`; no Linux ele precisa do
-`bwrap` (pacote bubblewrap). Update/delete só mexem nessa cópia — uma instalada por
-Homebrew/AUR/cargo/Nix é atualizada pelo próprio gerenciador (o terraforme exige a 2.9+). A
-instalação também cria uma configuração padrão em `~/.ai-jail` se ainda não houver uma (a remoção a
-preserva). Detalhes em [arquitetura](arquitetura.md#ai-jail).
+Detalhes em [Arquitetura](arquitetura.md#ai-jail).
 
 ## Agente e modos
 
-Configuração em `~/.config/terraforme/config.toml`:
+### Configuração padrão
+
+Fica em `~/.config/terraforme/config.toml` (`%APPDATA%\terraforme` no Windows):
 
 ```bash
-terraforme config                    # mostra provider e modo padrão
-terraforme config --provider         # lista os providers (claude; cursor ainda não implementado)
-terraforme config --provider claude  # define o provider
-terraforme config --cli              # lista os modos de início e pergunta o padrão
-terraforme config --cli eco          # define o modo de início (eco, custom, security, high)
-terraforme config --mode eco         # define o modo padrão
-terraforme config --mode custom      # escolhe as extensões (RTK, AI Memory e/ou AI Jail)
-terraforme config --jail true        # roda o agente dentro do AI Jail por padrão (false desliga)
-terraforme config --budget-5h <tokens> --budget-week <tokens>   # orçamento sem login OAuth
-
-terraforme cli                       # abre o agente no modo padrão
-terraforme cli --eco                 # só RTK (economia de tokens)
-terraforme cli --high                # só AI Memory (memória entre sessões)
-terraforme cli --hybrid              # RTK + AI Memory
-terraforme cli --eco -- --continue   # depois de `--`, argumentos vão direto para o claude
-terraforme cli --plain               # abre o agente direto, sem o terminal do terraforme
-terraforme cli -n 3                  # três instâncias do agente, sub-abas da aba claude (até 9)
-terraforme cli --jail                # dentro do AI Jail (sandbox), em qualquer modo; --no-jail fora
+terraforme config                         # mostra a configuração atual
+terraforme config --agent                 # lista os agentes e pergunta o padrão
+terraforme config --agent opencode        # define o agente (claude, opencode, antigravity)
+terraforme config --cli                   # lista os presets de início e pergunta
+terraforme config --cli security          # define o preset (eco, custom, security, high)
+terraforme config --mode hybrid           # define o modo (none, eco, high, hybrid, custom)
+terraforme config --jail true             # roda o agente no AI Jail por padrão (false desliga)
+terraforme config --budget-5h <tokens> --budget-week <tokens>   # orçamento sem login OAuth (0 remove)
+terraforme config --mcp-ui true           # liga a UI web do daemon MCP
+terraforme config --pet true              # abre a janela flutuante com o terraforme cli
 ```
 
-`terraforme config --cli` define o **modo de início**, um atalho que já escolhe o modo e a sandbox:
+Modos (quais extensões o agente usa):
 
-| Modo | O que liga |
+| Modo | Extensões |
 | --- | --- |
-| `eco` | RTK (economia de tokens) |
-| `high` | AI Memory (memória entre sessões) |
-| `security` | AI Jail (sandbox), sem extensões |
-| `custom` | você escolhe as extensões (RTK, AI Memory e/ou AI Jail) |
+| `none` | nenhuma |
+| `eco` | RTK |
+| `high` | AI Memory |
+| `hybrid` | RTK + AI Memory |
+| `custom` | pergunta quais usar |
 
-Se uma extensão do modo precisa de algo no projeto, o `terraforme cli` confere e configura ao iniciar:
-com o AI Jail ligado numa pasta sem `.ai-jail`, ele cria o arquivo (`ai-jail --init <agente>`) — exceto
-na sua pasta pessoal, onde o `~/.ai-jail` é a configuração global.
+O AI Jail não faz parte do modo: é ligado à parte (`--jail`). O **preset de início**
+(`config --cli`) define modo e sandbox de uma vez:
 
-Como os modos são aplicados ao Claude Code está em [arquitetura](arquitetura.md#como-os-modos-funcionam-no-claude-code).
+| Preset | O que liga |
+| --- | --- |
+| `eco` | RTK |
+| `high` | AI Memory |
+| `security` | AI Jail, sem extensões |
+| `custom` | você escolhe RTK, AI Memory e/ou AI Jail |
+
+### Contas do Claude Code
+
+```bash
+terraforme config --account                         # lista as contas
+terraforme config --account work=$HOME/.claude-work # registra (a pasta é o CLAUDE_CONFIG_DIR e precisa existir)
+terraforme config --remove-account work             # remove
+terraforme space api --account work                 # usa a conta num space
+```
+
+### Abrir o agente
+
+```bash
+terraforme cli                       # agente, modo e sandbox do space atual ou do config
+terraforme cli --agent opencode      # outro agente só nesta sessão
+terraforme cli --eco                 # só RTK
+terraforme cli --high                # só AI Memory
+terraforme cli --hybrid              # RTK + AI Memory
+terraforme cli --jail                # dentro do AI Jail, em qualquer modo (--no-jail fora)
+terraforme cli -n 3                  # três instâncias, cada uma numa sub-aba (até 9)
+terraforme cli --plain               # abre o agente direto, sem o terminal do terraforme
+terraforme cli --eco -- --continue   # depois de `--`, argumentos vão direto para o agente
+```
+
+Ordem de prioridade: flags da linha de comando → preferências do space → `.ai-jail` do projeto (só
+a sandbox) → `config.toml`. O `terraforme cli` **não** cria o `.ai-jail` do projeto: use
+`terraforme extension ai-jail --project`.
+
+Como os modos são aplicados ao Claude Code está em
+[Arquitetura](arquitetura.md#como-os-modos-funcionam-no-claude-code).
 
 ## Terminal do `terraforme cli`
 
-O `terraforme cli` abre o agente dentro do terminal do terraforme, com abas no topo:
+O `terraforme cli` abre o agente dentro do terminal do terraforme, com um menu de abas no topo:
 
-```
-  terraforme   ⌃⇧1 claude   ⌃⇧2 Consumo   ⌃⇧3 Extensões   ⌃⇧4 Config   F10 sair   ⌃⇧Tab alterna · ⌃⌥K atalhos · …
+```text
+ Terraforme │ Agente (claude) │ Consumo │ Extensões │ Configurações │ Sair          ⌃⌥K Atalhos
 ```
 
-- **claude** — o agente. Cada instância é uma sub-aba (`claude 1`, `claude 2`…), todas rodando ao
-  mesmo tempo; `Ctrl+Alt+N` (ou `F12`) abre outra, `Ctrl+Alt+W` (ou `Shift+F12`) fecha a aberta,
-  `Ctrl+Alt+R` reinicia e `Ctrl+Alt+1`…`9` troca de instância — um número além da última abre uma
-  nova (com uma instância, `Ctrl+Alt+2` abre a segunda). A sub-aba some quando a instância termina,
-  e o terraforme sai quando a última termina.
-- **Consumo** — o consumo de tokens, atualizado a cada 5s, e a economia do RTK:
-  - **Limites** — quanto já foi usado e quanto falta. Com login OAuth no Claude Code
-    (Pro/Max/Team), usa os limites do plano (sessão de 5h e semana, os mesmos do `/usage`); sem
-    login, compara os transcripts com o orçamento configurado. Com o OpenCode, não há limites de
-    plano nem janela de 5h (o `opencode stats` não os expõe): valem o orçamento semanal e a
-    contagem de tokens/5h da sessão local. Com o Antigravity, os limites são os que o `agy` informa
-    (`agy -p /usage`): um grupo de modelos por janela semanal, com o quanto resta e quando ela
-    zera.
-  - **Tokens** — entrada, saída, raciocínio e cache da sessão atual (a da instância aberta), do
-    projeto nas últimas 24h e de todos os projetos em 5h/24h/7 dias; com o OpenCode, o total do
-    projeto hoje e de todos hoje/7 dias, com custo e tokens por modelo.
-  - **Subagentes** — a sessão atual dividida entre o agente principal e cada subagente; com o
-    OpenCode, a contagem de sessões, prompts e subagentes.
-  - **Spaces** — o histórico do consumo por space e agente (últimas 24h, 7 dias e total, com o
-    número de sessões), guardado num SQLite em `~/.terraforme/usage.db`
-    (`%APPDATA%\.terraforme\usage.db` no Windows). O `terraforme cli` grava o total de cada
-    instância a cada 60s e quando ela fecha; o OpenCode não informa o total da sessão, então não
-    entra. A mesma tabela aparece na UI web do MCP (box "Consumo por space").
-  - **RTK** (quando o modo usa o RTK) — Economia, Neste projeto, Por dia e Histórico, os
-    relatórios de `terraforme extension rtk --status`.
-- **Extensões** — só aparece quando o modo usa o AI Memory ou o AI Jail está ligado: os relatórios
-  de cada um, um por sub-aba — AI Memory (Status, Projetos, Handoffs) e AI Jail (Status, Sandbox).
-  São os mesmos de `terraforme extension <nome> --status`, carregados quando a sub-aba é aberta.
-- **Config** — a configuração geral (`config.toml`), editável: agente, modo e AI Jail
-  (valem no próximo `terraforme cli`), orçamento de tokens, preferências da TUI (capturar o mouse,
-  copiar ao selecionar — aplicadas na hora) e o daemon MCP. Cada alteração é gravada na hora.
-  Dentro de um space, agente, modo e AI Jail gravam nas preferências do space
-  (`~/.terraforme/<nome do space>/preferences.toml`; no Windows, `%APPDATA%\.terraforme\...`) em vez do `config.toml` global — é o arquivo
-  que o `terraforme cli` passa a usar ali — e o rodapé diz onde cada campo vale; os outros campos
-  continuam no `config.toml`. Apagar um valor com `Delete` tira o override e volta ao `config.toml`.
+Cada aba e o layout detalhado estão em [TUI](tui/tui.feature.md). Resumo:
+
+- **Agente** — cada instância é uma sub-aba (`claude 1`, `claude 2`…), todas rodando ao mesmo
+  tempo. A sub-aba some quando a instância termina; o terraforme sai quando a última termina.
+- **Consumo** — tokens e limites, atualizados a cada 5s, em quatro visões
+  ([Consumo](tui/consumo/consumo.feature.md)):
+  - **Limites** — quanto já foi usado e quanto falta. Claude Code com login OAuth
+    (Pro/Max/Team): os limites do plano (5h e semana, os do `/usage`); sem login, o orçamento
+    configurado. OpenCode: só o orçamento semanal. Antigravity: os limites que o `agy` informa
+    (um grupo de modelos por janela semanal).
+  - **Tokens** — entrada, saída, raciocínio e cache da sessão, do projeto e de todos os projetos.
+  - **Subagentes** — a sessão dividida entre o agente principal e cada subagente.
+  - **Spaces** — histórico por space e agente (24h, 7 dias e total), em `~/.terraforme/usage.db`
+    (`%APPDATA%\.terraforme\usage.db` no Windows). O OpenCode não informa o total da sessão e não
+    entra.
+  - **RTK** (quando o modo usa o RTK) — os relatórios de `terraforme extension rtk --status`.
+- **Extensões** — só com AI Memory ou AI Jail: os relatórios de cada um, um por sub-aba,
+  carregados ao abrir.
+- **Configurações** — o `config.toml` editável, gravado a cada alteração
+  ([Config](tui/config/config.feature.md)):
+  - **Agente**: Router (o agente; a troca vale ao sair do campo ou da aba e abre uma instância do
+    novo sem fechar as outras), Modo, Conta e `Middleware (Experimental)`.
+  - **Orçamento**: só o limite de 5 horas é digitado; o diário e o de 7 dias são calculados.
+  - **Plugins · config global**: UI web (clique ou `o` abre no navegador), Mascote e MCP.
+  - **Avançado**: capturar o mouse, copiar ao selecionar e os tempos/limites do daemon MCP.
+
+  Dentro de um space, Router, Modo e Conta gravam nas preferências do space em vez do
+  `config.toml`; o rodapé diz onde cada campo vale e `Del` volta ao valor global. Modo e conta valem
+  nas próximas instâncias (`Ctrl+Alt+N`).
+
+### Atalhos
+
+`Ctrl+Alt+K` mostra a lista completa dentro do terminal.
 
 | Tecla | Ação |
 | --- | --- |
-| `Ctrl+Shift+F1` | abre a aba Agente |
-| `Ctrl+Shift+F2` | abre a aba Consumo |
-| `Ctrl+Shift+F3` | abre a aba Extensões (só quando o modo tem alguma além do RTK) |
-| `Ctrl+Shift+F4` | abre a aba Config |
-| `Ctrl+Alt+Tab` / `Ctrl+Alt+Shift+Tab` | próxima / anterior sub-aba (o mesmo em todas as abas) |
-| `Ctrl+Alt+1`…`9` (ou `Alt+1`…`9`) | vai direto para a sub-aba (instância do agente, visão do consumo ou relatório) |
-| `Ctrl+PgUp/PgDn` | sub-aba vizinha, em volta |
-| `Ctrl+Alt+N` / `F12` | abre outra instância do agente |
+| `Ctrl+Shift+F1`…`F4` | abre Agente, Consumo, Extensões (só com extensões) ou Configurações |
+| `Ctrl+Shift+←/→` | aba anterior / próxima (`←/→` sozinhas nas visões Consumo e Extensões) |
+| clique no menu | abre a aba; `Sair` encerra |
+| `Ctrl+Alt+Tab` / `Ctrl+Alt+Shift+Tab` | próxima / anterior sub-aba (em todas as abas) |
+| `Ctrl+PgUp/PgDn` | sub-aba anterior / próxima |
+| `Ctrl+Alt+1`…`9` (ou `Alt+1`…`9`) | vai para a sub-aba; na aba do agente, um número além da última abre uma instância |
+| `Ctrl+Alt+N` / `F12` | nova instância (até 9) |
 | `Ctrl+Alt+W` / `Shift+F12` | fecha a instância aberta |
 | `Ctrl+Alt+R` | reinicia a instância aberta |
-| arrastar com o mouse | seleciona texto do agente e copia ao soltar (clique desfaz) |
-| `Ctrl+Alt+C` | copia a seleção, a tela do agente ou o conteúdo da aba aberta |
-| `Ctrl+Alt+S` | devolve o mouse ao terminal (seleção nativa) e de volta |
-| `Shift+PgUp/PgDn` · `Shift+Home/End` | rola o histórico do agente · início / volta ao vivo |
+| arrastar com o mouse | seleciona e copia ao soltar (clique desfaz) |
+| `Shift`+arrastar | seleção nativa do terminal |
+| `Ctrl+Alt+C` | copia a seleção, a tela do agente ou o conteúdo da aba |
+| `Ctrl+Alt+S` | devolve o mouse ao terminal e de volta |
 | roda do mouse | rola o histórico do agente e o conteúdo das outras abas |
-| `Ctrl+Alt+K` | lista todos os atalhos |
+| `Shift+PgUp/PgDn` | rola o histórico do agente meia tela |
+| `Shift+Home/End` | início do histórico / volta ao vivo |
 | `F10` | sai (encerra todas as instâncias) |
 
-A cópia vai para a área de transferência pelo terminal (OSC 52) e, no Linux, também por
-`wl-copy`, `xclip` ou `xsel`, se algum estiver instalado — o GNOME Terminal ignora o OSC 52, então
-nele instale um deles. `Ctrl+Alt` + dígito só chega distinto em terminais com o
-protocolo de teclado do kitty (kitty, WezTerm, foot, Ghostty, Alacritty…), que a TUI liga quando
-existe; sem ele, use `Alt+1`…`9` ou `Shift+Alt+1`…`9`. `Shift+Tab` segue para o agente (Claude Code
-o usa para trocar de modo). Os atalhos evitam os do ambiente Linux (`Ctrl+Alt+T/L/D/Del`,
-`Ctrl+Alt+F1`…`F12`, `Ctrl+Alt+setas`).
+Nas abas de conteúdo: `↑↓`/`j k`/`PgUp/PgDn`/`g` rolam, `r` recarrega e `Esc` ou `q` volta ao
+agente. Em Configurações: `↑↓` (ou clique) escolhe o campo, `←→`/`Espaço`/`Enter` altera, dígitos
+editam números, `Del` volta ao padrão e `o` abre a UI web.
 
-Nas abas de conteúdo: `↑↓`/`PgUp/PgDn` rolam, `r` recarrega e `Esc` volta para o agente. Na aba
-Config: `↑↓` escolhe o campo, `←→`/`Enter` altera, dígitos editam números (vazio tira o orçamento),
-`Del` volta ao padrão. Na aba do agente, `Tab`, `F1`–`F9` e `Ctrl+←→` chegam ao Claude. O agente
-continua rodando enquanto outra aba está aberta.
+Observações:
+
+- `Tab`, `Shift+Tab`, `F1`–`F9`, `Ctrl+←→` e as demais teclas seguem para o agente.
+- `Ctrl+Alt` + dígito só chega distinto em terminais com o protocolo de teclado do kitty (kitty,
+  WezTerm, foot, Ghostty, Alacritty…); sem ele, use `Alt+1`…`9`.
+- Os atalhos evitam os do ambiente Linux (`Ctrl+Alt+T/L/D/Del`, `Ctrl+Alt+F1`…`F12`,
+  `Ctrl+Alt+setas`).
+- A cópia vai pelo terminal (OSC 52) e também por `wl-copy`, `xclip` ou `xsel` no Linux e `clip`
+  no Windows. O GNOME Terminal ignora o OSC 52: instale um deles.
+- O agente continua rodando enquanto outra aba está aberta.
+
+### Middleware (experimental)
+
+Com `Middleware (Experimental)` ligado em Configurações, as próximas instâncias de agentes que
+suportam (Claude Code, Antigravity e OpenCode) abrem num chat do terraforme em vez do terminal do
+agente. Detalhes em [Agente](tui/agente/agente.feature.md).
+
+### Comunicação entre instâncias (MCP)
+
+O `terraforme cli` sobe o daemon `terraforme-mcp`, que permite às instâncias do Claude Code
+listar umas às outras, trocar mensagens e delegar tarefas, além da UI web
+(`terraforme config --mcp-ui true`). Detalhes em [MCP](MCP/mcp.feature.md).
+
+### Janela flutuante (mascote)
+
+`terraforme pet` abre uma janela pequena com o mascote, que avisa quando um agente de qualquer
+terminal termina e, com um clique, leva à instância (só no Linux). Detalhes em
+[Janela flutuante](janela-flutuante.md).
 
 ## Spaces
 
-Pastas de trabalho salvas com um nome (em `~/.config/terraforme/spaces.toml`):
+Pastas de trabalho salvas com um nome, em `~/.config/terraforme/spaces.toml`:
 
 ```bash
 terraforme space --save              # salva a pasta atual; pergunta o nome (padrão: nome da pasta)
-terraforme space --save api          # salva a pasta atual como "api"
-terraforme space                     # lista os spaces e pergunta qual abrir (número ou nome)
+terraforme space api --save          # salva a pasta atual como "api"
+terraforme space                     # lista e pergunta qual abrir (número ou nome)
 terraforme space api                 # abre direto o space "api"
-terraforme space --list              # só lista
-terraforme space api --delete        # remove
+terraforme space --list              # só lista (com as preferências de cada um)
+terraforme space api --rename web    # renomeia
+terraforme space api --delete        # remove (a pasta não é apagada; -y pula a confirmação)
 ```
 
-Abrir um space inicia um shell novo na pasta dele, com `TERRAFORME_SPACE` definido — `exit` volta
-para onde você estava. Para ir com `cd` no próprio shell, use `--path`, que só imprime a pasta (a
-lista e a pergunta vão para o stderr):
+Abrir um space inicia um shell novo na pasta dele, com `TERRAFORME_SPACE` definido; `exit` volta
+para onde você estava. Para trocar de pasta no próprio shell, use `--path`, que só imprime a pasta
+(a lista e a pergunta vão para o stderr):
 
 ```bash
-# ~/.bashrc ou ~/.zshrc
+# em ~/.bashrc ou ~/.zshrc
 ts() { local dir; dir=$(terraforme space --path "$@") && cd "$dir"; }
+```
+
+```powershell
+cd (terraforme space api --path)
 ```
 
 ### Preferências do space
 
-Cada space pode ter preferências próprias — agente, modo, sandbox e conta — gravadas em
-`~/.terraforme/<nome do space>/preferences.toml`, fora da pasta do projeto. O `terraforme cli` aberto na pasta (ou numa
-subpasta) usa essas preferências no lugar do `terraforme config`; flags da linha de comando
-(`--agent`, `--eco`, `--jail`…) continuam vencendo:
+Cada space pode ter agente, modo, sandbox e conta próprios, gravados em
+`~/.terraforme/<nome do space>/preferences.toml` (`%APPDATA%\.terraforme\...` no Windows), fora da
+pasta do projeto. O `terraforme cli` aberto na pasta (ou numa subpasta) usa essas preferências no
+lugar do `terraforme config`; flags da linha de comando continuam vencendo.
 
 ```bash
-terraforme space api --agent opencode --mode eco   # define (só o que for passado muda)
+terraforme space api --agent opencode --mode eco   # só o que for passado muda
 terraforme space api --jail true                   # roda no AI Jail neste space
-terraforme space --save api --mode hybrid          # salva o space já com preferências
+terraforme space api --account work                # conta do Claude Code neste space
+terraforme space api --save --mode hybrid          # salva o space já com preferências
 terraforme space api --reset                       # apaga as preferências
 ```
-
-`terraforme space --list` mostra as preferências de cada space.
