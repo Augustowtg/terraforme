@@ -86,7 +86,8 @@ adicione a pasta de instalação ao `PATH`.
 ### Atualizar e remover
 
 ```bash
-terraforme upgrade              # atualiza: no repositório, git pull + compila; por release, baixa a última
+terraforme upgrade              # atualiza para a última release do GitHub
+terraforme upgrade --dev        # pelo repositório: git pull + compila + reinstala
 terraforme upgrade --restart    # … e reinicia o terraforme no fim sem perguntar
 terraforme restart              # reinicia o daemon MCP e a janela flutuante com os binários novos
 ./install.linux.sh --uninstall  # remove (Windows: .\install.windows.ps1 -Uninstall)

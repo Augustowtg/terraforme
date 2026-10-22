@@ -5,6 +5,15 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.26.2 - 2026-10-22
+
+### Alterado
+
+- `terraforme upgrade` sempre instala a última release do GitHub (`install.sh` / `install.ps1`,
+  sem Rust), mesmo num terraforme compilado de um clone. Atualizar pelo repositório (git pull +
+  compila + reinstala) passa a ser `terraforme upgrade --dev`; `--dist` e `--no-pull` só valem com
+  `--dev` (#39).
+
 ## 0.26.1 - 2026-10-22
 
 ### Corrigido

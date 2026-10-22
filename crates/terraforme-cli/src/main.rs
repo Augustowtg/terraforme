@@ -322,17 +322,25 @@ Exemplos:
     },
     /// Mostra se as extensões estão instaladas e em que versão, e as pastas do terraforme
     Status,
-    /// Atualiza o terraforme: no repositório, git pull + compila + reinstala; instalado por
-    /// release, baixa a última versão
+    /// Atualiza o terraforme para a última release do GitHub; com --dev, pelo repositório
+    /// (git pull + compila + reinstala)
+    #[command(after_help = "\
+Exemplos:
+  terraforme upgrade                  baixa e instala a última release (sem Rust)
+  terraforme upgrade --dev            git pull + compila + reinstala a partir do repositório
+  terraforme upgrade --dev --no-pull  só recompila o código local")]
     Upgrade {
-        /// Repositório do terraforme (padrão: onde este binário foi compilado)
+        /// Atualiza pelo repositório (git pull + compila + reinstala) em vez da release
+        #[arg(long)]
+        dev: bool,
+        /// Repositório do terraforme, com --dev (padrão: onde este binário foi compilado)
         #[arg(long, env = "TERRAFORME_REPO", value_name = "DIR")]
         repo: Option<std::path::PathBuf>,
-        /// Build otimizada (LTO); bem mais lenta para compilar
-        #[arg(long)]
+        /// Build otimizada (LTO), com --dev; bem mais lenta para compilar
+        #[arg(long, requires = "dev")]
         dist: bool,
-        /// Não faz git pull, só recompila o código local
-        #[arg(long)]
+        /// Não faz git pull, só recompila o código local (com --dev)
+        #[arg(long, requires = "dev")]
         no_pull: bool,
         /// Reinicia o terraforme (daemon MCP e janela flutuante) depois, sem perguntar
         #[arg(long)]
@@ -700,11 +708,12 @@ fn run(cli: Cli) -> Result<()> {
             )?
         }
         Command::Upgrade {
+            dev,
             repo,
             dist,
             no_pull,
             restart,
-        } => upgrade(repo, dist, no_pull, restart)?,
+        } => upgrade(dev, repo, dist, no_pull, restart)?,
         Command::Restart => restart()?,
         Command::Help { command } => {
             let mut cmd = help_for(command);
@@ -1297,10 +1306,6 @@ fn exec(mut command: std::process::Command) -> Result<()> {
 /// Onde ficam os scripts que instalam as releases do GitHub (sem Rust).
 const RELEASE_SCRIPTS: &str = "https://raw.githubusercontent.com/Augustowtg/terraforme/main";
 
-/// Roda o script de instalação do repositório (`install.linux.sh`, ou
-/// `install.windows.ps1` no Windows) no lugar do terraforme (`exec`), para que
-/// o binário em uso possa ser substituído. Sem o repositório (binário de uma
-/// release), baixa a última release com o `install.sh` / `install.ps1`.
 /// Reinicia o daemon MCP e, se estava aberta, a janela flutuante.
 fn restart() -> Result<()> {
     let config = Config::load()?;
@@ -1323,7 +1328,14 @@ fn restart() -> Result<()> {
     Ok(())
 }
 
+/// Atualiza o terraforme. Por padrão instala a última release do GitHub
+/// (`install.sh` / `install.ps1`), venha o binário de uma release ou de um
+/// clone. Com `dev`, roda o script de instalação do repositório
+/// (`install.linux.sh`, ou `install.windows.ps1` no Windows: git pull +
+/// compila + reinstala). Os dois rodam no lugar do terraforme (`exec`), para
+/// que o binário em uso possa ser substituído.
 fn upgrade(
+    dev: bool,
     repo: Option<std::path::PathBuf>,
     dist: bool,
     no_pull: bool,
@@ -1335,7 +1347,9 @@ fn upgrade(
             "o upgrade automático só existe no Linux e no Windows; recompile com `cargo build --release`"
         );
     }
-    let explicit = repo.is_some();
+    if !dev {
+        return upgrade_release(windows, restart);
+    }
     let repo =
         repo.unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let script = repo.join(if windows {
@@ -1343,12 +1357,9 @@ fn upgrade(
     } else {
         "install.linux.sh"
     });
-    if !script.is_file() && !explicit {
-        return upgrade_release(windows, restart);
-    }
     if !script.is_file() {
         bail!(
-            "{} não encontrado; informe o repositório com --repo ou TERRAFORME_REPO",
+            "{} não encontrado; informe o repositório com --repo ou TERRAFORME_REPO (sem --dev, o upgrade usa a última release)",
             script.display()
         );
     }
@@ -2181,6 +2192,17 @@ mod tests {
         for flag in ["--version", "-V"] {
             let err = parse(&[flag]).unwrap_err();
             assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        }
+    }
+
+    #[test]
+    fn upgrade_build_flags_need_dev() {
+        assert!(parse(&["upgrade"]).is_ok());
+        assert!(parse(&["upgrade", "--restart"]).is_ok());
+        assert!(parse(&["upgrade", "--dev", "--dist", "--no-pull"]).is_ok());
+        for flag in ["--dist", "--no-pull"] {
+            let err = parse(&["upgrade", flag]).unwrap_err();
+            assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
         }
     }
 

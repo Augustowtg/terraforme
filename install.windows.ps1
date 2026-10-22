@@ -10,7 +10,7 @@
 # Se a execução de scripts estiver bloqueada:
 #   powershell -ExecutionPolicy Bypass -File .\install.windows.ps1
 #
-# `terraforme upgrade` roda este script com -Update.
+# `terraforme upgrade --dev` roda este script com -Update (sem --dev, o upgrade usa a release).
 [CmdletBinding()]
 param(
     [switch]$Update,
@@ -116,7 +116,7 @@ Info "Compilando terraforme (perfil $Profile_)…"
 cargo build --profile $Profile_ --locked -p terraforme-cli -p terraforme-mcp --manifest-path (Join-Path $RepoDir 'Cargo.toml')
 if ($LASTEXITCODE -ne 0) { Die 'cargo build falhou.' }
 
-# O Windows não deixa sobrescrever um .exe em execução (o `terraforme upgrade`
+# O Windows não deixa sobrescrever um .exe em execução (o `terraforme upgrade --dev`
 # fica rodando enquanto este script roda), mas deixa renomeá-lo: o atual vira
 # .old e o novo toma o lugar. O .old é apagado na próxima instalação.
 function Install-Exe($name, $dest) {

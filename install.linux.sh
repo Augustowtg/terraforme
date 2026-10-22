@@ -8,7 +8,7 @@
 #   PREFIX=/usr/local ./install.linux.sh   # instala em /usr/local/bin (pede sudo)
 #   ./install.linux.sh --uninstall     # remove
 #
-# `terraforme upgrade` roda este script com --update.
+# `terraforme upgrade --dev` roda este script com --update (sem --dev, o upgrade usa a release).
 set -euo pipefail
 
 BIN_NAME="terraforme"

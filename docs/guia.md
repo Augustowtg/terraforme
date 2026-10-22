@@ -56,12 +56,13 @@ $env:PREFIX='C:\tools'; .\install.windows.ps1   # em C:\tools\bin
 ### Atualizar e reiniciar
 
 ```bash
-terraforme upgrade                # no repositório: install.*.sh --update; por release: baixa a última
-terraforme upgrade --no-pull      # só recompila o código local
-terraforme upgrade --dist         # build otimizada (LTO)
-terraforme upgrade --repo DIR     # repositório em outro lugar (ou TERRAFORME_REPO)
-terraforme upgrade --restart      # reinicia no fim sem perguntar
-terraforme restart                # reinicia o daemon MCP e a janela flutuante com os binários novos
+terraforme upgrade                   # baixa e instala a última release
+terraforme upgrade --dev             # pelo repositório: install.*.sh --update (git pull + compila)
+terraforme upgrade --dev --no-pull   # só recompila o código local
+terraforme upgrade --dev --dist      # build otimizada (LTO)
+terraforme upgrade --dev --repo DIR  # repositório em outro lugar (ou TERRAFORME_REPO)
+terraforme upgrade --restart         # reinicia no fim sem perguntar
+terraforme restart                   # reinicia o daemon MCP e a janela flutuante com os binários novos
 ```
 
 Depois do `restart`, os `terraforme cli` abertos se reconectam sozinhos; os agentes já abertos só
