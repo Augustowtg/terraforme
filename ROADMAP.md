@@ -79,9 +79,9 @@ agente termina e leva à instância escolhida. Documentação: [docs/janela-flut
 - [ ] Sempre no topo no GNOME/Wayland (o compositor ignora o pedido; hoje fica a notificação do
   sistema).
 - [ ] Lembrar a posição da janela entre as execuções.
-- [ ] Binário `terraforme-pet` no release (`install.sh`): a build estática com musl não carrega as
-  bibliotecas gráficas, então hoje só a instalação a partir do código (`install.linux.sh`) traz a
-  janela.
+- [ ] Primeira release do plugin [terraforme-pet](https://github.com/Augustowtg/terraforme-pet)
+  (`terraforme-pet-<target>.tar.gz`, glibc): até lá `terraforme plugin install pet` compila com
+  `cargo install --git`.
 - [ ] Estado vindo dos hooks do agente (ex.: `Stop` do Claude Code) em vez da heurística da saída do
   terminal.
 - [ ] Mascote "cansado" quando os limites do plano passam de 80%.

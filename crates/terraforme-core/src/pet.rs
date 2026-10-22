@@ -21,6 +21,8 @@ const ECHO: Duration = Duration::from_millis(1500);
 const WORK_MIN: Duration = Duration::from_secs(2);
 /// Silêncio depois de trabalhar que marca a instância como terminada.
 const QUIET: Duration = Duration::from_secs(4);
+/// Binário da janela, instalado como plugin (`terraforme plugin install pet`).
+pub const BIN: &str = "terraforme-pet";
 /// Tempo de espera pelas respostas do daemon.
 const TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -296,15 +298,15 @@ pub fn start() -> Result<bool> {
     if running().is_some() {
         return Ok(false);
     }
-    let mut cmd = process::Command::new(crate::mcp::sibling_bin("terraforme-pet"));
+    let bin = crate::plugin::locate(BIN)
+        .context("o mascote é um plugin — instale com `terraforme plugin install pet`")?;
+    let mut cmd = process::Command::new(bin);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     // Sobrevive ao terminal que a abriu.
     crate::platform::detach(&mut cmd);
-    cmd.spawn().context(
-        "falha ao abrir terraforme-pet — instale pelo install.linux.sh (o release ainda não o traz)",
-    )?;
+    cmd.spawn().context("falha ao abrir terraforme-pet")?;
     Ok(true)
 }
 

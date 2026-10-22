@@ -5,6 +5,26 @@ Todas as mudanças relevantes do terraforme ficam neste arquivo. O formato segue
 [Versionamento Semântico](https://semver.org/lang/pt-BR/): toda alteração entregue sobe a versão
 em `Cargo.toml` (`[workspace.package] version`) e ganha uma seção aqui.
 
+## 0.25.0 - 2026-10-22
+
+### Adicionado
+
+- Plugins: `terraforme plugin list|install|update|remove`. Cada plugin é um programa publicado
+  num repositório próprio, descrito por um `terraforme-plugin.toml` (nome, binário, repositório,
+  sistemas, versão mínima do terraforme). Os oficiais ficam num registro no core (instaláveis só
+  pelo nome) e qualquer `dono/repo` do GitHub com o manifesto também pode ser instalado. A
+  instalação tenta o binário da última GitHub Release (`<bin>-<target>.tar.gz`, conferido pelo
+  `.sha256`) e, sem ele, `cargo install --git`; vai para `~/.local/bin` (pasta do `terraforme`
+  no Windows) e os instalados ficam em `plugins.toml` na pasta de configuração.
+
+### Alterado
+
+- A janela flutuante (`terraforme-pet`) saiu deste repositório para
+  [Augustowtg/terraforme-pet](https://github.com/Augustowtg/terraforme-pet) e virou plugin:
+  instale com `terraforme plugin install pet`. O `install.linux.sh` não a compila mais (atualiza
+  a já instalada com `terraforme plugin update pet`), e `terraforme pet`/`terraforme status`
+  avisam quando ela não está instalada.
+
 ## 0.24.0 - 2026-10-22
 
 ### Adicionado

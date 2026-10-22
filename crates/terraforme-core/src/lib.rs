@@ -12,6 +12,7 @@ pub mod limits;
 pub mod mcp;
 pub mod pet;
 pub mod platform;
+pub mod plugin;
 pub mod skill;
 pub mod space;
 pub mod status;

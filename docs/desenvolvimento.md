@@ -27,8 +27,8 @@ cargo build --profile dist -p terraforme-cli     # fat LTO, para distribuir
 | `release` | padrão, sem LTO de propósito: com fat LTO + 1 unidade de código, o último binário compilava num só núcleo por 35s+ e parecia travado |
 | `dist` | herda o `release` com `lto = true` e `codegen-units = 1`; usado pelas releases e por `--dist` |
 
-Para instalar a partir do código (constrói `terraforme`, `terraforme-mcp` e, no Linux,
-`terraforme-pet`):
+Para instalar a partir do código (constrói `terraforme` e `terraforme-mcp`; a janela flutuante é
+o plugin `terraforme-pet`, de outro repositório):
 
 ```bash
 ./install.linux.sh               # --update (git pull antes), --dist, --uninstall
@@ -119,5 +119,6 @@ Regras do `commitlint.config.mjs` (sobre `@commitlint/config-conventional`):
 2. cria a GitHub Release com a seção da versão no `CHANGELOG.md`.
 
 - O `install.sh`/`install.ps1` baixam esses pacotes: mantenha os nomes em sincronia.
-- O `terraforme-pet` não vai na release: os binários musl não conseguem carregar X11/Wayland/GL
-  (veja o [ROADMAP](../ROADMAP.md)).
+- O `terraforme-pet` é um plugin com repositório e release próprios
+  ([Augustowtg/terraforme-pet](https://github.com/Augustowtg/terraforme-pet), binários glibc: os
+  musl não carregam X11/Wayland/GL), baixado por `terraforme plugin install pet`.

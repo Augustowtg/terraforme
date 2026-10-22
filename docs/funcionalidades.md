@@ -274,7 +274,9 @@ Detalhes: [MCP/mcp.feature.md](MCP/mcp.feature.md) e
 
 ## 11. Janela flutuante (`terraforme pet`)
 
-Binário `terraforme-pet` (só Linux, instalado pelo `install.linux.sh`; não vem nas releases):
+Plugin `terraforme-pet` (só Linux, repositório
+[Augustowtg/terraforme-pet](https://github.com/Augustowtg/terraforme-pet); instale com
+`terraforme plugin install pet`):
 janela sempre por cima com o mascote, cujo humor segue a instância mais urgente. Avisa (balão +
 `notify-send`) quando um agente termina ou pede atenção, e um clique abre o menu de instâncias e
 traz o terminal certo para a frente. Abre com `terraforme pet` ou junto com o `terraforme cli`

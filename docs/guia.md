@@ -31,8 +31,8 @@ PREFIX=/usr/local ./install.linux.sh     # em /usr/local/bin (usa sudo)
 ./install.linux.sh --uninstall           # remove
 ```
 
-Instala `terraforme`, `terraforme-mcp` e `terraforme-pet` (e, com GNOME, a extensão do GNOME Shell
-usada pela janela flutuante). Depois de uma atualização, o script mostra as novidades do
+Instala `terraforme` e `terraforme-mcp` (e, com GNOME, a extensão do GNOME Shell usada pela janela
+flutuante, que é o plugin `terraforme plugin install pet`). Depois de uma atualização, o script mostra as novidades do
 [`CHANGELOG.md`](../CHANGELOG.md).
 
 ### Do código-fonte (Windows)

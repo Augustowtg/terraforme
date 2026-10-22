@@ -16,6 +16,7 @@ use terraforme_core::history::{History, Launch};
 use terraforme_core::jail;
 use terraforme_core::mcp;
 use terraforme_core::pet;
+use terraforme_core::plugin;
 use terraforme_core::skill;
 use terraforme_core::space::{self, Preferences, Spaces};
 use terraforme_core::status::{self, Component, State};
@@ -61,6 +62,27 @@ struct Cli {
     /// Sem subcomando, mostra a ajuda.
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum PluginAction {
+    /// Lista os plugins conhecidos e instalados
+    List,
+    /// Instala um plugin (nome de `plugin list` ou `dono/repo` do GitHub)
+    Install {
+        #[arg(value_name = "PLUGIN")]
+        name: String,
+    },
+    /// Atualiza um plugin para a última versão
+    Update {
+        #[arg(value_name = "PLUGIN")]
+        name: String,
+    },
+    /// Remove um plugin instalado pelo terraforme
+    Remove {
+        #[arg(value_name = "PLUGIN")]
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -319,6 +341,19 @@ Terminais abertos antes da 0.22.2 não se reconectam: feche e abra de novo.")]
     #[command(after_help = "\
 Para abrir junto com o terraforme cli: terraforme config --pet true")]
     Pet,
+    /// Gerencia os plugins: programas opcionais publicados em repositórios próprios (ex.: o
+    /// mascote) e baixados sob demanda
+    #[command(after_help = "\
+Exemplos:
+  terraforme plugin list                  plugins conhecidos e instalados
+  terraforme plugin install pet           instala a janela flutuante com o mascote
+  terraforme plugin install dono/repo     instala um plugin de terceiros (repo com terraforme-plugin.toml)
+  terraforme plugin update pet            baixa a última versão
+  terraforme plugin remove pet            remove")]
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
     /// Mostra a versão do terraforme
     Version,
     /// Gera o script de autocompletar do shell
@@ -411,6 +446,44 @@ fn usage_error(err: &clap::Error) -> ! {
 
 /// O subcomando mais interno citado nos argumentos (ou o comando raiz), já com o nome completo
 /// (`terraforme space`) para o `Usage:` da ajuda.
+fn plugin_command(action: PluginAction) -> Result<()> {
+    match action {
+        PluginAction::List => {
+            for (manifest, path) in plugin::list()? {
+                let state = match (&path, manifest.supported()) {
+                    (Some(path), _) => format!("✔ {}", path.display()),
+                    (None, true) => "não instalado".into(),
+                    (None, false) => format!("não roda em {}", std::env::consts::OS),
+                };
+                println!("  {:<12} {state}", manifest.name);
+                println!("  {:<12} {} ({})", "", manifest.description, manifest.repo);
+            }
+        }
+        PluginAction::Install { name } | PluginAction::Update { name } => {
+            let out = plugin::install(&name)?;
+            println!(
+                "✔ Plugin {} instalado em {} ({})",
+                out.manifest.name,
+                out.path.display(),
+                out.source
+            );
+            if out.manifest.bin == pet::BIN && pet::running().is_some() {
+                println!("  Reabra a janela para usar a versão nova: terraforme restart");
+            }
+        }
+        PluginAction::Remove { name } => {
+            if name == "pet" {
+                pet::stop()?;
+            }
+            match plugin::remove(&name)? {
+                Some(path) => println!("✔ Plugin {name} removido ({})", path.display()),
+                None => println!("O plugin {name} não estava instalado pelo terraforme"),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn help_for(args: impl IntoIterator<Item = String>) -> clap::Command {
     let mut cmd = cli_command();
     cmd.build();
@@ -447,6 +520,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("A janela flutuante já está aberta");
             }
         }
+        Command::Plugin { action } => plugin_command(action)?,
         Command::Status => print_status(),
         Command::Setup => setup_flow()?,
         Command::Extension {
@@ -784,6 +858,8 @@ fn config(
     println!("  UI web    {ui}");
     let pet = if !pet::is_supported() {
         "só no Linux por enquanto (veja o ROADMAP.md)"
+    } else if plugin::locate(pet::BIN).is_none() {
+        "não instalada (instale com `terraforme plugin install pet`)"
     } else if config.tui.pet {
         "abre com o terraforme cli"
     } else {

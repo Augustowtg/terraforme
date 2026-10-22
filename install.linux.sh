@@ -18,7 +18,8 @@ TARGET="$BIN_DIR/$BIN_NAME"
 # Daemon MCP compartilhado (conversa entre instâncias, subagentes), iniciado
 # pelo `terraforme cli` a partir do PATH.
 MCP_TARGET="$BIN_DIR/terraforme-mcp"
-# Janela flutuante com o mascote (`terraforme pet`).
+# Janela flutuante com o mascote (`terraforme pet`): plugin do repositório
+# Augustowtg/terraforme-pet, instalado por `terraforme plugin install pet`.
 PET_TARGET="$BIN_DIR/terraforme-pet"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Extensão do GNOME Shell que deixa a janela flutuante trazer o terminal para
@@ -97,7 +98,7 @@ if [[ -x "$TARGET" ]]; then
 fi
 
 info "Compilando $BIN_NAME (perfil $profile)…"
-cargo build --profile "$profile" --locked -p terraforme-cli -p terraforme-mcp -p terraforme-pet --manifest-path "$REPO_DIR/Cargo.toml"
+cargo build --profile "$profile" --locked -p terraforme-cli -p terraforme-mcp --manifest-path "$REPO_DIR/Cargo.toml"
 
 # Copia para um arquivo temporário e troca com `mv`: substituir o binário no
 # lugar falha ("Text file busy") se houver um `terraforme` rodando.
@@ -107,8 +108,10 @@ run install -m 755 "$REPO_DIR/target/$profile/$BIN_NAME" "$TARGET.new"
 run mv -f "$TARGET.new" "$TARGET"
 run install -m 755 "$REPO_DIR/target/$profile/terraforme-mcp" "$MCP_TARGET.new"
 run mv -f "$MCP_TARGET.new" "$MCP_TARGET"
-run install -m 755 "$REPO_DIR/target/$profile/terraforme-pet" "$PET_TARGET.new"
-run mv -f "$PET_TARGET.new" "$PET_TARGET"
+# O mascote virou plugin: atualiza o que já estava instalado.
+if [[ -e "$PET_TARGET" ]]; then
+    "$TARGET" plugin update pet || warn "Falha ao atualizar o mascote — rode \`terraforme plugin update pet\`."
+fi
 current="$("$TARGET" version)"
 if [[ "$previous" == "$current" ]]; then
     ok "Recompilado: $current (mesma versão)"

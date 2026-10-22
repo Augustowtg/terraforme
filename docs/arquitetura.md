@@ -11,8 +11,7 @@ código; o uso está no [Guia](guia.md) e o catálogo em [Funcionalidades](funci
 ├── crates/
 │   ├── terraforme-core/      # toda a lógica (biblioteca)
 │   ├── terraforme-cli/       # binário `terraforme`: clap e a TUI
-│   ├── terraforme-mcp/       # binário `terraforme-mcp`: daemon compartilhado entre os terminais
-│   └── terraforme-pet/       # binário `terraforme-pet`: janela flutuante (só Linux)
+│   └── terraforme-mcp/       # binário `terraforme-mcp`: daemon compartilhado entre os terminais
 ├── skills/                   # skills de agente embutidas no binário (build.rs do core)
 ├── assets/                   # sprites do mascote e extensão do GNOME Shell
 ├── docs/                     # esta documentação
@@ -28,7 +27,10 @@ código; o uso está no [Guia](guia.md) e o catálogo em [Funcionalidades](funci
 | `terraforme-core` | — | Toda a lógica. Com a feature `clap`, deriva `clap::ValueEnum` em `Extension`, `Provider`, `Mode` e `CliMode`, usados direto como argumentos. |
 | `terraforme-cli` | `terraforme` | Casca em volta do core: `main.rs` (clap e saída), `term.rs` (TUI), `chat.rs` + `markdown.rs` (chat do Middleware), `select.rs` (seleção múltipla no terminal). |
 | `terraforme-mcp` | `terraforme-mcp` | Daemon axum em `127.0.0.1` (JSON-RPC MCP sobre HTTP): `hub.rs` (instâncias e mensagens), `lifecycle.rs` (clientes, heartbeat, encerramento), `tools/` (ferramentas MCP), `ui.rs` + `ui.html` (UI web), `pet.rs` (endpoints da janela). |
-| `terraforme-pet` | `terraforme-pet` | Janela eframe/egui (glow) com o mascote; dependências de GUI só em `cfg(target_os = "linux")`. Nos outros sistemas, `main` só aponta para o `ROADMAP.md`. |
+
+A janela flutuante (`terraforme-pet`) é um plugin com repositório próprio,
+[Augustowtg/terraforme-pet](https://github.com/Augustowtg/terraforme-pet), que depende do
+`terraforme-core` por git; ver o módulo `plugin`.
 
 ## Módulos do `terraforme-core`
 
@@ -47,6 +49,7 @@ código; o uso está no [Guia](guia.md) e o catálogo em [Funcionalidades](funci
 | `space` | `Spaces` em `<config>/spaces.toml`, `Preferences` por space e `space::root` (`~/.terraforme`). |
 | `skill` | Skills embutidas (pasta `skills/`, via `build.rs`) e instalação em `Adapter::skills_dir`. |
 | `mcp` | Lado cliente do daemon: `McpConfig` (`[mcp]`), lock file e `ensure_running`. |
+| `plugin` | Plugins de outros repositórios: `Manifest` (`terraforme-plugin.toml`), registro `KNOWN` dos oficiais, `plugins.toml` dos instalados e a fábrica `sources()` das formas de instalar (`Release`: `<bin>-<target>.tar.gz` + `.sha256` da última GitHub Release; `Cargo`: `cargo install --git`), tentadas em ordem por `install`. |
 | `pet` | `Activity` e `Tracker` (estado de cada instância), cliente HTTP do `terraforme-pet`, `notify` e lock/start/stop da janela. |
 | `chat` | Middleware: `ChatEvent` (saída estruturada comum a todos os agentes) e os protocolos de cada um — o `stream-json` do Claude Code com os pedidos de controle do SDK (`initialize`, `can_use_tool`), o `stream-json` do Antigravity (`step_update`, `result`) e o Agent Client Protocol do OpenCode (`opencode acp`). |
 
