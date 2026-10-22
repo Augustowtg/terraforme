@@ -1,3 +1,5 @@
+mod chat;
+mod markdown;
 mod select;
 mod term;
 
@@ -13,6 +15,7 @@ use terraforme_core::extension::{Extension, Outcome};
 use terraforme_core::history::{History, Launch};
 use terraforme_core::jail;
 use terraforme_core::mcp;
+use terraforme_core::pet;
 use terraforme_core::skill;
 use terraforme_core::space::{self, Preferences, Spaces};
 use terraforme_core::status::{self, Component, State};
@@ -221,6 +224,10 @@ Preferências por pasta: `terraforme space <nome> --mode/--jail/--agent/--accoun
         /// entre elas
         #[arg(long = "mcp-ui", value_name = "BOOL", action = clap::ArgAction::Set, help_heading = "UI web")]
         mcp_ui: Option<bool>,
+        /// Abre (true) ou não (false) a janela flutuante com o mascote junto com o
+        /// `terraforme cli` (só no Linux)
+        #[arg(long, value_name = "BOOL", action = clap::ArgAction::Set, help_heading = "Janela flutuante")]
+        pet: Option<bool>,
         /// Sem valor, lista as contas; com `NOME=PASTA`, registra ou atualiza uma. A pasta é o
         /// `CLAUDE_CONFIG_DIR` da conta (credenciais, configurações, sessões) e precisa existir
         #[arg(long, value_name = "NOME=PASTA", num_args = 0..=1, help_heading = "Contas do Claude Code")]
@@ -296,7 +303,22 @@ Exemplos:
         /// Não faz git pull, só recompila o código local
         #[arg(long)]
         no_pull: bool,
+        /// Reinicia o terraforme (daemon MCP e janela flutuante) depois, sem perguntar
+        #[arg(long)]
+        restart: bool,
     },
+    /// Reinicia o terraforme em segundo plano — o daemon MCP (e órfãos de versões antigas) e a
+    /// janela flutuante — com os binários instalados agora, ex.: depois de um upgrade
+    #[command(after_help = "\
+Os terraforme cli abertos se registram sozinhos no daemon novo; os agentes já
+abertos neles só voltam a usar o MCP depois de reiniciados (Ctrl+Alt+R).
+Terminais abertos antes da 0.22.2 não se reconectam: feche e abra de novo.")]
+    Restart,
+    /// Abre a janela flutuante com o mascote: avisa quando os agentes terminam e, com um
+    /// clique, leva à instância escolhida (só no Linux por enquanto)
+    #[command(after_help = "\
+Para abrir junto com o terraforme cli: terraforme config --pet true")]
+    Pet,
     /// Mostra a versão do terraforme
     Version,
     /// Gera o script de autocompletar do shell
@@ -418,6 +440,13 @@ fn run(cli: Cli) -> Result<()> {
 
     match command {
         Command::Version => println!("terraforme {}", terraforme_core::VERSION),
+        Command::Pet => {
+            if pet::start()? {
+                println!("✔ Janela flutuante aberta");
+            } else {
+                println!("A janela flutuante já está aberta");
+            }
+        }
         Command::Status => print_status(),
         Command::Setup => setup_flow()?,
         Command::Extension {
@@ -456,7 +485,18 @@ fn run(cli: Cli) -> Result<()> {
             } else if project {
                 jail_project()?;
             } else if let Some(on) = default {
-                config(None, None, Some(on), None, None, None, None, None, None)?;
+                config(
+                    None,
+                    None,
+                    Some(on),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
             } else if delete {
                 let ext = targets[0];
                 if yes || confirm(&format!("Remover {}?", ext.name()))? {
@@ -476,6 +516,7 @@ fn run(cli: Cli) -> Result<()> {
             budget_five_hours,
             budget_week,
             mcp_ui,
+            pet,
             account,
             remove_account,
         } => config(
@@ -486,6 +527,7 @@ fn run(cli: Cli) -> Result<()> {
             budget_five_hours,
             budget_week,
             mcp_ui,
+            pet,
             account,
             remove_account,
         )?,
@@ -549,7 +591,9 @@ fn run(cli: Cli) -> Result<()> {
             repo,
             dist,
             no_pull,
-        } => upgrade(repo, dist, no_pull)?,
+            restart,
+        } => upgrade(repo, dist, no_pull, restart)?,
+        Command::Restart => restart()?,
         Command::Help { command } => {
             let mut cmd = help_for(command);
             cmd.print_long_help()?;
@@ -585,6 +629,7 @@ fn config(
     budget_five_hours: Option<u64>,
     budget_week: Option<u64>,
     mcp_ui: Option<bool>,
+    pet: Option<bool>,
     account: Option<Option<String>>,
     remove_account: Option<String>,
 ) -> Result<()> {
@@ -691,6 +736,10 @@ fn config(
         config.mcp.ui = ui;
         changed = true;
     }
+    if let Some(pet) = pet {
+        config.tui.pet = pet;
+        changed = true;
+    }
     for (value, field) in [
         (budget_five_hours, &mut config.budget.five_hours),
         (budget_week, &mut config.budget.week),
@@ -733,6 +782,14 @@ fn config(
         _ => "desligada (liga com `terraforme config --mcp-ui true`)".into(),
     };
     println!("  UI web    {ui}");
+    let pet = if !pet::is_supported() {
+        "só no Linux por enquanto (veja o ROADMAP.md)"
+    } else if config.tui.pet {
+        "abre com o terraforme cli"
+    } else {
+        "desligada (liga com `terraforme config --pet true`)"
+    };
+    println!("  mascote   {pet}");
     Ok(())
 }
 
@@ -908,6 +965,7 @@ fn pick_mode(eco: bool, high: bool, hybrid: bool) -> Option<Mode> {
 }
 
 /// Agente, modo e sandbox pedidos na linha de comando (`None` = o padrão).
+#[derive(Clone, Copy)]
 struct Choice {
     agent: Option<Provider>,
     mode: Option<Mode>,
@@ -956,7 +1014,9 @@ impl Choice {
 
         // Conta do Claude Code: define CLAUDE_CONFIG_DIR antes de prepare()
         // para que Claude::setup() use a pasta certa (hooks, credenciais, MCP).
-        // SAFETY: a CLI é single-threaded; estamos prestes a exec o agente.
+        // SAFETY: fora da TUI a CLI é single-threaded e está prestes a exec o
+        // agente; na TUI (aba Config troca agente/modo) as outras threads são
+        // só Rust, que lê o ambiente com o mesmo lock do `set_var`.
         if provider == Provider::Claude
             && let Some(name) = prefs.account.as_deref()
         {
@@ -1018,7 +1078,42 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
         }
     };
     let client_id = uuid::Uuid::new_v4().to_string();
+    // A janela flutuante lê o estado das instâncias no daemon.
+    let pet_warning = (config.tui.pet && pet::is_supported())
+        .then(|| pet::start().err())
+        .flatten()
+        .map(|e| format!("janela flutuante: {e:#}"));
 
+    let mut launched = resolve_launch(choice, args)?;
+    launched
+        .notices
+        .extend(pet_warning.map(|w| format!("⚠ {w}")));
+    let space = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| Preferences::find(&cwd).ok().flatten())
+        .map(|(name, _)| name);
+
+    // A aba Config troca agente e modo: o que ela grava vence as flags.
+    let args = args.to_vec();
+    term::run(term::Options {
+        launched,
+        relaunch: Box::new(move |provider, mode, jail| {
+            let choice = Choice {
+                agent: Some(provider),
+                mode: Some(mode),
+                jail: Some(jail),
+            };
+            resolve_launch(choice, &args)
+        }),
+        instances,
+        mcp_lock,
+        client_id,
+        space,
+    })
+}
+
+/// Resolve a escolha no que a TUI precisa para abrir as instâncias.
+fn resolve_launch(choice: Choice, args: &[String]) -> Result<term::Launched> {
     let Resolved {
         provider,
         mode,
@@ -1026,34 +1121,24 @@ fn run_term(choice: Choice, instances: usize, args: &[String]) -> Result<()> {
         launch,
     } = choice.resolve(args)?;
     let adapter = provider.adapter().context("agente sem adapter")?;
-    let space = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| Preferences::find(&cwd).ok().flatten())
-        .map(|(name, _)| name);
-
     let notices = launch
         .notices
         .iter()
         .map(|n| format!("ℹ {n}"))
         .chain(launch.warnings.iter().map(|w| format!("⚠ {w}")))
         .collect();
-    let title = launch_title(provider, mode, jail);
     let mut extensions = mode.extensions();
     if jail {
         extensions.push(Extension::AiJail);
     }
-    term::run(term::Options {
+    Ok(term::Launched {
         agent: provider.id().to_string(),
-        title,
+        title: launch_title(provider, mode, jail),
         adapter,
         command: launch.command,
-        instances,
         session_ids: !adapter.picks_session(args),
         notices,
         extensions,
-        mcp_lock,
-        client_id,
-        space,
     })
 }
 
@@ -1102,7 +1187,38 @@ const RELEASE_SCRIPTS: &str = "https://raw.githubusercontent.com/Augustowtg/terr
 /// `install.windows.ps1` no Windows) no lugar do terraforme (`exec`), para que
 /// o binário em uso possa ser substituído. Sem o repositório (binário de uma
 /// release), baixa a última release com o `install.sh` / `install.ps1`.
-fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Result<()> {
+/// Reinicia o daemon MCP e, se estava aberta, a janela flutuante.
+fn restart() -> Result<()> {
+    let config = Config::load()?;
+    let (stopped, lock) = mcp::restart(&config.mcp)?;
+    let old = match stopped {
+        0 => String::new(),
+        1 => " (1 antigo encerrado)".to_string(),
+        n => format!(" ({n} antigos encerrados)"),
+    };
+    println!("✔ terraforme-mcp no ar na porta {}{old}", lock.port);
+    if pet::running().is_some() {
+        pet::stop()?;
+        // A janela antiga leva um instante para apagar o lock.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while pet::running().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        pet::start()?;
+        println!("✔ Janela flutuante reaberta");
+    }
+    println!(
+        "  Os terraforme cli abertos se reconectam sozinhos; reinicie os agentes neles (⌃⌥R)\n  para voltarem a usar o MCP. Terminais de antes da 0.22.2: feche e abra de novo."
+    );
+    Ok(())
+}
+
+fn upgrade(
+    repo: Option<std::path::PathBuf>,
+    dist: bool,
+    no_pull: bool,
+    restart: bool,
+) -> Result<()> {
     let windows = cfg!(windows);
     if !windows && !cfg!(target_os = "linux") {
         bail!(
@@ -1118,7 +1234,7 @@ fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Resul
         "install.linux.sh"
     });
     if !script.is_file() && !explicit {
-        return upgrade_release(windows);
+        return upgrade_release(windows, restart);
     }
     if !script.is_file() {
         bail!(
@@ -1141,12 +1257,12 @@ fn upgrade(repo: Option<std::path::PathBuf>, dist: bool, no_pull: bool) -> Resul
     if dist {
         command.arg(if windows { "-Dist" } else { "--dist" });
     }
-    set_prefix(&mut command);
+    set_prefix(&mut command, restart);
     exec(command)
 }
 
 /// Atualiza pela última release do GitHub, com o script de instalação dela.
-fn upgrade_release(windows: bool) -> Result<()> {
+fn upgrade_release(windows: bool, restart: bool) -> Result<()> {
     let mut command;
     if windows {
         command = std::process::Command::new("powershell");
@@ -1157,12 +1273,17 @@ fn upgrade_release(windows: bool) -> Result<()> {
         command.arg("-c");
         command.arg(format!("curl -fsSL {RELEASE_SCRIPTS}/install.sh | sh"));
     }
-    set_prefix(&mut command);
+    set_prefix(&mut command, restart);
     exec(command)
 }
 
 /// Reinstala no mesmo prefixo do binário atual (`<prefixo>/bin/terraforme`).
-fn set_prefix(command: &mut std::process::Command) {
+/// Os scripts de instalação perguntam se reiniciam o terraforme no fim; com
+/// `restart` (`TERRAFORME_RESTART=1`), reiniciam sem perguntar.
+fn set_prefix(command: &mut std::process::Command, restart: bool) {
+    if restart {
+        command.env("TERRAFORME_RESTART", "1");
+    }
     if std::env::var_os("PREFIX").is_none()
         && let Ok(exe) = std::env::current_exe()
         && let Some(bin) = exe.parent()
