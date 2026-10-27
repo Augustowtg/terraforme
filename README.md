@@ -78,6 +78,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Enter` em **Sair** | Abre a confirmação de saída |
 | `←` / `→` | Alterna entre **Sim** (verde) e **Não** (vermelho) na confirmação |
 | `Enter` na confirmação | **Sim** sai; **Não** fecha a caixa |
+| Saindo de um workspace não salvo | Pergunta se salva: **Sim** (salva e sai), **Não** (sai) ou **Não (não perguntar novamente)** (sai e não pergunta mais neste workspace). `Esc` desiste de sair |
 | `Ctrl+C` | Sai direto, sem confirmação |
 
 ### Aba Consumo

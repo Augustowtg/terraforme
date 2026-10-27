@@ -1,6 +1,7 @@
 //! Tela principal do `terra cli`: barra de abas no topo e o conteúdo da aba
 //! ativa logo abaixo. `Esc` leva o foco ao botão "Sair"; `Enter` nele abre a
-//! confirmação de saída.
+//! confirmação de saída. Saindo de um workspace que não está salvo, a tela
+//! pergunta se ele deve ser salvo (Sim, Não ou Não, sem perguntar de novo).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,6 +29,10 @@ const CONFIRM_TITLE: &str = " Sair ";
 const CONFIRM_TEXT: &str = "Deseja sair do terraforme?";
 const YES_LABEL: &str = "  Sim  ";
 const NO_LABEL: &str = "  Não  ";
+const SAVE_TITLE: &str = " Salvar workspace ";
+const SAVE_TEXT: &str = "Este workspace não está salvo. Deseja salvar?";
+/// As opções da pergunta de salvar, na ordem de [`SaveChoice`].
+const SAVE_LABELS: [&str; 3] = ["  Sim  ", "  Não  ", "  Não (não perguntar novamente)  "];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -63,6 +68,33 @@ enum Focus {
     Quit,
     /// Caixa de confirmação aberta; `true` quando "Sim" está selecionado.
     Confirm(bool),
+    /// Pergunta, ao sair, se o workspace deve ser salvo; a opção selecionada.
+    SaveAsk(SaveChoice),
+}
+
+/// As opções da pergunta de salvar o workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveChoice {
+    Yes,
+    No,
+    /// Não, e não perguntar mais neste workspace.
+    NeverAsk,
+}
+
+impl SaveChoice {
+    const ALL: [SaveChoice; 3] = [SaveChoice::Yes, SaveChoice::No, SaveChoice::NeverAsk];
+
+    /// A opção ao lado (`step` 1 ou -1), dando a volta.
+    fn step(self, step: isize) -> SaveChoice {
+        let i = (self as isize + step).rem_euclid(Self::ALL.len() as isize);
+        Self::ALL[i as usize]
+    }
+}
+
+/// O diretório aberto e se ele já é um workspace salvo.
+struct Workspace {
+    dir: PathBuf,
+    saved: bool,
 }
 
 #[derive(Default)]
@@ -76,19 +108,54 @@ pub struct App {
     /// O `config.json` do workspace, onde as configurações são salvas
     /// (`None` nos testes).
     config: Option<PathBuf>,
+    /// O diretório aberto (`None` nos testes).
+    workspace: Option<Workspace>,
+    /// Onde o workspace é salvo, se o usuário pedir ao sair.
+    db: Option<Db>,
 }
 
 impl App {
     /// Tela principal com o chat ligado ao provedor disponível e as
-    /// configurações do workspace, salvas em `config`. Um workspace sem o
-    /// arquivo começa com as configurações globais do `db`.
-    pub fn new(db: Db, config: PathBuf) -> Self {
+    /// configurações do workspace `dir`, salvas em `config`. Um workspace
+    /// sem o arquivo começa com as configurações globais do `db`.
+    pub fn new(db: Db, dir: PathBuf, config: PathBuf) -> Self {
         let settings = initial_settings(&db, &config);
+        let saved = db.workspace_name(&dir).ok().flatten().is_some();
         Self {
             chat: Chat::connect(&settings),
             settings,
             config: Some(config),
+            workspace: Some(Workspace { dir, saved }),
+            db: Some(db),
             ..Self::default()
+        }
+    }
+
+    /// Ao sair, pergunta se salva o workspace: só quando ele não está salvo e
+    /// ninguém escolheu "não perguntar novamente".
+    fn asks_to_save(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|w| !w.saved)
+            && self
+                .config
+                .as_deref()
+                .is_none_or(crate::settings::asks_to_save)
+    }
+
+    /// Aplica a resposta da pergunta de salvar. Saindo, um erro não tem onde
+    /// aparecer: o terra sai do mesmo jeito.
+    fn answer_save(&mut self, choice: SaveChoice) {
+        match choice {
+            SaveChoice::Yes => {
+                if let (Some(db), Some(workspace)) = (&self.db, &mut self.workspace) {
+                    workspace.saved = db.save_workspace(&workspace.dir, None).is_ok();
+                }
+            }
+            SaveChoice::No => {}
+            SaveChoice::NeverAsk => {
+                if let Some(config) = &self.config {
+                    let _ = crate::settings::stop_asking_to_save(config);
+                }
+            }
         }
     }
 
@@ -183,10 +250,23 @@ impl App {
             (Focus::Confirm(yes), KeyCode::Left | KeyCode::Right | KeyCode::Tab) => {
                 self.focus = Focus::Confirm(!yes)
             }
+            (Focus::Confirm(true), KeyCode::Enter) if self.asks_to_save() => {
+                self.focus = Focus::SaveAsk(SaveChoice::Yes)
+            }
             (Focus::Confirm(true), KeyCode::Enter) => return true,
             (Focus::Confirm(false), KeyCode::Enter) | (Focus::Confirm(_), KeyCode::Esc) => {
                 self.focus = Focus::Quit
             }
+            (Focus::SaveAsk(choice), KeyCode::Left) => self.focus = Focus::SaveAsk(choice.step(-1)),
+            (Focus::SaveAsk(choice), KeyCode::Right | KeyCode::Tab) => {
+                self.focus = Focus::SaveAsk(choice.step(1))
+            }
+            (Focus::SaveAsk(choice), KeyCode::Enter) => {
+                self.answer_save(choice);
+                return true;
+            }
+            // Esc desiste de sair.
+            (Focus::SaveAsk(_), KeyCode::Esc) => self.focus = Focus::Quit,
             _ => {}
         }
         false
@@ -236,14 +316,16 @@ impl App {
             Focus::Tabs if self.tab == Tab::Consumo => self.usage.help().into(),
             Focus::Tabs => HELP.into(),
             Focus::Quit => HELP_QUIT.into(),
-            Focus::Confirm(_) => HELP_CONFIRM.into(),
+            Focus::Confirm(_) | Focus::SaveAsk(_) => HELP_CONFIRM.into(),
         };
         frame.render_widget(
             Paragraph::new(Span::styled(format!(" {help}"), theme::muted())),
             footer,
         );
-        if let Focus::Confirm(yes) = self.focus {
-            draw_confirm(frame, area, yes);
+        match self.focus {
+            Focus::Confirm(yes) => draw_confirm(frame, area, yes),
+            Focus::SaveAsk(choice) => draw_save_ask(frame, area, choice),
+            _ => {}
         }
     }
 
@@ -313,6 +395,43 @@ impl App {
         };
         self.usage.draw(frame, area, self.chat.adapter(), &route);
     }
+}
+
+/// A pergunta de salvar o workspace, centralizada sobre a tela.
+fn draw_save_ask(frame: &mut Frame, area: Rect, choice: SaveChoice) {
+    let [area] = Layout::vertical([Constraint::Length(7)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [area] = Layout::horizontal([Constraint::Length(62)])
+        .flex(Flex::Center)
+        .areas(area);
+
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::border())
+        .title(Span::styled(SAVE_TITLE, theme::section_title()))
+        .style(theme::screen())
+        .padding(Padding::vertical(1));
+    let mut buttons = Vec::new();
+    for (option, label) in SaveChoice::ALL.into_iter().zip(SAVE_LABELS) {
+        if !buttons.is_empty() {
+            buttons.push(Span::raw("   "));
+        }
+        let selected = option == choice;
+        let style = match option {
+            SaveChoice::Yes => theme::confirm_yes(selected),
+            SaveChoice::No | SaveChoice::NeverAsk => theme::confirm_no(selected),
+        };
+        buttons.push(Span::styled(label, style));
+    }
+    let lines = vec![Line::from(SAVE_TEXT), Line::default(), Line::from(buttons)];
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(block),
+        area,
+    );
 }
 
 /// As configurações do workspace (`config`) ou, sem o arquivo, as globais.
@@ -498,6 +617,102 @@ mod tests {
         // Com o arquivo, ele vence as globais.
         assert_eq!(initial_settings(&db, &config), saved);
         assert_eq!(AgentSettings::load(&db), global, "as globais não mudam");
+    }
+
+    /// Uma tela num workspace não salvo, com o `config.json` em `dir`.
+    fn unsaved_app(dir: &std::path::Path) -> App {
+        App {
+            config: Some(crate::settings::config_file(dir, "projeto")),
+            workspace: Some(Workspace {
+                dir: dir.join("projeto"),
+                saved: false,
+            }),
+            db: Some(Db::open_in_memory().unwrap()),
+            ..App::default()
+        }
+    }
+
+    /// Esc, Enter em Sair e Enter no "Sim" da confirmação.
+    fn confirm_quit(app: &mut App) -> bool {
+        key(app, KeyCode::Esc);
+        key(app, KeyCode::Enter);
+        key(app, KeyCode::Enter)
+    }
+
+    #[test]
+    fn quitting_an_unsaved_workspace_asks_and_yes_saves_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = unsaved_app(dir.path());
+        assert!(!confirm_quit(&mut app), "ainda não saiu: pergunta");
+        assert_eq!(app.focus, Focus::SaveAsk(SaveChoice::Yes));
+        assert!(key(&mut app, KeyCode::Enter), "Sim sai");
+        let db = app.db.as_ref().unwrap();
+        assert_eq!(
+            db.workspace_name(&dir.path().join("projeto")).unwrap(),
+            Some("projeto".into())
+        );
+    }
+
+    #[test]
+    fn no_quits_without_saving_and_asks_again_next_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = unsaved_app(dir.path());
+        confirm_quit(&mut app);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.focus, Focus::SaveAsk(SaveChoice::No));
+        assert!(key(&mut app, KeyCode::Enter));
+        assert!(!app.workspace.as_ref().unwrap().saved);
+        assert!(unsaved_app(dir.path()).asks_to_save());
+    }
+
+    #[test]
+    fn never_ask_quits_and_stops_asking_in_this_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = unsaved_app(dir.path());
+        confirm_quit(&mut app);
+        // ← dá a volta: do Sim para a última opção.
+        key(&mut app, KeyCode::Left);
+        assert_eq!(app.focus, Focus::SaveAsk(SaveChoice::NeverAsk));
+        assert!(key(&mut app, KeyCode::Enter));
+
+        // Da próxima vez, o Sim da confirmação já sai.
+        let mut app = unsaved_app(dir.path());
+        assert!(confirm_quit(&mut app));
+    }
+
+    #[test]
+    fn saved_workspace_quits_without_asking_and_esc_cancels_the_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = unsaved_app(dir.path());
+        confirm_quit(&mut app);
+        assert!(!key(&mut app, KeyCode::Esc));
+        assert_eq!(app.focus, Focus::Quit, "Esc desiste de sair");
+
+        app.workspace.as_mut().unwrap().saved = true;
+        key(&mut app, KeyCode::Enter);
+        assert!(key(&mut app, KeyCode::Enter), "salvo: sai direto");
+    }
+
+    #[test]
+    fn save_question_shows_the_three_options() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = unsaved_app(dir.path());
+        confirm_quit(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(70, 14)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen = (0..14)
+            .map(|y| (0..70).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Salvar workspace"), "{screen}");
+        assert!(screen.contains(SAVE_TEXT), "{screen}");
+        assert!(
+            screen.contains("Sim       Não       Não (não perguntar novamente)"),
+            "{screen}"
+        );
     }
 
     #[test]

@@ -27,3 +27,4 @@ Configurações do agente (conta, modo inicial, modelo e esforço padrão), de c
 ## Sair
 Botão em vermelho, e quando apertar Esc ele redireciona para o botão de sair quando clicar enter ele mostra o box abaixo
 1. box de confirmação (Sim) (Não) para confirmar saida ou não 
+2. se o workspace não estiver salvo, pergunta se deseja salvar: (Sim) (Não) (Não, não perguntar novamente); o "não perguntar novamente" fica no config.json do workspace
