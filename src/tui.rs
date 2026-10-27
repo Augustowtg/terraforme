@@ -9,6 +9,7 @@ mod widgets;
 mod workspace;
 
 use std::io::stdout;
+use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -19,7 +20,10 @@ use crossterm::event::{
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use crossterm::terminal::supports_keyboard_enhancement;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
+};
 use ratatui::DefaultTerminal;
 
 use crate::db::Db;
@@ -34,31 +38,61 @@ const TICK: Duration = Duration::from_millis(100);
 pub fn run_app(db: Db) -> Result<()> {
     let mut app = app::App::new(db);
     with_terminal(|terminal| {
-        // Mouse para selecionar o texto do input; cursor em barra (`|`).
-        execute!(stdout(), EnableMouseCapture, SetCursorStyle::SteadyBar)?;
         // Nos terminais com o protocolo de teclado do kitty, o Shift+Enter chega
         // diferente do Enter; nos outros, Alt+Enter e Ctrl+J pulam linha.
         let enhanced = supports_keyboard_enhancement().unwrap_or(false);
-        if enhanced {
-            execute!(
-                stdout(),
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-            )?;
-        }
-        let result = app_loop(terminal, &mut app);
-        if enhanced {
-            execute!(stdout(), PopKeyboardEnhancementFlags)?;
-        }
-        execute!(
-            stdout(),
-            DisableMouseCapture,
-            SetCursorStyle::DefaultUserShape
-        )?;
+        enter_app_mode(enhanced)?;
+        let result = app_loop(terminal, &mut app, enhanced);
+        leave_app_mode(enhanced)?;
         result
     })
 }
 
-fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App) -> Result<()> {
+/// Mouse para selecionar o texto do input, cursor em barra (`|`) e, quando
+/// o terminal tem, o protocolo de teclado do kitty.
+fn enter_app_mode(enhanced: bool) -> Result<()> {
+    execute!(stdout(), EnableMouseCapture, SetCursorStyle::SteadyBar)?;
+    if enhanced {
+        execute!(
+            stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
+    Ok(())
+}
+
+fn leave_app_mode(enhanced: bool) -> Result<()> {
+    if enhanced {
+        execute!(stdout(), PopKeyboardEnhancementFlags)?;
+    }
+    execute!(
+        stdout(),
+        DisableMouseCapture,
+        SetCursorStyle::DefaultUserShape
+    )?;
+    Ok(())
+}
+
+/// Roda o login do `/login` no terminal normal: o terra sai da tela, o
+/// login usa o terminal (navegador, código...) e a tela volta no fim.
+fn run_login(
+    terminal: &mut DefaultTerminal,
+    mut login: Command,
+    enhanced: bool,
+) -> Result<std::io::Result<ExitStatus>> {
+    leave_app_mode(enhanced)?;
+    disable_raw_mode()?;
+    execute!(stdout(), LeaveAlternateScreen)?;
+    println!("terra: login do agente. Ao terminar, o terra volta.\n");
+    let result = login.status();
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
+    enter_app_mode(enhanced)?;
+    terminal.clear()?;
+    Ok(result)
+}
+
+fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) -> Result<()> {
     let mut last_tick = Instant::now();
     loop {
         terminal.draw(|frame| app.draw(frame))?;
@@ -68,6 +102,10 @@ fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App) -> Result<()> {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if is_ctrl_c(&key) || app.handle_key(key) {
                         return Ok(());
+                    }
+                    if let Some(login) = app.take_login() {
+                        let result = run_login(terminal, login, enhanced)?;
+                        app.login_finished(result);
                     }
                 }
                 Event::Mouse(mouse) => app.handle_mouse(mouse),

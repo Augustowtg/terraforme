@@ -84,10 +84,27 @@ impl ChatAdapter for ClaudeAdapter {
         let Some(home) = &self.home else {
             return Vec::new();
         };
-        let default_json = env::var_os("CLAUDE_CONFIG_DIR")
-            .map(|dir| PathBuf::from(dir).join(".claude.json"))
-            .unwrap_or_else(|| home.join(".claude.json"));
-        accounts::discover(home, &default_json)
+        accounts::discover(home, &default_json(home))
+    }
+
+    /// `claude auth login` na pasta da conta, com o e-mail dela já
+    /// preenchido na página de login.
+    fn login(&self, account: Option<&str>) -> Option<Command> {
+        let bin = self.bin.as_ref()?;
+        let dir = self.account_dir(account).ok()?;
+        let json = match &dir {
+            Some(dir) => dir.join(".claude.json"),
+            None => default_json(self.home.as_deref()?),
+        };
+        let mut cmd = command(bin);
+        cmd.args(["auth", "login"]);
+        if let Some(email) = accounts::email(&json) {
+            cmd.args(["--email", &email]);
+        }
+        if let Some(dir) = dir {
+            cmd.env("CLAUDE_CONFIG_DIR", dir);
+        }
+        Some(cmd)
     }
 
     /// O `claude` responde ao `initialize` do protocolo do Agent SDK com os
@@ -258,6 +275,13 @@ fn configured_mode(cwd: &Path, account_dir: Option<&Path>) -> Option<String> {
         .map(Path::to_path_buf)
         .or_else(default_config_dir)?;
     configured_mode_in(&config_dir, cwd)
+}
+
+/// O `.claude.json` da conta Default (com o e-mail dela).
+fn default_json(home: &Path) -> PathBuf {
+    env::var_os("CLAUDE_CONFIG_DIR")
+        .map(|dir| PathBuf::from(dir).join(".claude.json"))
+        .unwrap_or_else(|| home.join(".claude.json"))
 }
 
 /// A pasta que o `claude` usa sem conta escolhida.
@@ -564,5 +588,29 @@ mod tests {
         assert_eq!(display_model("claude-opus-4-1-20250805"), "Opus - 4.1");
         assert_eq!(display_model("claude-fable-5-1"), "Fable - 5.1");
         assert_eq!(display_model("gpt-x"), "gpt-x");
+    }
+
+    #[test]
+    fn login_runs_auth_login_in_the_account_folder_with_its_email() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".claude-trabalho");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(".claude.json"),
+            r#"{"oauthAccount":{"emailAddress":"eu@empresa.com"}}"#,
+        )
+        .unwrap();
+        let adapter = ClaudeAdapter {
+            bin: Some(PathBuf::from("claude")),
+            home: Some(home.path().to_path_buf()),
+        };
+
+        let login = adapter.login(Some(".claude-trabalho")).unwrap();
+        let args: Vec<_> = login.get_args().collect();
+        assert_eq!(args, ["auth", "login", "--email", "eu@empresa.com"]);
+        let env: Vec<_> = login.get_envs().collect();
+        assert_eq!(env, [("CLAUDE_CONFIG_DIR".as_ref(), Some(dir.as_os_str()))]);
+
+        assert!(adapter.login(Some(".claude-inexistente")).is_none());
     }
 }

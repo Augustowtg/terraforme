@@ -58,7 +58,8 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Tab` | Troca de aba (Chat, Consumo, Config) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
-| `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Tab`/`Enter` executam; cada comando é uma interface do terra (hoje, `/clear`: conversa nova; `/model`: modelo e esforço), e os que ainda não têm aparecem esmaecidos |
+| `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Tab`/`Enter` executam; cada comando é uma interface do terra (hoje, `/clear`: conversa nova; `/model`: modelo e esforço; `/login`: login na conta), e os que ainda não têm aparecem esmaecidos |
+| `/login` | Entra de novo na conta escolhida na Config (token expirado ou revogado): o terra sai da tela, roda o `claude auth login` da conta, com o e-mail dela, e volta no fim |
 | `/model` | Escolhe o modelo e o esforço desta conversa (`↑`/`↓` modelo, `←`/`→` esforço, `Enter` escolhe). O item Default abre o menu do modelo padrão, que fica salvo |
 | `@` (escrevendo) | Abre a lista de arquivos e pastas do diretório, filtrada pelo que vier depois do `@` e atualizada em tempo real. `↑`/`↓` escolhem, `Tab`/`Enter` inserem o caminho como um badge cinza (`@/src/main.rs`), `Esc` fecha |
 | `Esc` no modo NORMAL, com o Claude respondendo | Interrompe a resposta |
@@ -231,7 +232,7 @@ O chat usa o padrão **Adapter**: ele só conhece o trait `ChatAdapter` (`src/ag
    - `name()`: o nome no botão do título (ex.: `"Claude"`);
    - `is_available()`: se o provedor está instalado ou configurado (sem ele, o chat fica Desconectado com o `unavailable_hint()`);
    - `start(Request)`: começa uma resposta e devolve uma `Session`, cujo `poll()` entrega os `AgentEvent`s até `Done` ou `Failed`. No `PermissionMode::Yolo`, aprove tudo o que o agente pedir;
-   - opcionais: `configured_mode()` (modo inicial vindo da configuração do provedor), `model_label()` (nome amigável do modelo) e `load_usage()` (o consumo da aba Consumo, em segundo plano).
+   - opcionais: `configured_mode()` (modo inicial vindo da configuração do provedor), `model_label()` (nome amigável do modelo), `load_usage()` (o consumo da aba Consumo, em segundo plano) e `login()` (o comando interativo do `/login`).
 2. Declare o módulo e inclua-o na lista de `all()` em `src/agent/adapters.rs`.
 
 Nada na interface muda: o histórico, os modos, o consumo e a sincronia do modo funcionam com qualquer adapter. O `src/tui/chat/tests.rs` tem um `FakeAdapter` que serve de exemplo mínimo.
