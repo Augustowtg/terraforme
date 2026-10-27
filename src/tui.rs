@@ -5,6 +5,7 @@ mod app;
 mod chat;
 mod config;
 mod login;
+mod term;
 mod usage;
 mod widgets;
 mod workspace;
@@ -89,22 +90,6 @@ fn run_login(
     })
 }
 
-/// Roda a interface original do provedor (ex.: o `claude`) no terminal
-/// normal, com o teclado e a tela dele; a tela do terra volta quando ele sai.
-fn run_provider(
-    terminal: &mut DefaultTerminal,
-    mut provider: Command,
-    enhanced: bool,
-) -> Result<std::result::Result<(), String>> {
-    outside_screen(terminal, enhanced, || match provider.status() {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("A interface do provedor terminou com {status}.")),
-        Err(err) => Err(format!(
-            "Não foi possível abrir a interface do provedor: {err}"
-        )),
-    })
-}
-
 /// Sai da tela do terra, roda `f` no terminal normal e volta.
 fn outside_screen<T>(
     terminal: &mut DefaultTerminal,
@@ -127,16 +112,14 @@ fn outside_screen<T>(
 fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) -> Result<()> {
     let mut last_tick = Instant::now();
     loop {
-        if let Some(provider) = app.take_provider() {
-            let result = run_provider(terminal, provider, enhanced)?;
-            app.provider_finished(result);
-        }
+        let size = terminal.size()?;
+        app.sync_term(ratatui::layout::Rect::new(0, 0, size.width, size.height));
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(TICK.saturating_sub(last_tick.elapsed()))? {
             match event::read()? {
                 // No Windows também chegam eventos de Release; só interessa o Press.
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if is_ctrl_c(&key) || app.handle_key(key) {
+                    if (is_ctrl_c(&key) && !app.captures_keys()) || app.handle_key(key) {
                         return Ok(());
                     }
                     if let Some((login, account)) = app.take_login() {

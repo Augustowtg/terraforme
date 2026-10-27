@@ -132,7 +132,7 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
 | Conta | Default (a conta padrão do `claude`) ou uma das contas encontradas em `~/.claude` e `~/.claude-*`, como Pessoal e Trabalho, com o e-mail de cada uma |
 | Modo inicial | Do provedor (o `defaultMode` do Claude), Agente, Yolo, Manual, Accept Edits ou Plan |
 | Modelo | Padrão ou um modelo do provedor (Opus, Sonnet, Haiku), enviado com `--model` |
-| Interface | **Agente Terraforme** (o chat e o input do terra, o padrão) ou **Original do provedor**: a aba Chat abre o `claude` interativo no workspace (ao iniciar e com `Enter`), com a conta, o modelo, o esforço e o modo inicial da Config (o Yolo vira `bypassPermissions`); ao sair dele, o terra volta |
+| Interface | **Agente Terraforme** (o chat e o input do terra, o padrão) ou **Original do provedor**: a aba Chat roda o `claude` interativo no workspace, dentro da tela do terra (abaixo da barra de abas, com o rodapé), aberto ao iniciar e com `Enter`, com a conta, o modelo, o esforço e o modo inicial da Config (o Yolo vira `bypassPermissions`). As teclas vão para o `claude` (inclusive `Tab`, `Esc` e `Ctrl+C`); `Ctrl+Q` volta às abas e `Enter` na aba Chat volta ao terminal |
 
 ### Navegação no `terra workspace`
 

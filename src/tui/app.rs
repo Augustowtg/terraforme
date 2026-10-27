@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use super::chat::Chat;
 use super::config::{self, ConfigView};
+use super::term::Term;
 use super::usage::UsageView;
 use crate::agent::Interactive;
 use crate::db::Db;
@@ -25,7 +26,8 @@ const QUIT_LABEL: &str = " Sair ";
 const TAB_GAP: &str = " ";
 const HELP: &str = "Tab trocar aba · Esc ir para Sair";
 const HELP_QUIT: &str = "Enter sair · Tab/Esc voltar às abas";
-const HELP_PROVIDER: &str = "Enter abrir · Tab trocar aba · Esc ir para Sair";
+const HELP_PROVIDER: &str = "Enter entrar no terminal · Tab trocar aba · Esc ir para Sair";
+const HELP_TERM: &str = "Ctrl+Q voltar às abas";
 const HELP_CONFIRM: &str = "←/→ escolher · Enter confirmar · Esc cancelar";
 const CONFIRM_TITLE: &str = " Sair ";
 const CONFIRM_TEXT: &str = "Deseja sair do terraforme?";
@@ -119,6 +121,10 @@ pub struct App {
     open_provider: bool,
     /// Como terminou a última interface original, para a aba Chat mostrar.
     provider_result: Option<Result<(), String>>,
+    /// A interface original rodando na área de conteúdo da aba Chat.
+    term: Option<Term>,
+    /// As teclas vão para o terminal (até o `Ctrl+Q`).
+    term_focus: bool,
 }
 
 impl App {
@@ -229,13 +235,14 @@ impl App {
         self.usage.invalidate();
     }
 
-    /// O comando da interface original do provedor, para o loop rodar fora
-    /// da tela, com as configurações do workspace.
-    pub fn take_provider(&mut self) -> Option<Command> {
-        if !std::mem::take(&mut self.open_provider) {
-            return None;
-        }
-        let dir = self.workspace.as_ref()?.dir.clone();
+    /// O comando da interface original do provedor, com as configurações
+    /// do workspace.
+    fn provider_command(&self) -> Result<Command, String> {
+        let dir = self
+            .workspace
+            .as_ref()
+            .map(|w| w.dir.clone())
+            .ok_or("Nenhum workspace aberto.")?;
         let settings = &self.settings;
         let options = Interactive {
             account: settings.account.as_deref(),
@@ -246,11 +253,10 @@ impl App {
                 StartMode::Fixed(mode) => Some(mode),
             },
         };
-        let command = self.chat.adapter()?.interactive(&dir, options);
-        if command.is_none() {
-            self.provider_result = Some(Err(self.unavailable_provider()));
-        }
-        command
+        self.chat
+            .adapter()
+            .and_then(|a| a.interactive(&dir, options))
+            .ok_or_else(|| self.unavailable_provider())
     }
 
     fn unavailable_provider(&self) -> String {
@@ -261,11 +267,45 @@ impl App {
         }
     }
 
-    /// Volta da interface original: a aba Chat mostra como terminou e o
-    /// consumo é recarregado.
-    pub fn provider_finished(&mut self, result: Result<(), String>) {
-        self.provider_result = Some(result);
-        self.usage.invalidate();
+    /// Mantém a interface original em dia com a tela de tamanho `screen`:
+    /// abre quando pedido, acompanha o tamanho da área de conteúdo, fecha
+    /// quando a Interface volta ao Agente Terraforme e nota quando ela sai.
+    pub fn sync_term(&mut self, screen: Rect) {
+        if !self.uses_provider() {
+            self.term = None;
+            self.term_focus = false;
+            self.open_provider = false;
+            return;
+        }
+        let area = content_area(screen);
+        if std::mem::take(&mut self.open_provider) {
+            match self
+                .provider_command()
+                .and_then(|cmd| Term::spawn(&cmd, area.height, area.width))
+            {
+                Ok(term) => {
+                    self.term = Some(term);
+                    self.term_focus = true;
+                    self.provider_result = None;
+                }
+                Err(message) => self.provider_result = Some(Err(message)),
+            }
+        }
+        let Some(term) = &mut self.term else {
+            return;
+        };
+        term.resize(area.height, area.width);
+        if let Some(result) = term.finished() {
+            self.term = None;
+            self.term_focus = false;
+            self.provider_result = Some(result);
+            self.usage.invalidate();
+        }
+    }
+
+    /// As teclas vão para o terminal: o `Ctrl+C` também é dele.
+    pub fn captures_keys(&self) -> bool {
+        self.tab == Tab::Chat && self.focus == Focus::Tabs && self.term_focus && self.term.is_some()
     }
 
     fn uses_provider(&self) -> bool {
@@ -274,10 +314,23 @@ impl App {
 
     /// Trata uma tecla. Retorna `true` quando a saída foi confirmada.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
-        // Na Interface "Original do provedor", o Enter da aba Chat abre ela.
+        if self.captures_keys() {
+            if is_ctrl(&key, 'q') {
+                self.term_focus = false;
+            } else if let Some(term) = &mut self.term {
+                term.send_key(key);
+            }
+            return false;
+        }
+        // Na Interface "Original do provedor", o Enter da aba Chat entra no
+        // terminal (abrindo a interface, se ela não está rodando).
         if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.uses_provider() {
             if key.code == KeyCode::Enter {
-                self.open_provider = true;
+                if self.term.is_some() {
+                    self.term_focus = true;
+                } else {
+                    self.open_provider = true;
+                }
                 return false;
             }
         } else if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.chat.handle_key(key) {
@@ -359,16 +412,12 @@ impl App {
     pub fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
         frame.render_widget(Block::new().style(theme::screen()), area);
-        let [nav, content, footer] = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+        let [nav, content, footer] = layout(area);
 
         self.draw_nav(frame, nav);
         self.draw_content(frame, content);
         let help = match self.focus {
+            Focus::Tabs if self.captures_keys() => HELP_TERM.into(),
             Focus::Tabs if self.tab == Tab::Chat && self.uses_provider() => HELP_PROVIDER.into(),
             Focus::Tabs if self.tab == Tab::Chat => self.chat.help(),
             Focus::Tabs if self.tab == Tab::Config => config::HELP.into(),
@@ -430,7 +479,10 @@ impl App {
 
     fn draw_content(&self, frame: &mut Frame, area: Rect) {
         if self.tab == Tab::Chat && self.uses_provider() {
-            self.draw_provider(frame, area);
+            match &self.term {
+                Some(term) => term.draw(frame, area, self.captures_keys()),
+                None => self.draw_provider(frame, area),
+            }
             return;
         }
         if self.tab == Tab::Chat {
@@ -460,8 +512,8 @@ impl App {
 }
 
 impl App {
-    /// A aba Chat na Interface "Original do provedor": o chat e o input são
-    /// os do provedor, abertos fora da tela com o `Enter`.
+    /// A aba Chat na Interface "Original do provedor" sem a interface
+    /// rodando: como abrir e como a última terminou.
     fn draw_provider(&self, frame: &mut Frame, area: Rect) {
         let name = self.chat.adapter().map_or("provedor", |a| a.name());
         let mut lines = vec![
@@ -472,7 +524,7 @@ impl App {
             ]),
             Line::default(),
             Line::styled(
-                format!("  Enter abre o chat do {name} neste workspace; ao sair dele, volta aqui."),
+                format!("  Enter abre o chat do {name} neste workspace, aqui na aba Chat."),
                 theme::muted(),
             ),
             Line::styled(
@@ -499,6 +551,28 @@ impl App {
             area,
         );
     }
+}
+
+/// Barra de abas, conteúdo da aba e rodapé.
+fn layout(area: Rect) -> [Rect; 3] {
+    Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area)
+}
+
+/// A área de conteúdo numa tela `screen`.
+fn content_area(screen: Rect) -> Rect {
+    layout(screen)[1]
+}
+
+fn is_ctrl(key: &KeyEvent, c: char) -> bool {
+    key.code == KeyCode::Char(c)
+        && key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
 }
 
 /// A pergunta de salvar o workspace, centralizada sobre a tela.
@@ -717,8 +791,10 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert!(app.open_provider);
         // Sem provedor (nos testes), não há comando e a aba mostra o porquê.
-        assert!(app.take_provider().is_none());
+        app.sync_term(Rect::new(0, 0, 80, 24));
+        assert!(app.term.is_none());
         assert!(!app.open_provider);
+        assert!(matches!(app.provider_result, Some(Err(_))));
         assert_eq!(
             press(&mut app, KeyCode::Tab),
             Tab::Consumo,
