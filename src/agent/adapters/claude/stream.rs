@@ -42,7 +42,10 @@ impl StreamParser {
             }
             Some("system") if value["subtype"] == "compact_boundary" => {
                 self.compacted = true;
-                vec![AgentEvent::Compacted]
+                let tokens = value["compact_metadata"]["post_tokens"]
+                    .as_u64()
+                    .filter(|&t| t > 0);
+                vec![AgentEvent::Compacted { tokens }]
             }
             Some("stream_event") => self.stream_event(&value["event"]),
             Some("assistant") => self.assistant(&value["message"]),
@@ -347,11 +350,17 @@ mod tests {
     #[test]
     fn compaction_ignores_the_usage_of_the_summary() {
         let events = parse_all(&[
-            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":150000}}"#,
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":150000,"post_tokens":8048}}"#,
             r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":150000,"output_tokens":900}}"#,
         ]);
-        assert_eq!(events[0], AgentEvent::Compacted);
+        assert_eq!(events[0], AgentEvent::Compacted { tokens: Some(8048) });
         assert!(matches!(events[1..], [AgentEvent::Done { .. }]));
+
+        // Sem o tamanho depois da compactação, ele fica para a próxima chamada.
+        let events = parse_all(&[
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":150000}}"#,
+        ]);
+        assert_eq!(events[0], AgentEvent::Compacted { tokens: None });
     }
 
     #[test]
