@@ -97,6 +97,7 @@ mod tests {
                 name: "b".into(),
                 command: "b".into(),
                 args: Vec::new(),
+                ..Default::default()
             }],
         };
         Registry::new(vec![

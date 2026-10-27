@@ -105,6 +105,19 @@ fn run_login(
     })
 }
 
+/// Roda a interface original do provedor no terminal normal até ela sair.
+fn run_original(mut original: std::process::Command) -> std::result::Result<(), String> {
+    original
+        .status()
+        .map_err(|err| format!("não foi possível iniciar: {err}"))
+        .and_then(|status| {
+            status
+                .success()
+                .then_some(())
+                .ok_or_else(|| format!("saiu com {status}"))
+        })
+}
+
 /// Sai da tela do terra, roda `f` no terminal normal e volta.
 fn outside_screen<T>(
     terminal: &mut DefaultTerminal,
@@ -140,6 +153,10 @@ fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) 
                     if let Some((login, account)) = app.take_login() {
                         let result = run_login(terminal, login, &account, enhanced)?;
                         app.login_finished(result);
+                    }
+                    if let Some((original, command)) = app.take_original() {
+                        let result = outside_screen(terminal, enhanced, || run_original(original))?;
+                        app.original_finished(&command, result);
                     }
                 }
                 Event::Mouse(mouse) => app.handle_mouse(mouse),

@@ -308,6 +308,7 @@ mod tests {
             name: name.into(),
             dir: PathBuf::from(format!("/w/{name}")),
             session,
+            chats: Vec::new(),
         }
     }
 

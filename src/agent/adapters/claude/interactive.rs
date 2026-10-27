@@ -4,7 +4,26 @@
 //! A lista foi tirada do Claude Code 2.1.308 (os comandos visíveis do
 //! modo interativo menos os que o `initialize` já traz). Ela completa o
 //! catálogo para a lista da `/` mostrar todos os comandos do Claude; a
-//! função de cada um continua sendo uma interface do terra.
+//! função de cada um continua sendo uma interface do terra; os que o terra
+//! não tem abrem a interface original do Claude, na mesma sessão, com o
+//! comando já digitado ([`opens_original`]).
+//!
+//! Os de pagamento e plano ([`BILLING`]) ficam de fora.
+
+/// Os comandos de pagamento e plano, que o terra não mostra nem roda.
+pub const BILLING: &[&str] = &[
+    "extra-usage",
+    "passes",
+    "rate-limit-options",
+    "stickers",
+    "upgrade",
+    "usage-credits",
+];
+
+/// O comando só existe no modo interativo: roda na interface original.
+pub fn opens_original(name: &str) -> bool {
+    COMMANDS.iter().any(|(command, _)| *command == name)
+}
 
 /// Nome (sem a `/`) e descrição, em ordem alfabética.
 pub const COMMANDS: &[(&str, &str)] = &[
@@ -67,7 +86,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("loops", "List, create, and delete loops"),
     ("memory", "Edit CLAUDE.md files and memory settings"),
     ("mobile", "Show QR code to download the Claude mobile app"),
-    ("passes", "Share a free week of Claude Code with friends"),
     (
         "pause-memory",
         "Pause or resume auto memory for this session",
@@ -81,10 +99,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("privacy-settings", "View and update your privacy settings"),
     ("radio", "Listen to Claude FM lo-fi radio"),
-    (
-        "rate-limit-options",
-        "Manage usage limits and upgrade options",
-    ),
     (
         "remote-control",
         "Continue this session from claude.ai or the Claude app",
@@ -111,7 +125,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Show Claude Code status including version, model, account, API connectivity, and tool statuses",
     ),
     ("statusline", "Set up Claude Code's status line UI"),
-    ("stickers", "Order Claude Code stickers"),
     (
         "stop",
         "Stop this background session; transcript and worktree are kept",
@@ -139,10 +152,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Draft a plan in the cloud and review it in the browser",
     ),
     (
-        "upgrade",
-        "Upgrade to Max for higher rate limits and more Opus",
-    ),
-    (
         "version",
         "Show this session's version (autoupdate may have a newer one)",
     ),
@@ -157,3 +166,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("workflows", "Browse running and completed workflows"),
 ];
+
+#[cfg(test)]
+#[test]
+fn billing_is_not_listed() {
+    assert!(BILLING.iter().all(|name| !opens_original(name)));
+    assert!(opens_original("hooks"));
+    assert!(!opens_original("compact"), "o `-p` roda o /compact");
+}

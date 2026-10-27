@@ -34,10 +34,11 @@ use self::model_menu::{ModelMenu, Target, effort_label};
 use super::usage;
 use super::widgets::badge;
 use crate::agent::{
-    self, AgentEvent, Catalog, ChatAdapter, PermissionMode, ReportedMode, Request, Session,
-    UsageWindow,
+    self, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, PermissionMode,
+    ReportedMode, Request, Session, UsageWindow,
 };
 use crate::extension::Contribution;
+use crate::mcp;
 use crate::platform::clipboard;
 use crate::settings::{AgentSettings, ContextSettings, StartMode, UsageSettings};
 use crate::theme::{self, Variant};
@@ -85,6 +86,9 @@ pub struct Chat {
     model_menu: Option<ModelMenu>,
     /// Comando do `/login`, para a tela principal rodar fora da tela.
     pending_login: Option<Command>,
+    /// A interface original do provedor com um comando que só existe nela
+    /// (ex.: `/hooks`), para a tela principal rodar fora da tela.
+    pending_original: Option<(Command, String)>,
     /// O `/usage` pediu a aba Consumo, para a tela principal abrir.
     open_usage: bool,
     /// Novo modelo padrão escolhido no `/model`, para a tela principal salvar.
@@ -95,6 +99,9 @@ pub struct Chat {
     extensions: Contribution,
     /// Sessão do agente, para continuar a conversa.
     session_id: Option<String>,
+    /// A delegação ([`mcp::ChatRequest::id`]) de um chat aberto por um
+    /// agente pelo orquestrador.
+    delegation: Option<u64>,
     /// Resposta em andamento.
     run: Option<Box<dyn Session>>,
     /// Modo pedido ao agente na resposta em andamento.
@@ -111,6 +118,8 @@ pub struct Chat {
     permission_mode: PermissionMode,
     spinner_frame: usize,
     tokens_used: u64,
+    /// Os tokens de cache gastos neste chat.
+    cache_tokens_used: u64,
     /// Tamanho do contexto da sessão, depois da primeira chamada ao modelo.
     context: Option<u64>,
     /// Limite de contexto do modelo, quando o agente informa.
@@ -144,11 +153,13 @@ impl Default for Chat {
             session_effort: None,
             model_menu: None,
             pending_login: None,
+            pending_original: None,
             open_usage: false,
             default_choice: None,
             account: None,
             extensions: Contribution::default(),
             session_id: None,
+            delegation: None,
             run: None,
             requested_mode: None,
             agent_mode: None,
@@ -160,6 +171,7 @@ impl Default for Chat {
             permission_mode: PermissionMode::default(),
             spinner_frame: 0,
             tokens_used: 0,
+            cache_tokens_used: 0,
             context: None,
             context_window: None,
             context_settings: ContextSettings::default(),
@@ -256,6 +268,34 @@ impl Chat {
             )
     }
 
+    /// Começa no modo `start` (ex.: o dos chats abertos pelo orquestrador),
+    /// no lugar do modo inicial da Config.
+    pub fn set_start_mode(&mut self, start: StartMode) {
+        self.permission_mode = self.start_mode(start);
+    }
+
+    /// Marca o chat como delegado (`id` é a delegação no orquestrador): os
+    /// pedidos de permissão do agente vão para quem delegou.
+    pub fn set_delegation(&mut self, id: u64) {
+        self.delegation = Some(id);
+    }
+
+    pub fn delegation(&self) -> Option<u64> {
+        self.delegation
+    }
+
+    /// A última resposta do agente, para voltar a quem delegou.
+    pub fn last_reply(&self) -> Option<String> {
+        self.history
+            .entries()
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::Assistant(text) => Some(text.clone()),
+                _ => None,
+            })
+    }
+
     /// O modo de um modo inicial. "Do provedor" segue a configuração dele,
     /// para os dois estarem em sincronia desde o início; o Yolo nunca vem do
     /// provedor, então lá o padrão é Agente.
@@ -279,6 +319,21 @@ impl Chat {
 
     /// O que as extensões ativas acrescentam ao agente.
     /// Há uma conversa com o agente (o MCP mostra a sessão ativa).
+    /// Os tokens gastos neste chat (entrada e saída, sem os de cache).
+    pub fn tokens_used(&self) -> u64 {
+        self.tokens_used
+    }
+
+    /// Os tokens de cache gastos neste chat (criação e leitura).
+    pub fn cache_tokens_used(&self) -> u64 {
+        self.cache_tokens_used
+    }
+
+    /// O agente está respondendo.
+    pub fn is_busy(&self) -> bool {
+        self.run.is_some()
+    }
+
     pub fn has_session(&self) -> bool {
         self.session_id.is_some()
     }
@@ -406,9 +461,82 @@ impl Chat {
             ))),
             _ => {
                 let command = format!("/{name}");
-                self.start(&command, Entry::User(command.clone()));
+                if !self.route_to_provider(&command) {
+                    self.start(&command, Entry::User(command.clone()));
+                }
             }
         }
+        self.history.follow();
+    }
+
+    /// O comando `command` (com a `/` e os argumentos) que só existe na
+    /// interface original abre nela, na sessão do chat; um de pagamento ou
+    /// plano não roda. Retorna se o comando foi tratado aqui.
+    fn route_to_provider(&mut self, command: &str) -> bool {
+        let name = command
+            .trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .unwrap_or_default();
+        let Some(adapter) = self.available_adapter() else {
+            return false;
+        };
+        match adapter.command_route(name) {
+            CommandRoute::Agent => false,
+            CommandRoute::Blocked => {
+                self.history.push(Entry::Info(format!(
+                    "O terra não roda /{name}: pagamento e plano ficam no {}.",
+                    adapter.name()
+                )));
+                true
+            }
+            CommandRoute::Original => {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                let options = Interactive {
+                    account: self.account.as_deref(),
+                    model: self
+                        .session_model
+                        .as_deref()
+                        .or(self.chosen_model.as_deref()),
+                    effort: self
+                        .session_effort
+                        .as_deref()
+                        .or(self.default_effort.as_deref()),
+                    mode: Some(self.permission_mode),
+                    extensions: Some(&self.extensions),
+                    session_id: self.session_id.as_deref(),
+                    command: Some(command),
+                };
+                match adapter.interactive(&cwd, options) {
+                    Some(cmd) => self.pending_original = Some((cmd, command.to_string())),
+                    None => self.history.push(Entry::Info(format!(
+                        "{} não tem uma interface original para {command}.",
+                        adapter.name()
+                    ))),
+                }
+                true
+            }
+        }
+    }
+
+    /// A interface original pedida por um comando e o comando, para a tela
+    /// principal rodar fora da tela.
+    pub fn take_original(&mut self) -> Option<(Command, String)> {
+        self.pending_original.take()
+    }
+
+    /// Volta da interface original: avisa no histórico e recarrega os
+    /// comandos (ex.: um `/plugin` pode ter instalado skills).
+    pub fn finish_original(&mut self, command: &str, result: Result<(), String>) {
+        match result {
+            Ok(()) => self.history.push(Entry::Info(format!(
+                "{command} rodou na interface original."
+            ))),
+            Err(reason) => self
+                .history
+                .push(Entry::Error(format!("{command} não rodou: {reason}"))),
+        }
+        self.load_catalog();
         self.history.follow();
     }
 
@@ -654,11 +782,25 @@ impl Chat {
             self.run_command(name);
             return;
         }
+        if prompt.starts_with('/') && self.route_to_provider(&prompt) {
+            self.input.remember();
+            self.input.clear();
+            self.history.follow();
+            return;
+        }
         if self.start(&prompt, Entry::User(prompt.clone())) {
             self.input.remember();
             self.input.clear();
             // A auto compactação é para as mensagens, não para os comandos.
             self.auto_compact_armed = !prompt.starts_with('/');
+        }
+    }
+
+    /// Manda `prompt` ao agente como uma mensagem do usuário (ex.: a
+    /// primeira de um chat aberto pelo orquestrador).
+    pub fn submit(&mut self, prompt: &str) {
+        if self.run.is_none() && self.start(prompt, Entry::User(prompt.to_string())) {
+            self.auto_compact_armed = true;
         }
     }
 
@@ -683,6 +825,17 @@ impl Chat {
                 .as_deref()
                 .or(self.default_effort.as_deref()),
             extensions: &self.extensions,
+            // Num chat delegado, quem delegou decide os pedidos de permissão
+            // (pelo MCP do terra, quando ele está ligado ao chat).
+            permission_tool: self
+                .delegation
+                .filter(|_| {
+                    self.extensions
+                        .mcp_servers
+                        .iter()
+                        .any(|s| s.name == mcp::SERVER_NAME)
+                })
+                .map(|_| (mcp::SERVER_NAME, mcp::PERMISSION_TOOL)),
         });
         let ok = started.is_ok();
         match started {
@@ -757,9 +910,11 @@ impl Chat {
                 is_error,
                 message,
                 tokens,
+                cache_tokens,
                 denied,
             } => {
                 self.tokens_used += tokens;
+                self.cache_tokens_used += cache_tokens;
                 if denied > 0 {
                     // TODO: aprovar ferramentas pela interface no modo Manual.
                     self.history.push(Entry::Info(format!(
@@ -1113,7 +1268,7 @@ impl Chat {
 }
 
 /// Formata contagens de forma compacta: 950, 12.3K, 1M.
-pub(super) fn compact_count(n: u64) -> String {
+pub(crate) fn compact_count(n: u64) -> String {
     let (value, suffix) = match n {
         0..1_000 => return n.to_string(),
         1_000..1_000_000 => (n as f64 / 1_000.0, "K"),

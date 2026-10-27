@@ -32,12 +32,15 @@ pub struct Hook {
     pub command: String,
 }
 
-/// Um servidor MCP (stdio) que o agente abre.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Um servidor MCP que o agente abre (stdio, com `command` e `args`) ou
+/// acessa por HTTP (com `url`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct McpServer {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    /// O endereço de um servidor HTTP; com ele, `command` e `args` não valem.
+    pub url: Option<String>,
 }
 
 /// O que as extensões acrescentam ao agente. O adapter traduz para o

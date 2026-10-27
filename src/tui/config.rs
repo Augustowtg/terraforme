@@ -1,10 +1,14 @@
 //! Aba Config: as configurações do terra, em seções (como as seções Recentes
 //! e Salvos do navegador de workspaces). Há a seção Agente e, dentro dela,
 //! separadas por uma linha, a do Contexto e a do Consumo; embaixo, separada
-//! do Agente, a seção MCP (com uma bola verde com o MCP online); à direita
+//! do Agente, a seção MCP (com uma bola verde com o MCP online e os
+//! servidores MCP conectados ao agente, do provedor e do terraforme) e, embaixo
+//! dela, a seção Skills (as skills instaladas no agente); à direita
 //! (embaixo, em telas estreitas), a seção Extensões.
 //!
-//! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor; a
+//! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor (nos
+//! servidores MCP e nas skills, passam de um para outro, com os detalhes
+//! embaixo); a
 //! tela principal salva e aplica a mudança. `Shift+Tab` alterna entre o
 //! Agente e as Extensões. Nas Extensões, a lista é paginada (como a dos
 //! modelos do `/model`, mas com páginas): `↑`/`↓` escolhem, `←`/`→` trocam
@@ -36,6 +40,8 @@ const PAGE: usize = 5;
 /// Largura mínima da seção Extensões ao lado do Agente; com menos, ela fica
 /// embaixo.
 const EXTENSIONS_MIN_WIDTH: u16 = 40;
+/// Largura máxima do comando de um servidor MCP.
+const DETAIL_WIDTH: usize = 36;
 
 /// Uma configuração que pode ser alterada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,10 +55,14 @@ enum Field {
     Limit,
     CompactAt,
     UsageDisplay,
+    TotalUsageDisplay,
     Mcp,
+    McpSpawnMode,
+    McpServers,
+    Skills,
 }
 
-const FIELDS: [Field; 10] = [
+const FIELDS: [Field; 14] = [
     Field::Account,
     Field::StartMode,
     Field::Model,
@@ -62,14 +72,18 @@ const FIELDS: [Field; 10] = [
     Field::Limit,
     Field::CompactAt,
     Field::UsageDisplay,
+    Field::TotalUsageDisplay,
     Field::Mcp,
+    Field::McpSpawnMode,
+    Field::McpServers,
+    Field::Skills,
 ];
 /// Onde começa a seção Contexto em [`FIELDS`].
 const CONTEXT_START: usize = 4;
 /// Onde começa a seção Consumo em [`FIELDS`].
 const USAGE_START: usize = 8;
 /// Onde começa a seção MCP em [`FIELDS`].
-const MCP_START: usize = 9;
+const MCP_START: usize = 10;
 
 /// As opções que vêm do provedor: contas e modelos, e o limite de contexto
 /// do modelo (para mostrar em tokens o ponto de compactar). E as extensões
@@ -81,6 +95,16 @@ pub struct Choices {
     pub context_window: u64,
     pub extensions: Vec<ExtensionOption>,
     pub mcp: McpState,
+    pub skills: Vec<SkillInfo>,
+}
+
+/// Uma skill instalada no agente: de onde vem (ex.: `Claude · plugin`) e o
+/// que ela faz.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillInfo {
+    pub name: String,
+    pub origin: String,
+    pub description: String,
 }
 
 /// Uma extensão que pode ser ativada na seção Extensões.
@@ -104,13 +128,26 @@ pub enum Outcome {
     ExtensionsChanged,
     /// O MCP foi ativado ou desativado: salvar e abrir ou fechar.
     McpChanged,
+    /// O modo dos chats abertos pelo orquestrador mudou: salvar.
+    McpSpawnModeChanged,
 }
 
-/// O MCP como a seção MCP mostra: a configuração e se ele está online.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// O MCP como a seção MCP mostra: a configuração, se ele está online e os
+/// servidores MCP conectados ao agente.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct McpState {
     pub settings: McpSettings,
     pub online: bool,
+    pub servers: Vec<McpServerInfo>,
+}
+
+/// Um servidor MCP conectado ao agente: de onde vem (ex.: `Claude ·
+/// usuário`, `terraforme`) e o comando ou o endereço.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub origin: String,
+    pub detail: String,
 }
 
 /// A seção em foco.
@@ -128,6 +165,10 @@ pub struct ConfigView {
     focus: usize,
     /// Posição na lista das extensões.
     extension: usize,
+    /// O servidor MCP em foco.
+    mcp_server: usize,
+    /// A skill em foco.
+    skill: usize,
 }
 
 impl ConfigView {
@@ -168,6 +209,37 @@ impl ConfigView {
         if FIELDS[self.focus] == Field::Mcp && changes {
             mcp.enabled = !mcp.enabled;
             return Outcome::McpChanged;
+        }
+        if FIELDS[self.focus] == Field::McpSpawnMode && changes {
+            let step = if matches!(key.code, KeyCode::Left | KeyCode::Char('h')) {
+                -1
+            } else {
+                1
+            };
+            let all = StartMode::ALL;
+            let i = all.iter().position(|m| *m == mcp.spawn_mode).unwrap_or(0);
+            mcp.spawn_mode = all[cycle(i, all.len(), step)];
+            return Outcome::McpSpawnModeChanged;
+        }
+        if FIELDS[self.focus] == Field::McpServers && changes {
+            let len = choices.mcp.servers.len().max(1);
+            let step = if matches!(key.code, KeyCode::Left | KeyCode::Char('h')) {
+                -1
+            } else {
+                1
+            };
+            self.mcp_server = cycle(self.mcp_server.min(len - 1), len, step);
+            return Outcome::Moved;
+        }
+        if FIELDS[self.focus] == Field::Skills && changes {
+            let len = choices.skills.len().max(1);
+            let step = if matches!(key.code, KeyCode::Left | KeyCode::Char('h')) {
+                -1
+            } else {
+                1
+            };
+            self.skill = cycle(self.skill.min(len - 1), len, step);
+            return Outcome::Moved;
         }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.focus = self.focus.saturating_sub(1),
@@ -273,7 +345,7 @@ impl ConfigView {
         lines.extend(usage);
 
         // O MCP fica separado do Agente: é da máquina, não do workspace.
-        let mcp = choices.mcp;
+        let mcp = &choices.mcp;
         let mut title = vec![Span::styled(" MCP", theme::section_title())];
         if mcp.online {
             title.push(Span::styled(" ●", theme::variant(Variant::Success)));
@@ -283,18 +355,35 @@ impl ConfigView {
         } else {
             "Desativado"
         };
-        let mcp_lines = [
+        let mut mcp_lines = vec![
             Line::from(title),
             field_row(
                 field_label(Field::Mcp),
                 enabled.to_string(),
                 agent_focus && FIELDS[self.focus] == Field::Mcp,
             ),
+            field_row(
+                field_label(Field::McpSpawnMode),
+                mcp.settings.spawn_mode.label().to_string(),
+                agent_focus && FIELDS[self.focus] == Field::McpSpawnMode,
+            ),
             info_row("Endereço", Span::styled(mcp::url(), theme::path())),
         ];
-        let width = width.max(mcp_lines.iter().map(Line::width).max());
+        mcp_lines.extend(self.mcp_server_lines(
+            &mcp.servers,
+            agent_focus && FIELDS[self.focus] == Field::McpServers,
+        ));
+        let skill_lines = self.skill_lines(
+            &choices.skills,
+            agent_focus && FIELDS[self.focus] == Field::Skills,
+        );
+        let width = width
+            .max(mcp_lines.iter().map(Line::width).max())
+            .max(skill_lines.iter().map(Line::width).max());
         lines.push(Line::default());
         lines.extend(mcp_lines);
+        lines.push(Line::default());
+        lines.extend(skill_lines);
 
         let extension_lines = self.extension_lines(extensions, &choices.extensions);
         // A seção Agente com o recuo (1) e a folga (2) do bloco.
@@ -320,6 +409,53 @@ impl ConfigView {
             Paragraph::new(extension_lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
             extensions_area,
         );
+    }
+
+    /// Os servidores MCP conectados ao agente: o em foco, `‹ nome · 1/3 ›`,
+    /// com de onde vem e o comando ou o endereço.
+    fn mcp_server_lines(&self, servers: &[McpServerInfo], focused: bool) -> Vec<Line<'static>> {
+        let label = field_label(Field::McpServers);
+        let Some(last) = servers.len().checked_sub(1) else {
+            return vec![field_row(label, "Nenhum".to_string(), focused)];
+        };
+        let server = &servers[self.mcp_server.min(last)];
+        let position = format!(
+            "{} · {}/{}",
+            server.name,
+            self.mcp_server.min(last) + 1,
+            servers.len()
+        );
+        vec![
+            field_row(label, position, focused),
+            info_row("Origem", Span::styled(server.origin.clone(), theme::text())),
+            info_row(
+                "Comando",
+                Span::styled(shorten(&server.detail, DETAIL_WIDTH), theme::path()),
+            ),
+        ]
+    }
+
+    /// A seção Skills: a skill em foco, `‹ nome · 1/3 ›`, com de onde vem e
+    /// o que ela faz.
+    fn skill_lines(&self, skills: &[SkillInfo], focused: bool) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::styled(" Skills", theme::section_title())];
+        let label = field_label(Field::Skills);
+        let Some(last) = skills.len().checked_sub(1) else {
+            lines.push(field_row(label, "Nenhuma".to_string(), focused));
+            return lines;
+        };
+        let current = self.skill.min(last);
+        let skill = &skills[current];
+        let position = format!("{} · {}/{}", skill.name, current + 1, skills.len());
+        lines.extend([
+            field_row(label, position, focused),
+            info_row("Origem", Span::styled(skill.origin.clone(), theme::text())),
+            info_row(
+                "Descrição",
+                Span::styled(shorten(&skill.description, DETAIL_WIDTH), theme::muted()),
+            ),
+        ]);
+        lines
     }
 
     /// A seção Extensões: a página da extensão em foco, como a lista do
@@ -417,7 +553,11 @@ fn field_label(field: Field) -> &'static str {
         Field::Limit => "Limite de tokens",
         Field::CompactAt => "Compactar em",
         Field::UsageDisplay => "Display",
+        Field::TotalUsageDisplay => "Consumo geral",
         Field::Mcp => "Servidor",
+        Field::McpSpawnMode => "Modo dos chats",
+        Field::McpServers => "Conectados",
+        Field::Skills => "Instaladas",
     }
 }
 
@@ -451,6 +591,12 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
             "Oculto"
         }
         .to_string(),
+        Field::TotalUsageDisplay => if settings.usage.total_visible {
+            "Visível"
+        } else {
+            "Oculto"
+        }
+        .to_string(),
         Field::AutoCompact => if settings.context.auto_compact {
             "Sim"
         } else {
@@ -466,7 +612,7 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
             let tokens = context.compact_tokens(choices.context_window);
             format!("{}% · {} tokens", context.compact_at, compact_count(tokens))
         }
-        Field::Mcp => String::new(),
+        Field::Mcp | Field::McpSpawnMode | Field::McpServers | Field::Skills => String::new(),
         Field::Model => match &settings.model {
             None => "Padrão".to_string(),
             Some(id) => models
@@ -512,6 +658,9 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
         }
         Field::ContextDisplay => settings.context.visible = !settings.context.visible,
         Field::UsageDisplay => settings.usage.visible = !settings.usage.visible,
+        Field::TotalUsageDisplay => {
+            settings.usage.total_visible = !settings.usage.total_visible;
+        }
         Field::AutoCompact => settings.context.auto_compact = !settings.context.auto_compact,
         Field::Limit => {
             // Do modelo (None) e depois os limites fixos. Um valor do arquivo
@@ -541,12 +690,22 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
             settings.model = options[cycle(i, options.len(), step)].clone();
         }
         // Fica com a Config, que tem o MCP.
-        Field::Mcp => {}
+        Field::Mcp | Field::McpSpawnMode | Field::McpServers | Field::Skills => {}
     }
 }
 
 fn cycle(index: usize, len: usize, step: isize) -> usize {
     (index as isize + step).rem_euclid(len as isize) as usize
+}
+
+/// `text` com no máximo `width` caracteres, terminando em `…` quando corta.
+fn shorten(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut short: String = text.chars().take(width - 1).collect();
+    short.push('…');
+    short
 }
 
 /// A linha que separa as seções, com `width` colunas.
@@ -617,6 +776,7 @@ mod tests {
             context_window: 200_000,
             extensions: Vec::new(),
             mcp: McpState::default(),
+            skills: Vec::new(),
         }
     }
 
@@ -925,7 +1085,7 @@ mod tests {
             context: ContextSettings::default(),
             usage: Default::default(),
         };
-        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 22)).unwrap();
         terminal
             .draw(|frame| {
                 let extensions = ExtensionSettings::default();
@@ -937,8 +1097,12 @@ mod tests {
                     None,
                     &Choices {
                         mcp: McpState {
-                            settings: McpSettings { enabled: true },
+                            settings: McpSettings {
+                                enabled: true,
+                                ..McpSettings::default()
+                            },
                             online: true,
+                            ..McpState::default()
                         },
                         ..choices()
                     },
@@ -971,15 +1135,83 @@ mod tests {
         assert!(row(13).starts_with("  ─"));
         assert_eq!(row(14), "  Consumo");
         assert_eq!(row(15), "   Display             Oculto");
+        assert_eq!(row(16), "   Consumo geral       Visível");
         // O MCP, separado, com a bola verde de online.
-        assert_eq!(row(16), "");
-        assert_eq!(row(17), "  MCP ●");
-        assert_eq!(row(18), "   Servidor            Ativado");
-        assert_eq!(row(19), "   Endereço          http://127.0.0.1:30303/mcp");
+        assert_eq!(row(17), "");
+        assert_eq!(row(18), "  MCP ●");
+        assert_eq!(row(19), "   Servidor            Ativado");
+        assert_eq!(row(20), "   Modo dos chats      Accept Edits");
+        assert_eq!(row(21), "   Endereço          http://127.0.0.1:30303/mcp");
     }
 
     #[test]
-    fn mcp_is_the_last_setting_and_toggles() {
+    fn spawn_mode_cycles_and_asks_to_save() {
+        let mut view = ConfigView {
+            focus: MCP_START + 1,
+            ..ConfigView::default()
+        };
+        let mut mcp = McpSettings::default();
+        let outcome = view.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut AgentSettings::default(),
+            &mut ExtensionSettings::default(),
+            &mut mcp,
+            &choices(),
+        );
+        assert_eq!(outcome, Outcome::McpSpawnModeChanged);
+        assert_eq!(mcp.spawn_mode, StartMode::Fixed(PermissionMode::Plan));
+        assert!(!mcp.enabled, "não liga nem desliga o MCP");
+    }
+
+    #[test]
+    fn arrows_walk_through_the_connected_mcp_servers() {
+        let server = |name: &str, origin: &str| McpServerInfo {
+            name: name.into(),
+            origin: origin.into(),
+            detail: format!("{name} serve"),
+        };
+        let choices = Choices {
+            mcp: McpState {
+                servers: vec![
+                    server("ai-memory", "Claude · usuário"),
+                    server("terra", "terraforme"),
+                ],
+                ..McpState::default()
+            },
+            ..choices()
+        };
+        let mut view = ConfigView {
+            focus: MCP_START + 2,
+            ..ConfigView::default()
+        };
+        let press = |view: &mut ConfigView, code: KeyCode| {
+            view.handle_key(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut AgentSettings::default(),
+                &mut ExtensionSettings::default(),
+                &mut McpSettings::default(),
+                &choices,
+            )
+        };
+        let text = |view: &ConfigView| -> Vec<String> {
+            view.mcp_server_lines(&choices.mcp.servers, true)
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        assert!(text(&view)[0].contains("‹ ai-memory · 1/2 ›"));
+        assert!(text(&view)[1].contains("Claude · usuário"));
+        assert_eq!(press(&mut view, KeyCode::Right), Outcome::Moved);
+        assert!(text(&view)[0].contains("‹ terra · 2/2 ›"));
+        assert!(text(&view)[2].contains("terra serve"));
+        press(&mut view, KeyCode::Right);
+        assert!(text(&view)[0].contains("ai-memory · 1/2"), "dá a volta");
+        press(&mut view, KeyCode::Left);
+        assert!(text(&view)[0].contains("terra · 2/2"));
+    }
+
+    #[test]
+    fn skills_are_the_last_setting_and_toggle_mcp_above() {
         let mut view = ConfigView::default();
         let mut mcp = McpSettings::default();
         let mut press = |view: &mut ConfigView, code: KeyCode| {
@@ -994,9 +1226,53 @@ mod tests {
         for _ in 0..FIELDS.len() {
             press(&mut view, KeyCode::Down);
         }
-        assert_eq!(view.focus, MCP_START, "a última fica");
+        assert_eq!(view.focus, MCP_START + 3, "a última fica");
+        assert_eq!(FIELDS[view.focus], Field::Skills);
+        for _ in 0..3 {
+            press(&mut view, KeyCode::Up);
+        }
         assert_eq!(press(&mut view, KeyCode::Enter), Outcome::McpChanged);
         assert_eq!(press(&mut view, KeyCode::Up), Outcome::Moved);
         assert!(mcp.enabled, "Desativado → Ativado");
+    }
+
+    #[test]
+    fn arrows_walk_through_the_installed_skills() {
+        let skill = |name: &str| SkillInfo {
+            name: name.into(),
+            origin: "Claude · usuário".into(),
+            description: format!("{name} faz algo"),
+        };
+        let choices = Choices {
+            skills: vec![skill("docs"), skill("postman:api-mocking")],
+            ..choices()
+        };
+        let mut view = ConfigView {
+            focus: MCP_START + 3,
+            ..ConfigView::default()
+        };
+        let text = |view: &ConfigView| -> Vec<String> {
+            view.skill_lines(&choices.skills, true)
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        assert!(text(&view)[1].contains("‹ docs · 1/2 ›"));
+        let outcome = view.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut AgentSettings::default(),
+            &mut ExtensionSettings::default(),
+            &mut McpSettings::default(),
+            &choices,
+        );
+        assert_eq!(outcome, Outcome::Moved);
+        assert!(text(&view)[1].contains("postman:api-mocking · 2/2"));
+        assert!(text(&view)[3].contains("postman:api-mocking faz algo"));
+        let empty: String = ConfigView::default().skill_lines(&[], false)[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(empty.trim_end().ends_with("Nenhuma"));
     }
 }

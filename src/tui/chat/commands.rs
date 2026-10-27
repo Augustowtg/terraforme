@@ -35,6 +35,7 @@ pub fn with_terra(mut commands: Vec<CommandInfo>) -> Vec<CommandInfo> {
             commands.push(CommandInfo {
                 name: name.to_string(),
                 description: description.to_string(),
+                skill: false,
             });
         }
     }
@@ -71,6 +72,7 @@ fn terra_commands_are_added_once() {
     let login = |description: &str| CommandInfo {
         name: "login".into(),
         description: description.into(),
+        skill: false,
     };
     let added = with_terra(Vec::new());
     assert_eq!(added.iter().filter(|c| c.name == "login").count(), 1);
@@ -148,6 +150,7 @@ mod tests {
             let command = CommandInfo {
                 name: name.into(),
                 description: "faz algo".into(),
+                skill: false,
             };
             item(&command, false)
                 .spans
@@ -166,6 +169,7 @@ mod tests {
             .map(|(name, description)| CommandInfo {
                 name: name.to_string(),
                 description: description.to_string(),
+                skill: false,
             })
             .collect()
     }

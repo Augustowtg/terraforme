@@ -170,10 +170,15 @@ fn result(value: &Value) -> AgentEvent {
         .iter()
         .filter_map(|key| usage[key].as_u64())
         .sum();
+    let cache_tokens = ["cache_creation_input_tokens", "cache_read_input_tokens"]
+        .iter()
+        .filter_map(|key| usage[key].as_u64())
+        .sum();
     AgentEvent::Done {
         is_error,
         message,
         tokens,
+        cache_tokens,
         denied: value["permission_denials"].as_array().map_or(0, Vec::len),
     }
 }
@@ -270,6 +275,7 @@ mod tests {
                     is_error: false,
                     message: None,
                     tokens: 6,
+                    cache_tokens: 15,
                     denied: 0
                 },
             ]
@@ -315,6 +321,7 @@ mod tests {
                 is_error: true,
                 message: Some("erro do claude: error_during_execution".into()),
                 tokens: 0,
+                cache_tokens: 0,
                 denied: 1
             }]
         );

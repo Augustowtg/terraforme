@@ -113,7 +113,7 @@ impl UsageView {
         let stale = match &self.fetched {
             None => true,
             Some((at, loaded)) => {
-                at.elapsed() >= STALE || loaded.as_deref() != account || self.window_reset()
+                at.elapsed() >= STALE || loaded.as_deref() != account || self.window_reset(*at)
             }
         };
         if stale {
@@ -154,13 +154,14 @@ impl UsageView {
         }
     }
 
-    /// Uma janela passou do horário de zerar: o que está na tela já não vale.
-    fn window_reset(&self) -> bool {
-        let now = Timestamp::now().as_second();
+    /// Uma janela zerou depois do último pedido: o que está na tela já não
+    /// vale. Só conta uma vez por zerada; se o pedido falhar (ex.: HTTP 429),
+    /// espera o [`STALE`] em vez de pedir de novo a cada tick.
+    fn window_reset(&self, fetched: Instant) -> bool {
         self.usage
             .iter()
             .flat_map(|u| &u.windows)
-            .any(|w| w.resets_at.is_some_and(|at| at <= now))
+            .any(|w| reset_since(w.resets_at, fetched))
     }
 
     /// Recebe o consumo e os tokens por dia, se já chegaram.
@@ -612,15 +613,12 @@ impl SessionUsage {
         if self.loading.is_some() {
             return;
         }
-        let now = Timestamp::now().as_second();
-        let reset = self
-            .window
-            .as_ref()
-            .and_then(|w| w.resets_at)
-            .is_some_and(|at| at <= now);
+        let resets_at = self.window.as_ref().and_then(|w| w.resets_at);
         let stale = match &self.fetched {
             None => true,
-            Some((at, loaded)) => at.elapsed() >= STALE || loaded.as_deref() != account || reset,
+            Some((at, loaded)) => {
+                at.elapsed() >= STALE || loaded.as_deref() != account || reset_since(resets_at, *at)
+            }
         };
         if !stale {
             return;
@@ -674,6 +672,15 @@ impl SessionUsage {
     pub fn window(&self) -> Option<&UsageWindow> {
         self.window.as_ref()
     }
+}
+
+/// A janela zerou (`resets_at` já passou) depois do pedido feito em
+/// `fetched`. Uma zerada anterior ao pedido não conta: a resposta já veio
+/// depois dela, ou o pedido falhou e só se tenta de novo no [`STALE`].
+fn reset_since(resets_at: Option<i64>, fetched: Instant) -> bool {
+    let now = Timestamp::now().as_second();
+    let fetched_at = now - fetched.elapsed().as_secs() as i64;
+    resets_at.is_some_and(|at| at <= now && at > fetched_at)
 }
 
 /// O texto da barra de consumo do chat: quanto resta da sessão e quando ela
