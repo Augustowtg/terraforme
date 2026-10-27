@@ -122,7 +122,7 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
     "account": ".claude-trabalho",
     "effort": "high",
     "interface": "terraforme",
-    "context": { "display": "visible", "auto_compact": false, "compact_at": 75 }
+    "context": { "display": "visible", "auto_compact": false, "limit": null, "compact_at": 75 }
   }
 }
 ```
@@ -141,7 +141,8 @@ Dentro da seção Agente, separada por uma linha, fica a seção **Contexto**, d
 | --- | --- |
 | Display | **Visível** (o padrão) ou **Oculto**: mostra ou esconde a barra de contexto |
 | Auto compactação | **Não** (o padrão) ou **Sim**: ao fim de uma resposta que deixou o contexto no ponto de compactar, o terra manda o `/compact` sozinho |
-| Compactar em | O ponto de compactar, de 50% a 95% do limite do modelo (padrão **75%**), com os tokens que ele representa (ex.: `75% · 150K tokens`). A barra vai até ele: fica laranja na metade, vermelha a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele |
+| Limite de tokens | **Do modelo** (o padrão: o limite que o agente informa, ou 200K até ele informar) ou um limite fixo, de 50K a 1M. No `config.json`, `"limit"` aceita qualquer número de tokens |
+| Compactar em | O ponto de compactar, de 50% a 95% do limite de tokens (padrão **75%**), com os tokens que ele representa (ex.: `75% · 150K tokens`). A barra vai até ele: fica laranja na metade, vermelha a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele |
 
 ### Navegação no `terra workspace`
 

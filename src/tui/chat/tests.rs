@@ -909,3 +909,19 @@ fn auto_compact_runs_once_at_the_compact_point() {
     assert_eq!(sent.borrow().len(), 2);
     assert!(full.run.is_none());
 }
+
+#[test]
+fn custom_limit_replaces_the_model_window_in_the_bar() {
+    let custom = ContextSettings {
+        limit: Some(100_000),
+        ..ContextSettings::default()
+    };
+    // O modelo informa 200K, mas vale o limite da Config: 75% de 100K.
+    let (chat, _) = chat_with_context(60_000, custom);
+    assert!(badge_row(&chat).contains("60K / 75K (80%)"));
+    assert_eq!(
+        chat.context_window(),
+        200_000,
+        "a Config mostra o do modelo"
+    );
+}
