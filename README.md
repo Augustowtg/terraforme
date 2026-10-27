@@ -140,7 +140,7 @@ Dentro da seção Agente, separada por uma linha, fica a seção **Contexto**, d
 | Configuração | Valores |
 | --- | --- |
 | Display | **Oculto** (o padrão) ou **Visível**: mostra ou esconde a barra de contexto |
-| Auto compactação | **Não** (o padrão) ou **Sim**: ao fim de uma resposta que deixou o contexto no ponto de compactar, o terra manda o `/compact` sozinho |
+| Auto compactação | **Não** (o padrão) ou **Sim**: ao fim de uma resposta que deixou o contexto no ponto de compactar, o terra manda o `/compact` sozinho, no máximo uma vez por mensagem enviada (nunca depois de um `/compact`, nem quando o próprio agente já compactou a conversa naquela resposta) |
 | Limite de tokens | Um limite fixo, de 50K a 1M (padrão **200K**), ou **Do modelo** (o limite que o agente informa, ou 200K até ele informar). No `config.json`, `"limit"` aceita qualquer número de tokens, e `null` é o do modelo |
 | Compactar em | O ponto de compactar, de 50% a 95% do limite de tokens (padrão **75%**), com os tokens que ele representa (ex.: `75% · 150K tokens`). A barra vai até ele: fica laranja na metade, vermelha a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele |
 

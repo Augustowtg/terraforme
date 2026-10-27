@@ -923,6 +923,62 @@ fn auto_compact_runs_once_at_the_compact_point() {
 }
 
 #[test]
+fn auto_compact_runs_once_per_user_message() {
+    let auto = ContextSettings {
+        auto_compact: true,
+        ..ContextSettings::default()
+    };
+    let (mut chat, sent) = chat_with_context(150_000, auto);
+    chat.tick();
+    assert_eq!(sent.borrow().len(), 2, "oi e a auto compactação");
+
+    // Um /compact pedido à mão não puxa outra auto compactação.
+    type_text(&mut chat, "/compact");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(sent.borrow().len(), 3);
+    assert!(chat.run.is_none());
+
+    // Cada mensagem nova do usuário pode compactar de novo, uma vez.
+    type_text(&mut chat, "e agora?");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    chat.tick();
+    let sent = sent.borrow();
+    assert_eq!(sent.len(), 5);
+    assert_eq!(sent[3].0, "e agora?");
+    assert_eq!(sent[4].0, "/compact");
+}
+
+#[test]
+fn auto_compact_skips_a_message_the_agent_already_compacted() {
+    let auto = ContextSettings {
+        auto_compact: true,
+        ..ContextSettings::default()
+    };
+    let settings = AgentSettings {
+        context: auto,
+        ..AgentSettings::default()
+    };
+    // O agente compactou sozinho no meio da resposta e o contexto voltou cheio.
+    let reply = vec![
+        init(PermissionMode::Agente),
+        AgentEvent::Compacted,
+        AgentEvent::Context {
+            tokens: 150_000,
+            window: Some(200_000),
+        },
+        done(1),
+    ];
+    let (mut chat, sent) = fake_chat_with(true, reply, &settings);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(sent.borrow().len(), 1);
+}
+
+#[test]
 fn custom_limit_replaces_the_model_window_in_the_bar() {
     let custom = ContextSettings {
         limit: Some(100_000),
