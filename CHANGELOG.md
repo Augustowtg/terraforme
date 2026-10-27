@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.11] - 2026-10-27
+
+### Alterado
+
+- A **barra de contexto** (canto inferior direito) não conta mais os **tokens de cache** (criação e leitura): ela soma só a entrada e a saída da última chamada ao modelo, como o consumo. A **Auto compactação** usa o mesmo número.
+
 ## [0.5.10] - 2026-10-27
 
 ### Corrigido
