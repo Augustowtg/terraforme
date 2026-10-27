@@ -116,10 +116,10 @@ pub struct App {
 
 impl App {
     /// Tela principal com o chat ligado ao provedor disponível e as
-    /// configurações do workspace `dir`, salvas em `config`. Um workspace
-    /// sem o arquivo começa com as configurações globais do `db`.
+    /// configurações do workspace `dir`, lidas de `config` (sem o arquivo, o
+    /// padrão do router) e salvas nele.
     pub fn new(db: Db, dir: PathBuf, config: PathBuf) -> Self {
-        let settings = initial_settings(&db, &config);
+        let settings = AgentSettings::load_file(&config).unwrap_or_default();
         let saved = db.workspace_name(&dir).ok().flatten().is_some();
         Self {
             chat: Chat::connect(&settings),
@@ -385,7 +385,6 @@ impl App {
                 &self.settings,
                 self.chat.adapter(),
                 &self.choices(),
-                self.config.as_deref(),
             );
             return;
         }
@@ -432,11 +431,6 @@ fn draw_save_ask(frame: &mut Frame, area: Rect, choice: SaveChoice) {
             .block(block),
         area,
     );
-}
-
-/// As configurações do workspace (`config`) ou, sem o arquivo, as globais.
-fn initial_settings(db: &Db, config: &std::path::Path) -> AgentSettings {
-    AgentSettings::load_file(config).unwrap_or_else(|| AgentSettings::load(db))
 }
 
 /// Caixa de confirmação de saída, centralizada sobre a tela.
@@ -587,23 +581,10 @@ mod tests {
     }
 
     #[test]
-    fn settings_come_from_the_workspace_file_or_the_global_ones() {
-        use crate::settings::config_file;
-
+    fn config_changes_are_saved_in_the_workspace_file() {
         let dir = tempfile::tempdir().unwrap();
-        let config = config_file(dir.path(), "terra");
-        let db = Db::open_in_memory().unwrap();
-        let global = AgentSettings {
-            model: Some("haiku".into()),
-            ..AgentSettings::default()
-        };
-        global.save(&db).unwrap();
-        // Sem o arquivo do workspace: as globais.
-        assert_eq!(initial_settings(&db, &config), global);
-
-        // Mudar na Config grava no arquivo do workspace.
+        let config = crate::settings::config_file(dir.path(), "terra");
         let mut app = App {
-            settings: global.clone(),
             config: Some(config.clone()),
             ..App::default()
         };
@@ -613,10 +594,7 @@ mod tests {
         key(&mut app, KeyCode::Right);
         let saved = AgentSettings::load_file(&config).expect("config.json gravado");
         assert_eq!(saved, app.settings);
-        assert_eq!(saved.model.as_deref(), Some("haiku"));
-        // Com o arquivo, ele vence as globais.
-        assert_eq!(initial_settings(&db, &config), saved);
-        assert_eq!(AgentSettings::load(&db), global, "as globais não mudam");
+        assert_ne!(saved, AgentSettings::default());
     }
 
     /// Uma tela num workspace não salvo, com o `config.json` em `dir`.

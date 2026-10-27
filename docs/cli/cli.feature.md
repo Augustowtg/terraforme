@@ -21,8 +21,7 @@ Mostra o consumo das LLMs usando os routes
 Configurações do agente (conta, modo inicial, modelo e esforço padrão), de cada workspace.
 1. Salvas em `~/.terraforme/workspace/[nome_da_workspace]/config.json`
 2. O nome é o do workspace salvo para o diretório ou, sem um, o nome da pasta
-3. Sem o arquivo, o workspace começa com as configurações globais
-4. A tela mostra onde salva (Salvo em)
+3. O config.json é lido ao iniciar; sem ele, o workspace começa com o padrão do router (modo do provedor, modelo e esforço padrão, conta Default)
 
 ## Sair
 Botão em vermelho, e quando apertar Esc ele redireciona para o botão de sair quando clicar enter ele mostra o box abaixo

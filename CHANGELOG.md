@@ -4,6 +4,17 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.14] - 2026-10-27
+
+### Alterado
+
+- Ao iniciar, o terra lê o `config.json` do workspace; **sem ele, começa com o padrão do router** (o provedor): modo inicial **Do provedor**, modelo e esforço padrão do provedor e a conta **Default**. Antes, um workspace sem o arquivo começava com as configurações globais do `terra.sqlite`.
+
+### Removido
+
+- As configurações globais do `terra.sqlite` (tabela `settings`) não são mais lidas. A tabela continua no banco, sem uso.
+- A linha **Salvo em** da aba Config (o caminho do `config.json`), adicionada na 0.4.12.
+
 ## [0.4.13] - 2026-10-27
 
 ### Adicionado
