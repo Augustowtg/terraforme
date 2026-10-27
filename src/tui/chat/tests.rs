@@ -209,6 +209,7 @@ fn settings_choose_start_mode_and_model() {
         effort: None,
         interface: Default::default(),
         context: Default::default(),
+        usage: Default::default(),
     };
     let (mut chat, sent) = fake_chat_with(true, vec![done(1)], &settings);
     assert_eq!(chat.permission_mode, PermissionMode::Plan);
@@ -1044,4 +1045,68 @@ fn custom_limit_replaces_the_model_window_in_the_bar() {
         200_000,
         "a Config mostra o do modelo"
     );
+}
+
+fn session(percent: f64) -> UsageWindow {
+    UsageWindow {
+        label: "Sessão (5 h)".into(),
+        percent,
+        resets_at: None,
+        detail: None,
+        session: true,
+    }
+}
+
+#[test]
+fn usage_bar_sits_beside_the_context_bar() {
+    let mut chat = Chat {
+        context_settings: visible(),
+        ..Chat::default()
+    };
+    chat.set_session_usage(Some(session(42.0)));
+    assert_eq!(chat.height(), HEIGHT, "só com o consumo, a linha aparece");
+    let row = badge_row(&chat);
+    assert!(row.contains("58% restantes"), "{row}");
+    assert_eq!(row.chars().count(), 60, "encostada na direita");
+    assert_eq!(chat.usage_bar().unwrap().1, 58.0);
+
+    chat.apply(AgentEvent::Context {
+        tokens: 45_000,
+        window: None,
+    });
+    let row = badge_row(&chat);
+    let usage = row.find("58% restantes").unwrap();
+    let context = row.find("45K / 150K").unwrap();
+    assert!(
+        usage < context,
+        "o consumo fica à esquerda do contexto: {row}"
+    );
+    assert_eq!(row.chars().count(), 60, "encostadas na direita");
+}
+
+#[test]
+fn hidden_usage_bar_does_not_show() {
+    let mut chat = Chat::default();
+    chat.set_session_usage(Some(session(42.0)));
+    chat.apply_settings(
+        &AgentSettings {
+            usage: UsageSettings { visible: false },
+            ..AgentSettings::default()
+        },
+        None,
+    );
+    assert_eq!(chat.usage_bar(), None);
+    assert_eq!(chat.height(), HEIGHT - badge::HEIGHT);
+}
+
+#[test]
+fn usage_bar_color_goes_from_green_to_red_then_gray() {
+    let color = |left| theme::usage_bar(left).fg;
+    assert_eq!(color(100.0), color(50.1));
+    assert_ne!(color(50.1), color(50.0), "metade: laranja");
+    assert_eq!(color(50.0), color(25.1));
+    assert_ne!(color(25.1), color(25.0), "25%: vermelho");
+    assert_eq!(color(25.0), color(0.1));
+    assert_ne!(color(0.1), color(0.0), "0%: cinza");
+    assert_eq!(color(0.0), theme::muted().fg);
 }

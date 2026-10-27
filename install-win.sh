@@ -114,28 +114,32 @@ ui_init "$SCRIPT_DIR" \
   "Compilar em modo release" \
   "Instalar o binário em $BIN_DIR" \
   "Adicionar a função 'terra' ao Git Bash" \
-  "Instalar as extensões?" \
-  "Instalar o RTK" \
-  "Instalar e configurar o ai-memory"
+  "Instalar as extensões?"
 
 ui_summaries \
   "" \
   "cargo build --release; pode levar alguns minutos" \
   "copia target/release/terra.exe e remove o antigo terraforme.exe" \
   "~/.bashrc e ~/.bash_profile" \
-  "" \
-  "cargo install --git https://github.com/rtk-ai/rtk rtk" \
-  "install.ps1 do GitHub e ai-memory setup"
+  ""
 
 ui_confirm "Instalar o terraforme CLI?" || exit 0
 ui_step build
 ui_step install_bin
 ui_step setup_shell
+# Os passos das extensões só entram na lista com o SIM, e só os das
+# escolhidas no menu.
 if ui_ask "Instalar as extensões (RTK e ai-memory)?"; then
-  ui_step install_rtk
-  ui_step install_ai_memory
-else
-  ui_skip
-  ui_skip
+  ui_select "Quais extensões instalar?" \
+    "RTK - filtra e comprime a saída dos comandos antes de ela chegar ao agente" \
+    "ai-memory - memória de longo prazo entre sessões e agentes"
+  if [ "${UI_SELECTED[0]}" -eq 1 ]; then
+    ui_add_step "Instalar o RTK" "cargo install --git https://github.com/rtk-ai/rtk rtk"
+  fi
+  if [ "${UI_SELECTED[1]}" -eq 1 ]; then
+    ui_add_step "Instalar e configurar o ai-memory" "install.ps1 do GitHub e ai-memory setup"
+  fi
+  if [ "${UI_SELECTED[0]}" -eq 1 ]; then ui_step install_rtk; fi
+  if [ "${UI_SELECTED[1]}" -eq 1 ]; then ui_step install_ai_memory; fi
 fi
 ui_finish "Pronto! Feche e reabra o Git Bash para usar: terra workspace"

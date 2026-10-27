@@ -131,6 +131,7 @@ fn parse(body: &str, plan: Option<String>) -> Result<Usage, String> {
                     .and_then(|s| s.parse::<jiff::Timestamp>().ok())
                     .map(|t| t.as_second()),
                 detail: None,
+                session: *key == "five_hour",
             })
         })
         .collect();
@@ -163,6 +164,7 @@ fn extra_usage(extra: &Value) -> Option<UsageWindow> {
         percent,
         resets_at: None,
         detail: Some(detail),
+        session: false,
     })
 }
 
@@ -223,12 +225,14 @@ mod tests {
                     percent: 42.5,
                     resets_at: Some(1_793_124_000),
                     detail: None,
+                    session: true,
                 },
                 UsageWindow {
                     label: "Semana (todos os modelos)".into(),
                     percent: 100.0,
                     resets_at: None,
                     detail: None,
+                    session: false,
                 },
             ]
         );
@@ -250,6 +254,7 @@ mod tests {
                 percent: 4.45,
                 resets_at: None,
                 detail: Some("US$ 38,22 restantes de US$ 40,00 no mês".into()),
+                session: false,
             })
         );
 

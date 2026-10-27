@@ -13,7 +13,8 @@
 //!     "account": ".claude-trabalho",
 //!     "effort": "high",
 //!     "interface": "terraforme",
-//!     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 }
+//!     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 },
+//!     "usage": { "display": "visible" }
 //!   },
 //!   "extensions": { "enabled": ["rtk", "ai-memory"] }
 //! }
@@ -184,6 +185,35 @@ impl Default for ContextSettings {
     }
 }
 
+/// Configurações do consumo (a barra do consumo da sessão de 5 horas, ao
+/// lado da de contexto).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageSettings {
+    /// A barra de consumo aparece no chat.
+    pub visible: bool,
+}
+
+impl UsageSettings {
+    fn load(json: &Value) -> Self {
+        Self {
+            visible: json["display"]
+                .as_str()
+                .map_or(Self::default().visible, |d| d != "hidden"),
+        }
+    }
+
+    fn to_json(self) -> Value {
+        json!({ "display": if self.visible { "visible" } else { "hidden" } })
+    }
+}
+
+/// Visível.
+impl Default for UsageSettings {
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
+
 /// Configurações da seção Agente. O padrão ([`Default`]) é o do router: tudo
 /// fica com o provedor.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -197,6 +227,7 @@ pub struct AgentSettings {
     pub effort: Option<String>,
     pub interface: Interface,
     pub context: ContextSettings,
+    pub usage: UsageSettings,
 }
 
 impl AgentSettings {
@@ -217,6 +248,7 @@ impl AgentSettings {
                 .and_then(|key| Interface::from_key(&key))
                 .unwrap_or_default(),
             context: ContextSettings::load(&agent["context"]),
+            usage: UsageSettings::load(&agent["usage"]),
         })
     }
 
@@ -231,6 +263,7 @@ impl AgentSettings {
                 "effort": self.effort,
                 "interface": self.interface.key(),
                 "context": self.context.to_json(),
+                "usage": self.usage.to_json(),
             });
         })
     }
@@ -357,6 +390,7 @@ mod tests {
                 limit: Some(300_000),
                 compact_at: 90,
             },
+            usage: UsageSettings { visible: false },
         };
         settings.save_file(&path).unwrap();
         assert_eq!(AgentSettings::load_file(&path), Some(settings.clone()));
@@ -368,6 +402,7 @@ mod tests {
             json["agent"]["context"],
             json!({"display": "hidden", "auto_compact": true, "limit": 300_000, "compact_at": 90})
         );
+        assert_eq!(json["agent"]["usage"], json!({"display": "hidden"}));
 
         // Chaves de fora do agente ficam no arquivo.
         fs::write(&path, r#"{"outra": 1, "agent": {"model": "opus"}}"#).unwrap();
@@ -426,6 +461,13 @@ mod tests {
         // Salvar o agente de novo não volta a perguntar.
         settings.save_file(&path).unwrap();
         assert!(!asks_to_save(&path));
+    }
+
+    #[test]
+    fn usage_bar_defaults_to_visible() {
+        assert!(UsageSettings::default().visible);
+        assert_eq!(UsageSettings::load(&json!({})), UsageSettings::default());
+        assert!(!UsageSettings::load(&json!({"display": "hidden"})).visible);
     }
 
     #[test]

@@ -4,6 +4,25 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.6.2] - 2026-10-27
+
+### Adicionado
+
+- Instaladores: depois do **SIM** em "Instalar as extensões?", um menu no estilo da lista de extensões da Config (`▌ [x] 1. RTK - descrição`), com todas marcadas, para escolher quais instalar: `↑`/`↓` andam, `Espaço` marca ou desmarca, `Enter` confirma. Com `-y`, instala todas.
+- `install-ui.sh`: `ui_select`, o menu de várias opções (as marcadas ficam em `UI_SELECTED`), e `ui_add_step`, que acrescenta um passo no fim da lista.
+- **Barra de consumo** no chat, à esquerda da barra de contexto: quanto resta da sessão de 5 horas do provedor e quando ela zera (ex.: `58% · reseta 15:00`). A cor vai pelo que resta: verde, laranja de 50% para baixo, vermelho de 25% para baixo e cinza no 0%. É carregada só com ela visível (sem os tokens por dia da aba Consumo), a cada minuto, ao trocar de conta, depois de um login e depois de a sessão zerar.
+- Seção **Consumo** na aba Config, embaixo do Contexto, com o **Display** da barra de consumo: Visível (o padrão) ou Oculto. Fica em `agent.usage.display` no `config.json`.
+- `UsageWindow.session`, que marca a janela da sessão (a `five_hour` do Claude), e `Usage::session()`.
+
+### Alterado
+
+- Os passos **Instalar o RTK** e **Instalar e configurar o ai-memory** só entram na lista do instalador depois do SIM, e só os das extensões escolhidas no menu.
+- Config, seção Extensões: as extensões que não estão instaladas aparecem como **indisponível** (`(indisponível)` no fim da linha da lista e `indisponível (não instalada)` nos detalhes da que está em foco).
+
+### Removido
+
+- Instaladores: os passos das extensões como pulados (`– passo (pulado)`) com o NÃO, e o `ui_skip` do `install-ui.sh`, que não é mais usado.
+
 ## [0.6.1] - 2026-10-27
 
 ### Adicionado
