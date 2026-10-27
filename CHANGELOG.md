@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.6.3] - 2026-10-27
+
+### Alterado
+
+- A barra de consumo vem **oculta** por padrão, como a de contexto: sem `agent.usage.display` no `config.json`, o Display da seção Consumo da Config fica em Oculto (e o terra não busca o consumo para ela). Para vê-la, troque para Visível.
+
 ## [0.6.2] - 2026-10-27
 
 ### Adicionado
