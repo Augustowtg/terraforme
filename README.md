@@ -70,7 +70,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Shift+Enter` (escrevendo) | Pula uma linha. No GNOME Terminal e em outros que não diferenciam o `Shift+Enter`, use `\` + `Enter`, `Alt+Enter` ou `Ctrl+J` |
 | `Esc` no modo INSERT | Volta ao modo NORMAL |
 | Mouse no input (aba Chat) | Clique posiciona o cursor; arrastar seleciona o texto (digitar substitui a seleção) |
-| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 200K (22%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra é configurada na seção Contexto da aba Config |
+| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 150K (30%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra vem oculta: para vê-la, troque o Display na seção Contexto da aba Config |
 | `r` (aba Consumo) | Atualiza o consumo na hora (ele também se atualiza sozinho a cada minuto com a aba aberta) |
 | `c` ou clique nos botões (aba Consumo) | Alterna o gráfico Consumo por dia entre **Sem cache** (padrão) e **Com cache** |
 | Clique num dia (aba Consumo) | Mostra o consumo daquele dia por hora; **‹ Dias** ou `Esc` volta |
@@ -122,7 +122,7 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
     "account": ".claude-trabalho",
     "effort": "high",
     "interface": "terraforme",
-    "context": { "display": "visible", "auto_compact": false, "limit": null, "compact_at": 75 }
+    "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 }
   }
 }
 ```
@@ -139,9 +139,9 @@ Dentro da seção Agente, separada por uma linha, fica a seção **Contexto**, d
 
 | Configuração | Valores |
 | --- | --- |
-| Display | **Visível** (o padrão) ou **Oculto**: mostra ou esconde a barra de contexto |
+| Display | **Oculto** (o padrão) ou **Visível**: mostra ou esconde a barra de contexto |
 | Auto compactação | **Não** (o padrão) ou **Sim**: ao fim de uma resposta que deixou o contexto no ponto de compactar, o terra manda o `/compact` sozinho |
-| Limite de tokens | **Do modelo** (o padrão: o limite que o agente informa, ou 200K até ele informar) ou um limite fixo, de 50K a 1M. No `config.json`, `"limit"` aceita qualquer número de tokens |
+| Limite de tokens | Um limite fixo, de 50K a 1M (padrão **200K**), ou **Do modelo** (o limite que o agente informa, ou 200K até ele informar). No `config.json`, `"limit"` aceita qualquer número de tokens, e `null` é o do modelo |
 | Compactar em | O ponto de compactar, de 50% a 95% do limite de tokens (padrão **75%**), com os tokens que ele representa (ex.: `75% · 150K tokens`). A barra vai até ele: fica laranja na metade, vermelha a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele |
 
 ### Navegação no `terra workspace`
