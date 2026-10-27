@@ -870,9 +870,17 @@ fn compact_command_asks_the_agent_and_resets_the_context() {
         chat.history.entries().last(),
         Some(&Entry::Info("Compactando a conversa...".into()))
     );
-    chat.apply(AgentEvent::Compacted);
-    assert_eq!(chat.context, None);
+    chat.apply(AgentEvent::Compacted {
+        tokens: Some(8_000),
+    });
+    assert_eq!(
+        chat.context,
+        Some(8_000),
+        "a barra fica, com o contexto novo"
+    );
     assert_eq!(chat.context_window, Some(200_000), "o limite continua");
+    chat.apply(AgentEvent::Compacted { tokens: None });
+    assert_eq!(chat.context, None);
 }
 
 #[test]
@@ -1007,7 +1015,7 @@ fn auto_compact_skips_a_message_the_agent_already_compacted() {
     // O agente compactou sozinho no meio da resposta e o contexto voltou cheio.
     let reply = vec![
         init(PermissionMode::Agente),
-        AgentEvent::Compacted,
+        AgentEvent::Compacted { tokens: None },
         AgentEvent::Context {
             tokens: 150_000,
             window: Some(200_000),

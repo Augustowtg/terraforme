@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.10] - 2026-10-27
+
+### Corrigido
+
+- A **barra de contexto sumia depois de compactar** (com o `/compact` ou a Auto compactação), mesmo com o Display visível: o terra esperava o tamanho novo na próxima mensagem. Agora ela fica e mostra na hora o contexto que sobrou, informado pelo `claude` no fim da compactação.
+
 ## [0.5.9] - 2026-10-27
 
 ### Adicionado

@@ -707,10 +707,11 @@ impl Chat {
                     self.context_window = window;
                 }
             }
-            AgentEvent::Compacted => {
-                // O tamanho novo vem na próxima chamada ao modelo. A mensagem
-                // já foi compactada (pelo próprio agente): não compacta de novo.
-                self.context = None;
+            AgentEvent::Compacted { tokens } => {
+                // O tamanho depois da compactação mantém a barra; sem ele, o
+                // novo vem na próxima chamada ao modelo. A mensagem já foi
+                // compactada (pelo próprio agente): não compacta de novo.
+                self.context = tokens;
                 self.auto_compact_armed = false;
                 self.history
                     .push(Entry::Info("Conversa compactada.".to_string()));
