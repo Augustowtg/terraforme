@@ -87,6 +87,9 @@ pub struct UsageWindow {
     pub percent: f64,
     /// Quando a janela zera (segundos Unix); `None` quando o provedor não diz.
     pub resets_at: Option<i64>,
+    /// O que mostrar no lugar de quando zera (ex.: o valor gasto do crédito
+    /// extra).
+    pub detail: Option<String>,
 }
 
 /// O consumo da conta no provedor (aba Consumo).

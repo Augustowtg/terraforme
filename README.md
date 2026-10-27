@@ -91,7 +91,13 @@ Mostra o **route** (provedor e conta do chat, com o plano) e, para cada limite d
   Semana (todos os modelos)
   ██████████████████████████████████████░░  96%
   Reseta 27-10-2026 12:00 · zera em 2h 42m
+
+  Crédito extra (mensal)
+  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  4%
+  US$ 1,78 de US$ 40,00 usados no mês
 ```
+
+A barra do **Crédito extra** só aparece quando a conta tem o crédito extra ativo.
 
 No Claude, os limites são os mesmos do `/usage` do Claude Code (sessão de 5 h e semana, mais Opus/Sonnet quando o plano tem), lidos do endpoint de uso com o token da conta escolhida na Config. Não chama o modelo nem gasta tokens; precisa do `curl` no `PATH`.
 

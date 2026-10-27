@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.6] - 2026-10-27
+
+### Adicionado
+
+- **Crédito extra** na aba Consumo: quando a conta tem o crédito extra ativo, aparece a barra **Crédito extra (mensal)** com a porcentagem do limite mensal gasta e o valor embaixo (ex.: `US$ 1,78 de US$ 40,00 usados no mês`, e `· limite atingido` quando chega ao limite). Sem crédito extra ativo, a barra não aparece.
+
 ## [0.4.5] - 2026-10-27
 
 ### Adicionado
