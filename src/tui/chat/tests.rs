@@ -54,11 +54,12 @@ impl ChatAdapter for FakeAdapter {
         _account: Option<&str>,
     ) -> Option<mpsc::Receiver<Result<Catalog, String>>> {
         let (tx, rx) = mpsc::channel();
-        let commands = ["clear", "compact", "model"]
+        let commands = ["clear", "compact", "context", "model", "usage"]
             .iter()
             .map(|name| agent::CommandInfo {
                 name: name.to_string(),
                 description: format!("faz {name}"),
+                skill: false,
             })
             .collect();
         let model = |id: &str, efforts: &[&str]| agent::ModelInfo {
@@ -76,6 +77,25 @@ impl ChatAdapter for FakeAdapter {
         }))
         .unwrap();
         Some(rx)
+    }
+
+    fn login(&self, _account: Option<&str>) -> Option<Command> {
+        Some(Command::new("fake-login"))
+    }
+
+    fn command_route(&self, name: &str) -> agent::CommandRoute {
+        match name {
+            "hooks" => agent::CommandRoute::Original,
+            "upgrade" => agent::CommandRoute::Blocked,
+            _ => agent::CommandRoute::Agent,
+        }
+    }
+
+    fn interactive(&self, _cwd: &std::path::Path, options: Interactive<'_>) -> Option<Command> {
+        let mut cmd = Command::new("fake-original");
+        cmd.args(options.session_id);
+        cmd.args(options.command);
+        Some(cmd)
     }
 
     fn start(&self, request: Request<'_>) -> Result<Box<dyn Session>, String> {
@@ -112,6 +132,7 @@ fn done(tokens: u64) -> AgentEvent {
         is_error: false,
         message: None,
         tokens,
+        cache_tokens: 0,
         denied: 0,
     }
 }
@@ -203,6 +224,9 @@ fn settings_choose_start_mode_and_model() {
         model: Some("haiku".into()),
         account: None,
         effort: None,
+        interface: Default::default(),
+        context: Default::default(),
+        usage: Default::default(),
     };
     let (mut chat, sent) = fake_chat_with(true, vec![done(1)], &settings);
     assert_eq!(chat.permission_mode, PermissionMode::Plan);
@@ -283,9 +307,9 @@ fn switching_account_starts_a_new_conversation() {
 #[test]
 fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
     let reply = vec![init(PermissionMode::Agente), done(1)];
-    let (mut chat, _) = fake_chat(true, reply);
+    let (mut chat, sent) = fake_chat(true, reply);
     chat.tick(); // chega o catálogo
-    assert_eq!(chat.catalog.as_ref().map(|c| c.commands.len()), Some(3));
+    assert_eq!(chat.catalog.as_ref().map(|c| c.commands.len()), Some(5));
 
     // Uma conversa, e depois /clear.
     press(&mut chat, KeyCode::Char('i'));
@@ -301,14 +325,164 @@ fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
         [Entry::Info("Nova conversa.".into())]
     );
 
-    // Um comando do agente que ainda não tem interface no terra.
-    type_text(&mut chat, "/compact");
+    // Sem interface no terra, o comando vai para o agente (o padrão do
+    // router), que responde no chat.
+    type_text(&mut chat, "/context");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow().last().unwrap().0, "/context");
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::User("/context".into()))
+    );
+    // Com o agente respondendo, espera.
+    type_text(&mut chat, "/context");
     press(&mut chat, KeyCode::Enter);
     assert_eq!(
         chat.history.entries().last(),
         Some(&Entry::Info(
-            "/compact ainda não tem interface no terra.".into()
+            "Espere o agente terminar para rodar /context.".into()
         ))
+    );
+    chat.tick();
+    assert!(chat.run.is_none());
+}
+
+#[test]
+fn slash_commands_typed_with_arguments_go_to_the_agent() {
+    let reply = vec![init(PermissionMode::Agente), done(1)];
+    let (mut chat, sent) = fake_chat(true, reply);
+    chat.tick();
+
+    // Tab completa o comando do padrão do router; os argumentos vão juntos.
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/cont");
+    press(&mut chat, KeyCode::Tab);
+    type_text(&mut chat, "model=opus");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow().last().unwrap().0, "/context model=opus");
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::User("/context model=opus".into()))
+    );
+    assert_eq!(chat.input.text(), "");
+    // Um comando não arma a auto compactação.
+    assert!(!chat.auto_compact_armed);
+    chat.tick();
+    assert!(chat.run.is_none());
+
+    // Escrito sem argumentos, um comando com interface roda a interface.
+    type_text(&mut chat, "/clear ");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow().len(), 1);
+    assert_eq!(
+        chat.history.entries(),
+        [Entry::Info("Nova conversa.".into())]
+    );
+}
+
+#[test]
+fn interactive_only_commands_open_the_original_in_the_session() {
+    let reply = vec![init(PermissionMode::Agente), done(1)];
+    let (mut chat, sent) = fake_chat(true, reply);
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+
+    type_text(&mut chat, "/hooks PreToolUse");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow().len(), 1, "não vai para o agente");
+    let (original, command) = chat.take_original().expect("abre a original");
+    assert_eq!(original.get_program(), "fake-original");
+    let args: Vec<_> = original.get_args().collect();
+    assert_eq!(
+        args,
+        [chat.session_id.as_deref().unwrap(), "/hooks PreToolUse"]
+    );
+    assert_eq!(command, "/hooks PreToolUse");
+    chat.finish_original(&command, Ok(()));
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info(
+            "/hooks PreToolUse rodou na interface original.".into()
+        ))
+    );
+
+    // Pagamento e plano não rodam.
+    type_text(&mut chat, "/upgrade ");
+    press(&mut chat, KeyCode::Enter);
+    assert!(chat.take_original().is_none());
+    assert_eq!(sent.borrow().len(), 1);
+    assert!(matches!(
+        chat.history.entries().last(),
+        Some(Entry::Info(text)) if text.contains("pagamento e plano")
+    ));
+}
+
+#[test]
+fn login_is_a_terra_command_that_runs_the_provider_login() {
+    let (mut chat, _) = fake_chat(true, Vec::new());
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/log");
+    press(&mut chat, KeyCode::Enter);
+    let (login, account) = chat.take_login().expect("/login pede o login do provedor");
+    assert_eq!(login.get_program(), "fake-login");
+    assert_eq!(account, "Default");
+    assert!(chat.take_login().is_none(), "só uma vez");
+
+    chat.finish_login(Err("Login failed: status 400".into()));
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Error(
+            "O login na conta Default não terminou: Login failed: status 400".into()
+        ))
+    );
+    chat.finish_login(Ok(()));
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info("Login feito na conta Default.".into()))
+    );
+}
+
+#[test]
+fn auth_error_suggests_login() {
+    let reply = vec![AgentEvent::Done {
+        is_error: true,
+        message: Some(
+            "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."
+                .into(),
+        ),
+        tokens: 0,
+        cache_tokens: 0,
+        denied: 0,
+    }];
+    let (mut chat, _) = fake_chat(true, reply);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info(
+            "Use /login para entrar de novo na conta Default.".into()
+        ))
+    );
+}
+
+#[test]
+fn usage_asks_for_the_consumo_tab() {
+    let (mut chat, _) = fake_chat(true, Vec::new());
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/usage");
+    press(&mut chat, KeyCode::Enter);
+    assert!(chat.take_open_usage());
+    assert!(!chat.take_open_usage(), "só uma vez");
+    assert!(
+        chat.history.entries().is_empty(),
+        "não avisa que falta interface"
     );
 }
 
@@ -447,6 +621,7 @@ fn agent_events_update_history_status_and_consumption() {
         is_error: false,
         message: None,
         tokens: 1_500,
+        cache_tokens: 0,
         denied: 1,
     });
     assert_eq!(chat.agent_status, AgentStatus::Ocioso);
@@ -649,4 +824,346 @@ fn badges_appear_only_when_active() {
     }
     assert_eq!(chat.permission_mode, PermissionMode::Agente);
     assert_eq!(badge_row(&chat), "│ Consumo: 1.5K Tokens │");
+}
+
+/// A linha dos badges (y = 7) do painel desenhado com 60 colunas.
+fn badge_row(chat: &Chat) -> String {
+    let terminal = render(chat);
+    let buffer = terminal.backend().buffer();
+    (0..60)
+        .map(|x| buffer[(x, 7)].symbol())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+#[test]
+fn context_bar_sits_on_the_right_below_the_status() {
+    // Visível e com o limite do modelo.
+    let mut chat = Chat {
+        context_settings: ContextSettings {
+            limit: None,
+            ..visible()
+        },
+        ..Chat::default()
+    };
+    assert_eq!(
+        chat.height(),
+        HEIGHT - badge::HEIGHT,
+        "sem contexto, sem barra"
+    );
+
+    chat.apply(AgentEvent::Context {
+        tokens: 45_000,
+        window: None,
+    });
+    assert_eq!(chat.height(), HEIGHT);
+    // Sem o limite do agente, vale o padrão (200K), e a barra vai até o
+    // ponto de compactar (75%: 150K). O texto fica dentro da barra, encostada
+    // na direita, como o status no input.
+    let row = badge_row(&chat);
+    assert!(row.ends_with("45K / 150K (30%)    │"), "{row}");
+    assert_eq!(row.chars().count(), 60, "encostada na direita");
+    assert_eq!(chat.context_bar().unwrap().1, 0.3);
+
+    chat.apply(AgentEvent::Context {
+        tokens: 600_000,
+        window: Some(1_000_000),
+    });
+    assert!(badge_row(&chat).contains("600K / 750K (80%)"));
+    // Um contexto sem limite novo mantém o informado.
+    chat.apply(AgentEvent::Context {
+        tokens: 750_000,
+        window: None,
+    });
+    assert!(badge_row(&chat).contains("Compacte a conversa"));
+    assert_eq!(chat.context_bar().unwrap().1, 1.0);
+}
+
+#[test]
+fn context_bar_color_goes_from_green_to_red() {
+    let color = |ratio| theme::context_bar(ratio).fg;
+    assert_eq!(color(0.2), color(0.49));
+    assert_ne!(color(0.49), color(0.5), "metade: laranja");
+    assert_eq!(color(0.5), color(0.74));
+    assert_ne!(color(0.74), color(0.75), "75%: vermelho");
+    assert_eq!(color(0.75), color(1.0));
+}
+
+#[test]
+fn compact_command_asks_the_agent_and_resets_the_context() {
+    let (mut chat, sent) = fake_chat(
+        true,
+        vec![
+            init(PermissionMode::Agente),
+            AgentEvent::Context {
+                tokens: 150_000,
+                window: Some(200_000),
+            },
+            done(10),
+        ],
+    );
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/compact");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info("Ainda não há conversa para compactar.".into()))
+    );
+
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(chat.context, Some(150_000));
+
+    type_text(&mut chat, "/compact");
+    press(&mut chat, KeyCode::Enter);
+    let sent = sent.borrow();
+    assert_eq!(sent.last().unwrap().0, "/compact");
+    assert_eq!(
+        sent.last().unwrap().2.as_deref(),
+        Some("s1"),
+        "na mesma sessão"
+    );
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info("Compactando a conversa...".into()))
+    );
+    chat.apply(AgentEvent::Compacted {
+        tokens: Some(8_000),
+    });
+    assert_eq!(
+        chat.context,
+        Some(8_000),
+        "a barra fica, com o contexto novo"
+    );
+    assert_eq!(chat.context_window, Some(200_000), "o limite continua");
+    chat.apply(AgentEvent::Compacted { tokens: None });
+    assert_eq!(chat.context, None);
+}
+
+#[test]
+fn clear_resets_the_context() {
+    let mut chat = Chat {
+        context: Some(10),
+        ..Chat::default()
+    };
+    chat.clear_conversation();
+    assert_eq!(chat.context, None);
+}
+
+/// As configurações padrão do contexto, com a barra visível.
+fn visible() -> ContextSettings {
+    ContextSettings {
+        visible: true,
+        ..ContextSettings::default()
+    }
+}
+
+/// Um chat com a conversa "s1" e o contexto em `tokens` de um limite de 200K.
+fn chat_with_context(tokens: u64, context: ContextSettings) -> (Chat, Sent) {
+    let settings = AgentSettings {
+        context,
+        ..AgentSettings::default()
+    };
+    let reply = vec![
+        init(PermissionMode::Agente),
+        AgentEvent::Context {
+            tokens,
+            window: Some(200_000),
+        },
+        done(1),
+    ];
+    let (mut chat, sent) = fake_chat_with(true, reply, &settings);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    (chat, sent)
+}
+
+#[test]
+fn context_bar_is_relative_to_the_compact_point() {
+    // Ponto de compactar padrão: 75% de 200K = 150K.
+    let (chat, _) = chat_with_context(75_000, visible());
+    assert!(badge_row(&chat).contains("75K / 150K (50%)"));
+    assert_eq!(chat.context_bar().unwrap().1, 0.5, "metade: laranja");
+
+    let (chat, sent) = chat_with_context(150_000, visible());
+    assert!(badge_row(&chat).contains("Compacte a conversa"));
+    // Sem a auto compactação (o padrão), só avisa.
+    assert_eq!(sent.borrow().len(), 1);
+}
+
+#[test]
+fn hidden_context_bar_does_not_take_the_badge_row() {
+    // O padrão é oculto.
+    let (chat, _) = chat_with_context(75_000, ContextSettings::default());
+    assert_eq!(chat.context_bar(), None);
+    // Fica só o badge de consumo, sem a barra no canto.
+    assert_eq!(badge_row(&chat), "│ Modo: Agente │ │ Consumo: 1 Tokens │");
+}
+
+#[test]
+fn auto_compact_runs_once_at_the_compact_point() {
+    let auto = ContextSettings {
+        auto_compact: true,
+        compact_at: 50,
+        ..ContextSettings::default()
+    };
+    let (_, sent) = chat_with_context(99_000, auto);
+    assert_eq!(
+        sent.borrow().len(),
+        1,
+        "abaixo de 50% de 200K, não compacta"
+    );
+
+    let (mut full, sent) = chat_with_context(100_000, auto);
+    assert_eq!(sent.borrow().last().unwrap().0, "/compact");
+    assert_eq!(
+        full.history.entries().last(),
+        Some(&Entry::Info(
+            "O contexto chegou em 50% do limite: compactando a conversa...".into()
+        ))
+    );
+    // A compactação responde com o mesmo contexto (ela falhou sem avisar): a
+    // auto compactação não entra em loop.
+    full.tick();
+    assert_eq!(sent.borrow().len(), 2);
+    assert!(full.run.is_none());
+}
+
+#[test]
+fn auto_compact_runs_once_per_user_message() {
+    let auto = ContextSettings {
+        auto_compact: true,
+        ..ContextSettings::default()
+    };
+    let (mut chat, sent) = chat_with_context(150_000, auto);
+    chat.tick();
+    assert_eq!(sent.borrow().len(), 2, "oi e a auto compactação");
+
+    // Um /compact pedido à mão não puxa outra auto compactação.
+    type_text(&mut chat, "/compact");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(sent.borrow().len(), 3);
+    assert!(chat.run.is_none());
+
+    // Cada mensagem nova do usuário pode compactar de novo, uma vez.
+    type_text(&mut chat, "e agora?");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    chat.tick();
+    let sent = sent.borrow();
+    assert_eq!(sent.len(), 5);
+    assert_eq!(sent[3].0, "e agora?");
+    assert_eq!(sent[4].0, "/compact");
+}
+
+#[test]
+fn auto_compact_skips_a_message_the_agent_already_compacted() {
+    let auto = ContextSettings {
+        auto_compact: true,
+        ..ContextSettings::default()
+    };
+    let settings = AgentSettings {
+        context: auto,
+        ..AgentSettings::default()
+    };
+    // O agente compactou sozinho no meio da resposta e o contexto voltou cheio.
+    let reply = vec![
+        init(PermissionMode::Agente),
+        AgentEvent::Compacted { tokens: None },
+        AgentEvent::Context {
+            tokens: 150_000,
+            window: Some(200_000),
+        },
+        done(1),
+    ];
+    let (mut chat, sent) = fake_chat_with(true, reply, &settings);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(sent.borrow().len(), 1);
+}
+
+#[test]
+fn custom_limit_replaces_the_model_window_in_the_bar() {
+    let custom = ContextSettings {
+        limit: Some(100_000),
+        ..visible()
+    };
+    // O modelo informa 200K, mas vale o limite da Config: 75% de 100K.
+    let (chat, _) = chat_with_context(60_000, custom);
+    assert!(badge_row(&chat).contains("60K / 75K (80%)"));
+    assert_eq!(
+        chat.context_window(),
+        200_000,
+        "a Config mostra o do modelo"
+    );
+}
+
+fn session(percent: f64) -> UsageWindow {
+    UsageWindow {
+        label: "Sessão (5 h)".into(),
+        percent,
+        resets_at: None,
+        detail: None,
+        session: true,
+    }
+}
+
+#[test]
+fn usage_bar_sits_beside_the_context_bar() {
+    let mut chat = Chat {
+        context_settings: visible(),
+        usage_settings: UsageSettings {
+            visible: true,
+            ..Default::default()
+        },
+        ..Chat::default()
+    };
+    chat.set_session_usage(Some(session(42.0)));
+    assert_eq!(chat.height(), HEIGHT, "só com o consumo, a linha aparece");
+    let row = badge_row(&chat);
+    assert!(row.contains("58% restantes"), "{row}");
+    assert_eq!(row.chars().count(), 60, "encostada na direita");
+    assert_eq!(chat.usage_bar().unwrap().1, 58.0);
+
+    chat.apply(AgentEvent::Context {
+        tokens: 45_000,
+        window: None,
+    });
+    let row = badge_row(&chat);
+    let usage = row.find("58% restantes").unwrap();
+    let context = row.find("45K / 150K").unwrap();
+    assert!(
+        usage < context,
+        "o consumo fica à esquerda do contexto: {row}"
+    );
+    assert_eq!(row.chars().count(), 60, "encostadas na direita");
+}
+
+#[test]
+fn usage_bar_is_hidden_by_default() {
+    let mut chat = Chat::default();
+    chat.set_session_usage(Some(session(42.0)));
+    chat.apply_settings(&AgentSettings::default(), None);
+    assert_eq!(chat.usage_bar(), None);
+    assert_eq!(chat.height(), HEIGHT - badge::HEIGHT);
+}
+
+#[test]
+fn usage_bar_color_goes_from_green_to_red_then_gray() {
+    let color = |left| theme::usage_bar(left).fg;
+    assert_eq!(color(100.0), color(50.1));
+    assert_ne!(color(50.1), color(50.0), "metade: laranja");
+    assert_eq!(color(50.0), color(25.1));
+    assert_ne!(color(25.1), color(25.0), "25%: vermelho");
+    assert_eq!(color(25.0), color(0.1));
+    assert_ne!(color(0.1), color(0.0), "0%: cinza");
+    assert_eq!(color(0.0), theme::muted().fg);
 }

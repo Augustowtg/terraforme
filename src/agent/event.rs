@@ -32,11 +32,19 @@ pub enum AgentEvent {
     ToolUse { name: String, detail: String },
     /// Resultado de uma ferramenta (primeira linha).
     ToolResult { is_error: bool, summary: String },
+    /// Tamanho do contexto da sessão na última chamada ao modelo (entrada e
+    /// saída, sem o cache) e, quando o provedor informa, o limite do modelo.
+    Context { tokens: u64, window: Option<u64> },
+    /// O agente compactou a conversa: o contexto volta a ser pequeno. Com o
+    /// tamanho dele depois da compactação, quando o provedor informa.
+    Compacted { tokens: Option<u64> },
     /// Fim da resposta.
     Done {
         is_error: bool,
         message: Option<String>,
         tokens: u64,
+        /// Os tokens de cache (criação e leitura), fora de `tokens`.
+        cache_tokens: u64,
         /// Ferramentas negadas por falta de permissão.
         denied: usize,
     },

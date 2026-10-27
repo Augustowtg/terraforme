@@ -96,6 +96,11 @@ pub fn discover(home: &Path, default_json: &Path) -> Vec<AccountOption> {
         .collect()
 }
 
+/// O e-mail da conta, lido do `.claude.json` em `json`.
+pub fn email(json: &Path) -> Option<String> {
+    read_info(json).map(|info| info.email)
+}
+
 /// A pasta de configuração da conta `id`, se ela existir. Só aceita nomes de
 /// conta (sem `/` nem `..`), para um valor salvo não apontar para outro lugar.
 pub fn config_dir(home: &Path, id: &str) -> Option<PathBuf> {

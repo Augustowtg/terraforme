@@ -6,10 +6,29 @@
 //! provedor novo entra sem mudar a interface: basta implementar o trait e
 //! registrá-lo em [`super::adapters::all`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc::Receiver;
 
 use super::{AgentEvent, PermissionMode};
+use crate::extension::{Contribution, McpServer};
+
+/// Um servidor MCP configurado no provedor e onde (ex.: `usuário`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderMcp {
+    pub server: McpServer,
+    pub scope: &'static str,
+}
+
+/// Uma skill instalada no provedor, onde (ex.: `usuário`) e o arquivo dela.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSkill {
+    /// Como se chama na `/` (ex.: `docs`, `postman:api-mocking`).
+    pub name: String,
+    pub description: String,
+    pub scope: &'static str,
+    pub path: PathBuf,
+}
 
 /// Uma mensagem para o agente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +45,12 @@ pub struct Request<'a> {
     pub account: Option<&'a str>,
     /// Nível de esforço (um dos [`ModelInfo::efforts`]); `None` usa o padrão.
     pub effort: Option<&'a str>,
+    /// O que as extensões ativas no workspace acrescentam ao agente.
+    pub extensions: &'a Contribution,
+    /// A ferramenta MCP (servidor e ferramenta, ex.: `terra` e `permission`)
+    /// que decide os pedidos de permissão do agente, no lugar de negá-los
+    /// (ex.: num chat delegado, quem delegou decide).
+    pub permission_tool: Option<(&'a str, &'a str)>,
 }
 
 /// Uma conta do provedor que pode ser escolhida na Config.
@@ -53,6 +78,9 @@ pub struct CommandInfo {
     /// Sem a `/` (ex.: `model`).
     pub name: String,
     pub description: String,
+    /// É uma skill (ou um comando do usuário ou de plugin), não um comando
+    /// embutido: escolhida na `/`, vira um badge no input, como o `@`.
+    pub skill: bool,
 }
 
 /// Um modelo que o agente informa, com o que ele aceita.
@@ -76,6 +104,98 @@ pub struct Catalog {
     pub models: Vec<ModelInfo>,
     /// O modelo que o provedor usa quando nenhum é escolhido.
     pub default_model: Option<String>,
+}
+
+/// Uma janela de limite de uso (ex.: as 5 horas da sessão).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageWindow {
+    /// O que aparece na tela (ex.: `Sessão (5 h)`).
+    pub label: String,
+    /// Quanto da janela já foi usado, de 0 a 100.
+    pub percent: f64,
+    /// Quando a janela zera (segundos Unix); `None` quando o provedor não diz.
+    pub resets_at: Option<i64>,
+    /// O que mostrar no lugar de quando zera (ex.: o valor que resta do
+    /// crédito extra).
+    pub detail: Option<String>,
+    /// É a janela da sessão (as 5 horas), a da barra de consumo do chat.
+    pub session: bool,
+}
+
+/// O consumo da conta no provedor (aba Consumo).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Usage {
+    /// Plano da conta (ex.: `Max`), quando o provedor informa.
+    pub plan: Option<String>,
+    pub windows: Vec<UsageWindow>,
+}
+
+impl Usage {
+    /// A janela da sessão (as 5 horas), quando o plano tem.
+    pub fn session(&self) -> Option<&UsageWindow> {
+        self.windows.iter().find(|w| w.session)
+    }
+}
+
+/// Os tokens gastos numa hora de um dia.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HourTokens {
+    /// Entrada e saída.
+    pub tokens: u64,
+    /// Criação e leitura de cache.
+    pub cache: u64,
+}
+
+/// Os tokens gastos num dia (aba Consumo, gráfico por dia e por hora).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DailyTokens {
+    /// O dia, no fuso local.
+    pub date: jiff::civil::Date,
+    /// Entrada e saída.
+    pub tokens: u64,
+    /// Criação e leitura de cache.
+    pub cache: u64,
+    /// Cada hora do dia (0 a 23), no fuso local.
+    pub hours: [HourTokens; 24],
+}
+
+impl DailyTokens {
+    /// Um dia sem consumo.
+    pub fn empty(date: jiff::civil::Date) -> Self {
+        Self {
+            date,
+            tokens: 0,
+            cache: 0,
+            hours: [HourTokens::default(); 24],
+        }
+    }
+}
+
+/// As configurações com que a interface original do provedor abre.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Interactive<'a> {
+    pub account: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub mode: Option<PermissionMode>,
+    /// O que as extensões ativas no workspace acrescentam ao agente.
+    pub extensions: Option<&'a Contribution>,
+    /// Sessão a continuar (a do chat), para a interface abrir nela.
+    pub session_id: Option<&'a str>,
+    /// Comando a rodar ao abrir (ex.: `/hooks`).
+    pub command: Option<&'a str>,
+}
+
+/// Onde um comando da `/` roda quando o terra não tem interface para ele.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandRoute {
+    /// Vai para o agente, que responde no chat.
+    Agent,
+    /// Só existe na interface original do provedor: ela abre, fora da tela
+    /// do terra, na sessão do chat e com o comando.
+    Original,
+    /// O terra não roda (ex.: pagamento e plano).
+    Blocked,
 }
 
 /// Um provedor de agente para o chat.
@@ -104,6 +224,23 @@ pub trait ChatAdapter {
         Vec::new()
     }
 
+    /// Os servidores MCP configurados no provedor para `cwd` e a conta
+    /// `account`, para a Config mostrar. Vazio quando ele não tem MCP.
+    fn mcp_servers(&self, _cwd: &Path, _account: Option<&str>) -> Vec<ProviderMcp> {
+        Vec::new()
+    }
+
+    /// As skills instaladas no provedor para `cwd` e a conta `account`,
+    /// para a Config mostrar. Vazio quando ele não tem skills.
+    fn skills(&self, _cwd: &Path, _account: Option<&str>) -> Vec<ProviderSkill> {
+        Vec::new()
+    }
+
+    /// Onde roda o comando `name` (sem a `/`) que o terra não implementa.
+    fn command_route(&self, _name: &str) -> CommandRoute {
+        CommandRoute::Agent
+    }
+
     /// Modelos que podem ser escolhidos na Config, além do padrão.
     fn models(&self) -> Vec<ModelOption> {
         Vec::new()
@@ -117,6 +254,38 @@ pub trait ChatAdapter {
     /// Começa a carregar, em segundo plano, os comandos e modelos do agente
     /// para a conta `account`. `None` quando o provedor não informa nada.
     fn load_catalog(&self, _account: Option<&str>) -> Option<Receiver<Result<Catalog, String>>> {
+        None
+    }
+
+    /// Começa a carregar, em segundo plano, o consumo da conta `account`.
+    /// `None` quando o provedor não informa consumo.
+    fn load_usage(&self, _account: Option<&str>) -> Option<Receiver<Result<Usage, String>>> {
+        None
+    }
+
+    /// O comando que entra de novo na conta `account` (ex.: quando o token
+    /// foi revogado). Ele é interativo: o terra sai da tela enquanto ele roda.
+    /// `None` quando o provedor não tem login.
+    fn login(&self, _account: Option<&str>) -> Option<Command> {
+        None
+    }
+
+    /// O comando que abre a interface original do provedor (ex.: o `claude`
+    /// interativo) em `cwd`, com a conta, o modelo, o esforço e o modo
+    /// escolhidos (`None` fica com o do provedor). O terra sai da tela
+    /// enquanto ele roda. `None` quando o provedor não tem uma.
+    fn interactive(&self, _cwd: &Path, _options: Interactive<'_>) -> Option<Command> {
+        None
+    }
+
+    /// Começa a somar, em segundo plano, os tokens por dia da conta
+    /// `account` nos últimos `days` dias (até hoje, o mais antigo primeiro;
+    /// dias sem uso vêm com 0). `None` quando o provedor não informa.
+    fn load_daily(
+        &self,
+        _account: Option<&str>,
+        _days: usize,
+    ) -> Option<Receiver<Result<Vec<DailyTokens>, String>>> {
         None
     }
 

@@ -5,6 +5,9 @@
 //! No texto do input, cada menção é um caractere da área de uso privado do
 //! Unicode ([`token`]), que aponta para o caminho guardado pela caixa. Assim o
 //! cursor, a seleção e o Backspace tratam o badge inteiro como uma unidade.
+//!
+//! Uma skill escolhida na lista da `/` vira um badge do mesmo jeito
+//! (`/docs`), em qualquer ponto do texto.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -32,29 +35,44 @@ pub fn token_index(c: char) -> Option<usize> {
         .map(|i| i as usize)
 }
 
-/// Texto do badge (sem os espaços do pill): `@/src/main.rs`.
-pub fn badge_label(path: &str) -> String {
-    format!("@/{path}")
+/// O que um badge do input aponta: um arquivo do `@` ou uma skill da `/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mention {
+    /// Caminho relativo ao diretório (ex.: `src/main.rs`).
+    File(String),
+    /// Nome da skill, sem a `/` (ex.: `docs`).
+    Skill(String),
+}
+
+/// Texto do badge (sem os espaços do pill): `@/src/main.rs` ou `/docs`.
+pub fn badge_label(mention: &Mention) -> String {
+    match mention {
+        Mention::File(path) => format!("@/{path}"),
+        Mention::Skill(name) => format!("/{name}"),
+    }
 }
 
 /// Colunas que o badge ocupa: o rótulo e um espaço de cada lado.
-pub fn badge_width(path: &str) -> usize {
-    badge_label(path).chars().count() + 2
+pub fn badge_width(mention: &Mention) -> usize {
+    badge_label(mention).chars().count() + 2
 }
 
 /// O badge desenhado no input.
-pub fn badge_span(path: &str, selected: bool) -> Span<'static> {
+pub fn badge_span(mention: &Mention, selected: bool) -> Span<'static> {
     let style = if selected {
         theme::selection()
     } else {
         theme::mention()
     };
-    Span::styled(format!(" {} ", badge_label(path)), style)
+    Span::styled(format!(" {} ", badge_label(mention)), style)
 }
 
-/// Como a menção vai no texto enviado ao agente: `@src/main.rs`.
-pub fn prompt_text(path: &str) -> String {
-    format!("@{path}")
+/// Como a menção vai no texto enviado ao agente: `@src/main.rs` ou `/docs`.
+pub fn prompt_text(mention: &Mention) -> String {
+    match mention {
+        Mention::File(path) => format!("@{path}"),
+        Mention::Skill(name) => format!("/{name}"),
+    }
 }
 
 /// A lista aberta: onde está o `@` e qual item está selecionado.
@@ -233,8 +251,12 @@ mod tests {
 
     #[test]
     fn badge_label_and_prompt_text() {
-        assert_eq!(badge_label("src/test.js"), "@/src/test.js");
-        assert_eq!(badge_width("src/test.js"), 15);
-        assert_eq!(prompt_text("src/test.js"), "@src/test.js");
+        let file = Mention::File("src/test.js".into());
+        assert_eq!(badge_label(&file), "@/src/test.js");
+        assert_eq!(badge_width(&file), 15);
+        assert_eq!(prompt_text(&file), "@src/test.js");
+        let skill = Mention::Skill("docs".into());
+        assert_eq!(badge_label(&skill), "/docs");
+        assert_eq!(prompt_text(&skill), "/docs");
     }
 }

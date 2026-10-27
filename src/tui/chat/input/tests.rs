@@ -83,6 +83,20 @@ fn insert_mode_edits_buffer_and_esc_returns_to_normal() {
 }
 
 #[test]
+fn uppercase_i_also_enters_insert_mode() {
+    // Com Shift ou Caps Lock, o terminal manda `I` (com ou sem o Shift).
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+        let mut input = InputBox::default();
+        let key = KeyEvent::new(KeyCode::Char('I'), modifiers);
+        assert_eq!(input.handle_key(key), Outcome::Handled);
+        assert_eq!(input.mode(), InputMode::Insert);
+        // Já escrevendo, o `I` é texto.
+        input.handle_key(key);
+        assert_eq!(input.text(), "I");
+    }
+}
+
+#[test]
 fn enter_submits_and_clear_empties() {
     let mut input = InputBox::default();
     press(&mut input, KeyCode::Char('i'));
@@ -402,11 +416,12 @@ fn picker_is_drawn_above_the_input() {
 fn input_with_commands() -> InputBox {
     let mut input = InputBox::default();
     input.set_commands(Some(
-        [("clear", "Start a new session"), ("compact", "Summarize")]
+        [("clear", "Start a new session"), ("context", "Summarize")]
             .iter()
             .map(|(name, description)| CommandInfo {
                 name: name.to_string(),
                 description: description.to_string(),
+                skill: false,
             })
             .collect(),
     ));
@@ -429,6 +444,49 @@ fn slash_at_start_opens_commands_and_enter_returns_command() {
 }
 
 #[test]
+fn tab_completes_router_commands_to_take_arguments() {
+    let mut input = input_with_commands();
+    // Com interface no terra, o Tab roda o comando.
+    type_text(&mut input, "/cl");
+    assert_eq!(
+        press(&mut input, KeyCode::Tab),
+        Outcome::Command("clear".into())
+    );
+    // No padrão do router, ele completa o texto para os argumentos.
+    type_text(&mut input, "/con");
+    assert_eq!(press(&mut input, KeyCode::Tab), Outcome::Handled);
+    assert!(!input.picker_open());
+    assert_eq!(input.text(), "/context ");
+    type_text(&mut input, "all");
+    assert_eq!(input.text(), "/context all");
+    assert_eq!(press(&mut input, KeyCode::Enter), Outcome::Submit);
+}
+
+#[test]
+fn chosen_skill_becomes_a_badge_like_a_mention() {
+    let mut input = input_with_commands();
+    input.set_commands(Some(vec![CommandInfo {
+        name: "docs".into(),
+        description: "Escreve docs".into(),
+        skill: true,
+    }]));
+    for key in [KeyCode::Enter, KeyCode::Tab] {
+        type_text(&mut input, "/do");
+        assert_eq!(press(&mut input, key), Outcome::Handled);
+        assert!(!input.picker_open());
+        type_text(&mut input, "do README");
+        assert_eq!(input.text(), "/docs do README");
+        // O Backspace apaga o badge inteiro.
+        input.clear();
+        type_text(&mut input, "/do");
+        press(&mut input, KeyCode::Enter);
+        press(&mut input, KeyCode::Backspace);
+        press(&mut input, KeyCode::Backspace);
+        assert_eq!(input.text(), "");
+    }
+}
+
+#[test]
 fn slash_in_the_middle_does_not_open_commands() {
     let mut input = input_with_commands();
     type_text(&mut input, "a/b");
@@ -442,8 +500,8 @@ fn commands_list_navigates_and_esc_keeps_the_text() {
     type_text(&mut input, "/");
     press(&mut input, KeyCode::Down);
     assert_eq!(
-        press(&mut input, KeyCode::Tab),
-        Outcome::Command("compact".into())
+        press(&mut input, KeyCode::Enter),
+        Outcome::Command("context".into())
     );
     type_text(&mut input, "/co");
     press(&mut input, KeyCode::Esc);
@@ -477,16 +535,18 @@ fn commands_list_shows_loading_then_items_above_input() {
         CommandInfo {
             name: "clear".into(),
             description: "Start a new session".into(),
+            skill: false,
         },
         CommandInfo {
-            name: "compact".into(),
+            name: "context".into(),
             description: "Summarize".into(),
+            skill: false,
         },
     ]));
     let screen = draw(&input);
     assert!(screen.contains("Comandos (2)"), "{screen}");
     assert!(screen.contains("▌ /clear"));
-    assert!(screen.contains("/compact          Summarize · sem interface no terra"));
+    assert!(screen.contains("/context          Summarize · padrão do router"));
 }
 
 #[test]
@@ -517,4 +577,63 @@ fn lock_indicators_show_only_when_active() {
 
     input.set_caps_lock(false);
     assert!(border(&input).0.ends_with(" ● Insert ╯"));
+}
+
+/// Caixa no modo INSERT que já enviou `messages`.
+fn input_after_sending(messages: &[&str]) -> InputBox {
+    let mut input = InputBox::default();
+    press(&mut input, KeyCode::Char('i'));
+    for message in messages {
+        type_text(&mut input, message);
+        input.remember();
+        input.clear();
+    }
+    input
+}
+
+#[test]
+fn up_and_down_browse_the_sent_messages() {
+    let mut input = input_after_sending(&["primeira", "segunda", "segunda"]);
+    type_text(&mut input, "rascunho");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "segunda", "sem repetir a última");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "primeira");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "primeira", "para na mais antiga");
+    assert_eq!(input.cursor, input.len(), "cursor no fim");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "segunda");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "rascunho", "volta ao que estava escrito");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "rascunho");
+}
+
+#[test]
+fn up_and_down_move_between_lines_before_browsing() {
+    let mut input = input_after_sending(&["antes"]);
+    type_text(&mut input, "abc");
+    press_with(&mut input, KeyCode::Enter, KeyModifiers::SHIFT);
+    type_text(&mut input, "de");
+    press(&mut input, KeyCode::Up);
+    assert_eq!((input.text().as_str(), input.cursor), ("abc\nde", 2));
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.cursor, 6);
+    press(&mut input, KeyCode::Up);
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "antes");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "abc\nde");
+}
+
+#[test]
+fn editing_a_sent_message_makes_it_the_draft() {
+    let mut input = input_after_sending(&["primeira", "segunda"]);
+    press(&mut input, KeyCode::Up);
+    type_text(&mut input, "!");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "segunda");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "segunda!");
 }

@@ -3,8 +3,14 @@
 #
 # Uso:
 #   ui_init "$SCRIPT_DIR" "Passo 1" "Passo 2" ...   (o passo 1 é a confirmação)
+#   ui_summaries "" "Resumo 2" ...                (opcional; "" é sem resumo)
 #   ui_confirm "Pergunta?" || exit 0
 #   ui_step <função> [args...]                     (roda o próximo passo)
+#   ui_ask "Pergunta?"                             (passo com SIM/NÃO; NÃO segue)
+#   ui_ask_step "Pergunta?" <função> [args...]     (com SIM, roda o passo; NÃO segue)
+#   ui_select "Pergunta?" "Opção 1" "Opção 2" ...  (marca as opções em UI_SELECTED;
+#                                                  as com UI_INSTALLED[i]=1 ficam fora)
+#   ui_add_step "Passo" "Resumo"                   (acrescenta um passo no fim)
 #   ui_note "mensagem"                             (mostrada no resumo final)
 #   ui_finish "mensagem final"
 
@@ -27,6 +33,10 @@ BANNER=(
 )
 
 UI_STEPS=()
+UI_SUMMARIES=()
+UI_SELECTED=()
+UI_OPTIONS=()
+UI_INSTALLED=()
 UI_CURRENT=0
 UI_FAILED=0
 UI_NOTES=()
@@ -62,6 +72,20 @@ ui_on_exit() {
   fi
 }
 
+# O resumo de cada passo, na ordem do ui_init, mostrado ao lado da label só
+# enquanto o passo roda (ou no passo que falhou). Passos sem resumo usam "".
+ui_summaries() {
+  UI_SUMMARIES=("$@")
+}
+
+# " — resumo" em cinza, ou nada quando o passo não tem resumo.
+ui_summary() {
+  local summary="${UI_SUMMARIES[$1]:-}"
+  if [ -n "$summary" ]; then
+    printf '  %s— %s%s' "$C_DIM" "$summary" "$C_RESET"
+  fi
+}
+
 ui_note() {
   UI_NOTES+=("$1")
 }
@@ -93,9 +117,9 @@ ui_render() {
     if [ "$i" -lt "$UI_CURRENT" ]; then
       echo "  ${C_GREEN}✔${C_RESET} ${UI_STEPS[$i]}"
     elif [ "$i" -eq "$UI_CURRENT" ] && [ "$UI_FAILED" -eq 1 ]; then
-      echo "  ${C_RED}✘ ${UI_STEPS[$i]}${C_RESET}"
+      echo "  ${C_RED}✘ ${UI_STEPS[$i]}${C_RESET}$(ui_summary "$i")"
     elif [ "$i" -eq "$UI_CURRENT" ]; then
-      echo "  ${C_YELLOW}●${C_RESET} ${C_BOLD}${UI_STEPS[$i]}${C_RESET}"
+      echo "  ${C_YELLOW}●${C_RESET} ${C_BOLD}${UI_STEPS[$i]}${C_RESET}$(ui_summary "$i")"
     else
       echo "  ${C_DIM}○ ${UI_STEPS[$i]}${C_RESET}"
     fi
@@ -116,11 +140,11 @@ ui_buttons() {
 }
 
 # Pergunta SIM/NÃO selecionado pelas setas ←/→ e confirmado com Enter.
-# Retorna 0 para SIM. Sem terminal interativo, exige o argumento -y.
-ui_confirm() {
+# Retorna 0 para SIM. Com -y, responde SIM sem perguntar; sem terminal
+# interativo, exige o -y.
+ui_choose() {
   local question="$1" selected=0 key rest
   if [ "${UI_ASSUME_YES:-0}" -eq 1 ]; then
-    UI_CURRENT=$((UI_CURRENT + 1))
     return 0
   fi
   if [ "$UI_INTERACTIVE" -ne 1 ]; then
@@ -148,7 +172,12 @@ ui_confirm() {
     esac
   done
   printf '\033[?25h\n'
-  if [ "$selected" -eq 0 ]; then
+  return "$selected"
+}
+
+# A confirmação da instalação: NÃO cancela tudo.
+ui_confirm() {
+  if ui_choose "$1"; then
     UI_CURRENT=$((UI_CURRENT + 1))
     return 0
   fi
@@ -156,6 +185,115 @@ ui_confirm() {
   echo
   echo "  ${C_YELLOW}Instalação cancelada.${C_RESET}"
   return 1
+}
+
+# Um passo que é uma pergunta: o passo conta como feito com SIM ou NÃO, e
+# o retorno diz a resposta (0 para SIM) para o script pular os seguintes.
+ui_ask() {
+  local rc=0
+  ui_choose "$1" || rc=1
+  UI_CURRENT=$((UI_CURRENT + 1))
+  return "$rc"
+}
+
+# Um passo que pergunta antes de rodar: com SIM, roda a função como o
+# ui_step; com NÃO, o passo conta como feito sem rodar.
+ui_ask_step() {
+  local question="$1"
+  shift
+  if ui_choose "$question"; then
+    ui_step "$@"
+  else
+    UI_CURRENT=$((UI_CURRENT + 1))
+  fi
+}
+
+# As linhas do menu do ui_select, como a lista de extensões da Config:
+# "[x] 1. Opção", com o ▌ e em negrito na opção em foco. As já instaladas
+# têm uma bola verde no lugar da caixa.
+ui_select_lines() {
+  local current="$1" i check
+  for i in "${!UI_SELECTED[@]}"; do
+    if [ "${UI_INSTALLED[$i]:-0}" -eq 1 ]; then
+      printf '\r\033[K    %s ● %s %d. %s %s(instalada)%s\n' "$C_GREEN" "$C_RESET" $((i + 1)) "${UI_OPTIONS[$i]}" "$C_DIM" "$C_RESET"
+      continue
+    fi
+    if [ "${UI_SELECTED[$i]}" -eq 1 ]; then check="[x]"; else check="[ ]"; fi
+    if [ "$i" -eq "$current" ]; then
+      printf '\r\033[K  %s▌ %s %d. %s%s\n' "$C_GREEN$C_BOLD" "$check" $((i + 1)) "${UI_OPTIONS[$i]}" "$C_RESET"
+    elif [ "${UI_SELECTED[$i]}" -eq 1 ]; then
+      printf '\r\033[K    %s%s%s %d. %s\n' "$C_GREEN" "$check" "$C_RESET" $((i + 1)) "${UI_OPTIONS[$i]}"
+    else
+      printf '\r\033[K    %s%s%s %d. %s\n' "$C_DIM" "$check" "$C_RESET" $((i + 1)) "${UI_OPTIONS[$i]}"
+    fi
+  done
+}
+
+# A próxima opção do ui_select que não está instalada, andando de `step`
+# (-1 ou 1) a partir de `from`; fica em `from` se não houver.
+ui_select_next() {
+  local from="$1" step="$2" n="$3" i=$(($1 + $2))
+  while [ "$i" -ge 0 ] && [ "$i" -lt "$n" ]; do
+    if [ "${UI_INSTALLED[$i]:-0}" -ne 1 ]; then
+      echo "$i"
+      return
+    fi
+    i=$((i + step))
+  done
+  echo "$from"
+}
+
+# Menu com várias opções, todas marcadas no começo: ↑/↓ andam, Espaço marca
+# ou desmarca e Enter confirma. Deixa em UI_SELECTED[i] 1 para as marcadas.
+# As opções com UI_INSTALLED[i]=1 aparecem com uma bola verde, sem caixa, e
+# não podem ser marcadas. Com -y, marca todas sem perguntar; sem terminal
+# interativo, exige o -y.
+ui_select() {
+  local question="$1" current key rest n i
+  shift
+  UI_OPTIONS=("$@")
+  n=$#
+  UI_SELECTED=()
+  for ((i = 0; i < n; i++)); do
+    if [ "${UI_INSTALLED[$i]:-0}" -eq 1 ]; then UI_SELECTED[i]=0; else UI_SELECTED[i]=1; fi
+  done
+  current=$(ui_select_next -1 1 "$n")
+  if [ "${UI_ASSUME_YES:-0}" -eq 1 ] || [ "$current" -eq -1 ]; then
+    return 0
+  fi
+  if [ "$UI_INTERACTIVE" -ne 1 ]; then
+    echo "erro: terminal não interativo. Rode com -y para instalar sem confirmação." >&2
+    UI_CURRENT=${#UI_STEPS[@]}
+    exit 1
+  fi
+  ui_render
+  echo "  ${C_BOLD}${question}${C_RESET}"
+  echo "  ${C_DIM}↑/↓ para escolher, Espaço para marcar, Enter para confirmar${C_RESET}"
+  echo
+  printf '\033[?25l'
+  while true; do
+    ui_select_lines "$current"
+    IFS= read -rsn1 key || key=""
+    if [ "$key" = $'\e' ]; then
+      IFS= read -rsn2 -t 0.05 rest || rest=""
+      key+="$rest"
+    fi
+    case "$key" in
+      $'\e[A' | k) current=$(ui_select_next "$current" -1 "$n") ;;
+      $'\e[B' | j | $'\t') current=$(ui_select_next "$current" 1 "$n") ;;
+      " ") UI_SELECTED[current]=$((1 - UI_SELECTED[current])) ;;
+      "") break ;;
+    esac
+    printf '\033[%dA' "$n"
+  done
+  printf '\033[?25h'
+}
+
+# Acrescenta um passo (e o resumo dele) no fim da lista, para os passos que
+# só existem depois de uma resposta (ex.: as extensões escolhidas).
+ui_add_step() {
+  UI_SUMMARIES[${#UI_STEPS[@]}]="${2:-}"
+  UI_STEPS+=("$1")
 }
 
 # Roda o próximo passo com a saída no log. Se falhar, o set -e encerra o

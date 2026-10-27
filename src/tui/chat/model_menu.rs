@@ -215,7 +215,7 @@ impl ModelMenu {
             ),
             Target::Default => (
                 "Selecione o modelo default",
-                "O modelo padrão vale para as próximas conversas e fica salvo na Config.",
+                "O modelo padrão vale para as próximas conversas e fica salvo nas Configurações.",
             ),
         };
         let mut lines = vec![

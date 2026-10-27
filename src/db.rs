@@ -74,9 +74,7 @@ pub struct Db {
 impl Db {
     /// Abre (criando se preciso) `~/.terraforme/terra.sqlite`.
     pub fn open_default() -> Result<Self> {
-        let dir = dirs::home_dir()
-            .context("não foi possível encontrar o diretório home do usuário")?
-            .join(".terraforme");
+        let dir = data_dir()?;
         fs::create_dir_all(&dir)
             .with_context(|| format!("não foi possível criar {}", dir.display()))?;
         Self::open(&dir.join("terra.sqlite"))
@@ -88,7 +86,8 @@ impl Db {
         Self::init(conn)
     }
 
-    #[cfg(test)]
+    /// Um banco só desta execução: o terra abre mesmo sem conseguir abrir o
+    /// `terra.sqlite`.
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
@@ -113,31 +112,6 @@ impl Db {
         ))
         .context("não foi possível criar as tabelas")?;
         Ok(Self { conn })
-    }
-
-    /// Valor de uma configuração (ex.: `agent.model`), se já foi salva.
-    pub fn setting(&self, key: &str) -> Result<Option<String>> {
-        Ok(self
-            .conn
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
-                r.get(0)
-            })
-            .optional()?)
-    }
-
-    /// Salva uma configuração; `None` apaga (volta ao padrão).
-    pub fn set_setting(&self, key: &str, value: Option<&str>) -> Result<()> {
-        match value {
-            Some(value) => self.conn.execute(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![key, value],
-            )?,
-            None => self
-                .conn
-                .execute("DELETE FROM settings WHERE key = ?1", [key])?,
-        };
-        Ok(())
     }
 
     /// Registra o uso de um path em `recents` (upsert de `last_used_at`).
@@ -242,6 +216,11 @@ impl Db {
         }
     }
 
+    /// O nome do workspace salvo em `path`, se houver.
+    pub fn workspace_name(&self, path: &Path) -> Result<Option<String>> {
+        Ok(self.workspace_name_by_path(&path_str(path))?)
+    }
+
     fn workspace_name_by_path(&self, path: &str) -> rusqlite::Result<Option<String>> {
         self.conn
             .query_row(
@@ -261,6 +240,13 @@ impl Db {
             )
             .optional()
     }
+}
+
+/// A pasta de dados do terra: `~/.terraforme`.
+pub fn data_dir() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .context("não foi possível encontrar o diretório home do usuário")?
+        .join(".terraforme"))
 }
 
 /// Caminho absoluto, sem `..`, sem barra final e, no Windows, sem o prefixo
@@ -303,18 +289,6 @@ mod tests {
         db.conn
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
             .unwrap()
-    }
-
-    #[test]
-    fn settings_are_saved_replaced_and_cleared() {
-        let db = db();
-        assert_eq!(db.setting("agent.model").unwrap(), None);
-        db.set_setting("agent.model", Some("opus")).unwrap();
-        db.set_setting("agent.model", Some("haiku")).unwrap();
-        assert_eq!(db.setting("agent.model").unwrap().as_deref(), Some("haiku"));
-        assert_eq!(count(&db, "settings"), 1);
-        db.set_setting("agent.model", None).unwrap();
-        assert_eq!(db.setting("agent.model").unwrap(), None);
     }
 
     #[test]

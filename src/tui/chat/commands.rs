@@ -3,7 +3,7 @@
 //! A lista vem do agente (o catálogo do adapter: [`CommandInfo`]); a função
 //! de cada comando é uma interface do terra, implementada no chat. Comandos
 //! que o terra ainda não implementa aparecem esmaecidos e, se escolhidos,
-//! avisam no histórico.
+//! vão para o agente: a resposta é o padrão do router (o provedor).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -14,12 +14,32 @@ use crate::theme::{self, Variant};
 use crate::tui::widgets::popup;
 
 /// Comandos que já têm interface no terra.
-const INTERFACES: &[&str] = &["clear", "model"];
+const INTERFACES: &[&str] = &["clear", "compact", "model", "login", "usage"];
+/// Comandos do terra que o agente não informa (o `/login` do Claude Code só
+/// existe no modo interativo dele): nome e descrição.
+const TERRA_COMMANDS: &[(&str, &str)] = &[(
+    "login",
+    "Entra de novo na conta do agente (ex.: token expirado ou revogado)",
+)];
 /// Largura da coluna do nome (`/nome`).
 const NAME_WIDTH: usize = 18;
 
 pub fn has_interface(name: &str) -> bool {
     INTERFACES.contains(&name)
+}
+
+/// Os comandos do agente mais os do terra que ele não informou.
+pub fn with_terra(mut commands: Vec<CommandInfo>) -> Vec<CommandInfo> {
+    for (name, description) in TERRA_COMMANDS {
+        if !commands.iter().any(|c| c.name == *name) {
+            commands.push(CommandInfo {
+                name: name.to_string(),
+                description: description.to_string(),
+                skill: false,
+            });
+        }
+    }
+    commands
 }
 
 /// Comandos que combinam com `query`: começo do nome, parte do nome e parte
@@ -44,6 +64,20 @@ pub fn matches<'a>(commands: &'a [CommandInfo], query: &str) -> Vec<&'a CommandI
         .collect();
     found.sort_by(|a, b| (a.0, a.1, &a.2.name).cmp(&(b.0, b.1, &b.2.name)));
     found.into_iter().map(|(_, _, command)| command).collect()
+}
+
+#[cfg(test)]
+#[test]
+fn terra_commands_are_added_once() {
+    let login = |description: &str| CommandInfo {
+        name: "login".into(),
+        description: description.into(),
+        skill: false,
+    };
+    let added = with_terra(Vec::new());
+    assert_eq!(added.iter().filter(|c| c.name == "login").count(), 1);
+    // Se o agente um dia informar o /login, fica o dele.
+    assert_eq!(with_terra(vec![login("do agente")]), [login("do agente")]);
 }
 
 /// Desenha a lista acima de `input`. `None` em `found` é o catálogo ainda
@@ -77,10 +111,14 @@ pub fn draw(frame: &mut Frame, input: Rect, found: Option<&[&CommandInfo]>, sele
 
 fn item(command: &CommandInfo, selected: bool) -> Line<'static> {
     let ready = has_interface(&command.name);
-    let name = format!("/{:<width$}", command.name, width = NAME_WIDTH - 1);
+    let mut name = format!("/{:<width$}", command.name, width = NAME_WIDTH - 1);
+    // Nomes que enchem a coluna (skills, por exemplo) não grudam na descrição.
+    if command.name.chars().count() >= NAME_WIDTH - 1 {
+        name.push(' ');
+    }
     let mut description = command.description.clone();
     if !ready {
-        description = format!("{description} · sem interface no terra");
+        description = format!("{description} · padrão do router");
     }
     if selected {
         return Line::from(vec![
@@ -106,12 +144,32 @@ fn item(command: &CommandInfo, selected: bool) -> Line<'static> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn long_names_do_not_stick_to_the_description() {
+        let text = |name: &str| {
+            let command = CommandInfo {
+                name: name.into(),
+                description: "faz algo".into(),
+                skill: false,
+            };
+            item(&command, false)
+                .spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        assert!(text("usage").contains("/usage            faz algo"));
+        assert!(text("ai-memory-durable-pages").contains("/ai-memory-durable-pages faz algo"));
+        assert!(text("install-github-app").contains("/install-github-app faz algo"));
+    }
+
     fn commands(names: &[(&str, &str)]) -> Vec<CommandInfo> {
         names
             .iter()
             .map(|(name, description)| CommandInfo {
                 name: name.to_string(),
                 description: description.to_string(),
+                skill: false,
             })
             .collect()
     }
@@ -131,8 +189,9 @@ mod tests {
             ("clear", "Start a new session"),
             ("model", "Set the AI model"),
         ]);
-        // Sem consulta, todos; os com interface (/clear e /model) primeiro.
-        assert_eq!(found(&list, ""), ["clear", "model", "compact", "context"]);
+        // Sem consulta, todos; os com interface (/clear, /compact e /model)
+        // primeiro.
+        assert_eq!(found(&list, ""), ["clear", "compact", "model", "context"]);
         assert_eq!(found(&list, "co"), ["compact", "context"]);
         // "session" só aparece na descrição do /clear.
         assert_eq!(found(&list, "session"), ["clear"]);
@@ -142,6 +201,7 @@ mod tests {
     #[test]
     fn knows_which_commands_have_an_interface() {
         assert!(has_interface("clear"));
-        assert!(!has_interface("compact"));
+        assert!(has_interface("compact"));
+        assert!(!has_interface("context"));
     }
 }
