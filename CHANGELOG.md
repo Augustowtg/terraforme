@@ -4,6 +4,20 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.3] - 2026-10-27
+
+### Adicionado
+
+- Comandos com `/` no input, como no Claude Code:
+  - a **lista vem do agente**: o adapter carrega em segundo plano o catálogo do provedor (`ChatAdapter::load_catalog`). O Claude informa os comandos embutidos dele pelo pedido `initialize` do protocolo do Agent SDK, em ~1 s e sem chamar a API (não gasta tokens); trocar de conta recarrega;
+  - a **função de cada comando é uma interface do terra**: a primeira é o `/clear`, que começa uma conversa nova. Os outros aparecem esmaecidos, com "sem interface no terra", e avisam no histórico se escolhidos;
+  - a lista abre acima do input (no mesmo estilo da lista de arquivos do `@`) só quando a `/` está no começo do texto, com `/nome` e a descrição; o que vem depois da `/` filtra (nome, depois descrição, com os que têm interface primeiro); `↑`/`↓` escolhem, `Tab`/`Enter` executam e `Esc` fecha.
+- O catálogo também traz os modelos do provedor, com descrição e níveis de esforço (usados pelo `/model`).
+
+### Alterado
+
+- As listas que abrem acima do input (`@` e `/`) usam o mesmo widget (`src/tui/widgets/popup.rs`).
+
 ## [0.4.2] - 2026-10-26
 
 ### Adicionado

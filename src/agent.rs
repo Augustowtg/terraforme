@@ -10,6 +10,8 @@ pub mod adapters;
 mod event;
 mod mode;
 
-pub use adapter::{AccountOption, ChatAdapter, ModelOption, Request, Session};
+pub use adapter::{
+    AccountOption, Catalog, ChatAdapter, CommandInfo, ModelInfo, ModelOption, Request, Session,
+};
 pub use event::{AgentEvent, ReportedMode};
 pub use mode::PermissionMode;
