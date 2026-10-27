@@ -1,4 +1,4 @@
-//! Aba Consumo: quanto dos limites de uso da conta já foi gasto, pelo route
+//! Aba Consumo: quanto dos limites de uso da conta ainda resta, pelo route
 //! (provedor) do chat.
 //!
 //! ```text
@@ -6,7 +6,7 @@
 //!   Route           Claude · Pessoal · eu@gmail.com · Max
 //!
 //!   Sessão (5 h)
-//!   ████████████░░░░░░░░░░░░░░░░  42%
+//!   ████████████████░░░░░░░░░░░░  58% restantes
 //!   Reseta 27-10-2026 15:00 · zera em 2h 13m
 //! ```
 //!
@@ -593,10 +593,11 @@ fn draw_bars(frame: &mut Frame, area: Rect, bars: &[ChartBar]) -> Vec<Rect> {
         .collect()
 }
 
-/// Nome, barra com a porcentagem e quando zera.
+/// Nome, barra com a porcentagem que resta e quando zera.
 fn window_lines(window: &UsageWindow, bar: usize, tz: &TimeZone, now: i64) -> Vec<Line<'static>> {
     let style = level_style(window.percent);
-    let filled = ((window.percent / 100.0) * bar as f64).round() as usize;
+    let left = (100.0 - window.percent).clamp(0.0, 100.0);
+    let filled = ((left / 100.0) * bar as f64).round() as usize;
     let filled = filled.min(bar);
     let reset = match (&window.detail, window.resets_at) {
         (Some(detail), _) => detail.clone(),
@@ -613,13 +614,14 @@ fn window_lines(window: &UsageWindow, bar: usize, tz: &TimeZone, now: i64) -> Ve
             Span::raw("  "),
             Span::styled("█".repeat(filled), style),
             Span::styled("░".repeat(bar - filled), theme::muted()),
-            Span::styled(format!("  {:.0}%", window.percent), style),
+            Span::styled(format!("  {left:.0}% restantes"), style),
         ]),
         indent(Span::styled(reset, theme::path())),
     ]
 }
 
-/// Verde até 70%, amarelo até 90%, vermelho daí em diante.
+/// Pelo quanto foi usado: verde até 70% (restando mais de 30%), amarelo até
+/// 90% e vermelho daí em diante (restando 10% ou menos).
 fn level_style(percent: f64) -> Style {
     let variant = if percent >= 90.0 {
         Variant::Danger
@@ -699,7 +701,7 @@ mod tests {
         assert_eq!(text(&lines[0]), "  Sessão (5 h)");
         assert_eq!(
             text(&lines[1]),
-            format!("  {}{}  25%", "█".repeat(5), "░".repeat(15))
+            format!("  {}{}  75% restantes", "█".repeat(15), "░".repeat(5))
         );
         assert_eq!(
             text(&lines[2]),

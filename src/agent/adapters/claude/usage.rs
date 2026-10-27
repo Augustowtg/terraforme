@@ -153,7 +153,8 @@ fn extra_usage(extra: &Value) -> Option<UsageWindow> {
     let places = extra["decimal_places"].as_u64().unwrap_or(2) as i32;
     let currency = extra["currency"].as_str().unwrap_or("USD");
     let money = |minor: f64| format_money(minor / 10f64.powi(places), currency, places);
-    let mut detail = format!("{} de {} usados no mês", money(used), money(limit));
+    let left = (limit - used).max(0.0);
+    let mut detail = format!("{} restantes de {} no mês", money(left), money(limit));
     if extra["spend_limit_reached"] == true {
         detail.push_str(" · limite atingido");
     }
@@ -248,7 +249,7 @@ mod tests {
                 label: "Crédito extra (mensal)".into(),
                 percent: 4.45,
                 resets_at: None,
-                detail: Some("US$ 1,78 de US$ 40,00 usados no mês".into()),
+                detail: Some("US$ 38,22 restantes de US$ 40,00 no mês".into()),
             })
         );
 
@@ -268,7 +269,7 @@ mod tests {
         assert_eq!(window.percent, 100.0);
         assert_eq!(
             window.detail.as_deref(),
-            Some("R$ 1.234,56 de R$ 1.234,56 usados no mês · limite atingido")
+            Some("R$ 0,00 restantes de R$ 1.234,56 no mês · limite atingido")
         );
     }
 

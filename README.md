@@ -83,23 +83,23 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 
 ### Aba Consumo
 
-Mostra o **route** (provedor e conta do chat, com o plano) e, para cada limite de uso da conta, uma barra de 0 a 100% (verde, amarela a partir de 70% e vermelha a partir de 90%) com quando ela zera:
+Mostra o **route** (provedor e conta do chat, com o plano) e, para cada limite de uso da conta, uma barra com **quanto ainda resta** do limite (cheia quando nada foi usado; verde, amarela quando restam 30% ou menos e vermelha quando restam 10% ou menos) com quando ela zera:
 
 ```text
  Consumo
   Route           Claude · Default · eu@gmail.com · Pro
 
   Sessão (5 h)
-  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  6%
+  ██████████████████████████████████████░░  94% restantes
   Reseta 27-10-2026 14:10 · zera em 4h 52m
 
   Semana (todos os modelos)
-  ██████████████████████████████████████░░  96%
+  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  4% restantes
   Reseta 27-10-2026 12:00 · zera em 2h 42m
 
   Crédito extra (mensal)
-  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  4%
-  US$ 1,78 de US$ 40,00 usados no mês
+  ██████████████████████████████████████░░  96% restantes
+  US$ 38,22 restantes de US$ 40,00 no mês
 ```
 
 A barra do **Crédito extra** só aparece quando a conta tem o crédito extra ativo.
