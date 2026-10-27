@@ -4,6 +4,15 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.7.0] - 2026-10-27
+
+### Adicionado
+
+- **MCP do terra**: um servidor MCP (JSON-RPC 2.0 por HTTP) em `http://127.0.0.1:30303/mcp`, um só para a máquina, que orquestra os terra abertos. Roda num processo próprio, `terra mcp` (o subcomando novo), que continua rodando depois que o terra fecha. Fala o `initialize`, o `ping`, o `tools/list` e o `tools/call` do MCP, com a ferramenta `spaces` (os terra abertos), e os métodos do terra: `terra/announce`, `terra/leave`, `terra/spaces` e `terra/shutdown`.
+- Config: a seção **MCP**, embaixo do Consumo e separada da seção Agente, com o **Servidor** (Ativado ou Desativado, **desativado** por padrão) e o endereço. Com o MCP online, ela mostra uma **bola verde** (`MCP ●`). É da máquina, e não do workspace: fica no `~/.terraforme/config.json` novo (`{"mcp": {"enabled": true}}`).
+- Com o MCP ativado, o `terra cli` verifica ao iniciar se já há um MCP na porta 30303: se houver, não abre outro; se não, abre um num processo novo. Cada terra se registra nele e avisa, a cada 2 segundos, o workspace e se há uma sessão ativa com o agente; ao sair, sai da lista (e, sem avisar por 6 segundos, também sai). Ativar na Config abre o MCP na hora, e desativar fecha ele para todos os terra.
+- A aba **MCP**, o orquestrador, depois da Config e só com o MCP online: os spaces (os workspaces salvos e os abertos em algum terra) com o que há em cada um: **sessão ativa** (bola verde), **terra cli aberto** (amarela) ou **fechado** (vazia), e quantos terra estão abertos quando há mais de um. `↑`/`↓` escolhem; a lista se atualiza a cada segundo.
+
 ## [0.6.5] - 2026-10-27
 
 ### Adicionado

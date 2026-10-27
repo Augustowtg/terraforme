@@ -278,6 +278,11 @@ impl Chat {
     }
 
     /// O que as extensões ativas acrescentam ao agente.
+    /// Há uma conversa com o agente (o MCP mostra a sessão ativa).
+    pub fn has_session(&self) -> bool {
+        self.session_id.is_some()
+    }
+
     pub fn extensions(&self) -> &Contribution {
         &self.extensions
     }

@@ -6,6 +6,7 @@ mod chat;
 mod config;
 mod extensions;
 mod login;
+mod mcp;
 mod term;
 mod usage;
 mod widgets;
@@ -38,10 +39,18 @@ pub use workspace::run_workspace;
 /// Intervalo das animações da tela principal (spinner e cursor piscante).
 const TICK: Duration = Duration::from_millis(100);
 
-/// Tela principal com a barra de abas; sai pelo botão "Sair" (`Esc`, `Enter` e
-/// confirmação) ou direto com `Ctrl+C`.
-pub fn run_app(db: Db, dir: PathBuf, config: PathBuf, warnings: Vec<String>) -> Result<()> {
-    let mut app = app::App::new(db, dir, config);
+pub use app::ConfigFiles;
+
+/// Tela principal com a barra de abas do workspace `name`, em `dir`; sai
+/// pelo botão "Sair" (`Esc`, `Enter` e confirmação) ou direto com `Ctrl+C`.
+pub fn run_app(
+    db: Db,
+    dir: PathBuf,
+    name: String,
+    files: ConfigFiles,
+    warnings: Vec<String>,
+) -> Result<()> {
+    let mut app = app::App::new(db, dir, name, files);
     for warning in warnings {
         app.warn(warning);
     }

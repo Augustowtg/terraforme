@@ -35,6 +35,8 @@ enum Command {
     Cli,
     /// Lista os workspaces recentes e salvos e entra no escolhido
     Workspace(WorkspaceArgs),
+    /// Roda o MCP do terra (o orquestrador) em http://127.0.0.1:30303/mcp
+    Mcp,
 }
 
 #[derive(Args)]
@@ -54,6 +56,7 @@ pub fn run() -> Result<()> {
         Command::Cli => open_app()?,
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,
+        Command::Mcp => crate::mcp::server::run()?,
     }
     Ok(())
 }
@@ -89,8 +92,11 @@ fn open_app() -> Result<()> {
         warn(err);
         env::temp_dir().join(".terraforme")
     });
-    let config = settings::config_file(&root, &name);
-    tui::run_app(db, dir, config, warnings)
+    let files = tui::ConfigFiles {
+        workspace: settings::config_file(&root, &name),
+        global: settings::global_file(&root),
+    };
+    tui::run_app(db, dir, name, files, warnings)
 }
 
 fn save_workspace(name: Option<&str>) -> Result<()> {
