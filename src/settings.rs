@@ -1,9 +1,9 @@
 //! Configurações do terra (aba Config).
 //!
 //! As do agente são de cada workspace: ficam em
-//! `~/.terraforme/workspace/<nome do workspace>/config.json` ([`config_file`]).
-//! As do banco são as globais de antes; um workspace sem arquivo começa com
-//! elas.
+//! `~/.terraforme/workspace/<nome do workspace>/config.json` ([`config_file`]),
+//! lido ao iniciar. Um workspace sem o arquivo começa com o padrão do router
+//! (o provedor): o modo, o modelo, a conta e o esforço que ele usa.
 //!
 //! ```json
 //! {
@@ -23,12 +23,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use crate::agent::PermissionMode;
-use crate::db::Db;
 
-const START_MODE: &str = "agent.start_mode";
-const MODEL: &str = "agent.model";
-const ACCOUNT: &str = "agent.account";
-const EFFORT: &str = "agent.effort";
 const PROVIDER: &str = "provider";
 
 /// Modo de permissão com que o chat começa.
@@ -72,7 +67,8 @@ impl StartMode {
     }
 }
 
-/// Configurações da seção Agente.
+/// Configurações da seção Agente. O padrão ([`Default`]) é o do router: tudo
+/// fica com o provedor.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AgentSettings {
     pub start_mode: StartMode,
@@ -85,30 +81,6 @@ pub struct AgentSettings {
 }
 
 impl AgentSettings {
-    /// Lê do banco; o que faltar (ou não for reconhecido) fica no padrão.
-    pub fn load(db: &Db) -> Self {
-        let get = |key| db.setting(key).ok().flatten();
-        Self {
-            start_mode: get(START_MODE)
-                .and_then(|key| StartMode::from_key(&key))
-                .unwrap_or_default(),
-            model: get(MODEL),
-            account: get(ACCOUNT),
-            effort: get(EFFORT),
-        }
-    }
-
-    /// Grava as configurações globais. O terra grava no `config.json` do
-    /// workspace ([`Self::save_file`]); o banco só é lido.
-    #[cfg(test)]
-    pub fn save(&self, db: &Db) -> Result<()> {
-        db.set_setting(START_MODE, Some(self.start_mode.key()))?;
-        db.set_setting(MODEL, self.model.as_deref())?;
-        db.set_setting(ACCOUNT, self.account.as_deref())?;
-        db.set_setting(EFFORT, self.effort.as_deref())?;
-        Ok(())
-    }
-
     /// Lê o `config.json` de um workspace. `None` quando ele não existe ou
     /// não é JSON; o que faltar (ou não for reconhecido) fica no padrão.
     pub fn load_file(path: &Path) -> Option<Self> {
@@ -198,31 +170,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_when_nothing_saved() {
-        let db = Db::open_in_memory().unwrap();
-        assert_eq!(AgentSettings::load(&db), AgentSettings::default());
-    }
-
-    #[test]
-    fn save_and_load_round_trip() {
-        let db = Db::open_in_memory().unwrap();
-        for start_mode in StartMode::ALL {
-            let settings = AgentSettings {
-                start_mode,
-                model: Some("haiku".into()),
-                account: Some(".claude-trabalho".into()),
-                effort: Some("max".into()),
-            };
-            settings.save(&db).unwrap();
-            assert_eq!(AgentSettings::load(&db), settings);
-        }
-        // Voltar ao modelo e à conta padrão apaga as configurações.
-        AgentSettings::default().save(&db).unwrap();
-        assert_eq!(AgentSettings::load(&db).model, None);
-        assert_eq!(AgentSettings::load(&db).account, None);
-    }
-
-    #[test]
     fn workspace_file_round_trip_keeps_other_keys() {
         let dir = tempfile::tempdir().unwrap();
         let path = config_file(dir.path(), "terraforme-cli");
@@ -288,9 +235,16 @@ mod tests {
     }
 
     #[test]
-    fn unknown_saved_mode_falls_back_to_provider() {
-        let db = Db::open_in_memory().unwrap();
-        db.set_setting(START_MODE, Some("???")).unwrap();
-        assert_eq!(AgentSettings::load(&db).start_mode, StartMode::Provider);
+    fn unknown_or_missing_values_fall_back_to_the_router_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_file(dir.path(), "terra");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{"agent": {"start_mode": "???"}}"#).unwrap();
+        assert_eq!(
+            AgentSettings::load_file(&path),
+            Some(AgentSettings::default())
+        );
+        fs::write(&path, "não é json").unwrap();
+        assert_eq!(AgentSettings::load_file(&path), None);
     }
 }
