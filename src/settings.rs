@@ -14,7 +14,7 @@
 //!     "effort": "high",
 //!     "interface": "terraforme",
 //!     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 },
-//!     "usage": { "display": "visible" }
+//!     "usage": { "display": "hidden" }
 //!   },
 //!   "extensions": { "enabled": ["rtk", "ai-memory"] }
 //! }
@@ -207,10 +207,10 @@ impl UsageSettings {
     }
 }
 
-/// Visível.
+/// Oculta.
 impl Default for UsageSettings {
     fn default() -> Self {
-        Self { visible: true }
+        Self { visible: false }
     }
 }
 
@@ -390,7 +390,7 @@ mod tests {
                 limit: Some(300_000),
                 compact_at: 90,
             },
-            usage: UsageSettings { visible: false },
+            usage: UsageSettings { visible: true },
         };
         settings.save_file(&path).unwrap();
         assert_eq!(AgentSettings::load_file(&path), Some(settings.clone()));
@@ -402,7 +402,7 @@ mod tests {
             json["agent"]["context"],
             json!({"display": "hidden", "auto_compact": true, "limit": 300_000, "compact_at": 90})
         );
-        assert_eq!(json["agent"]["usage"], json!({"display": "hidden"}));
+        assert_eq!(json["agent"]["usage"], json!({"display": "visible"}));
 
         // Chaves de fora do agente ficam no arquivo.
         fs::write(&path, r#"{"outra": 1, "agent": {"model": "opus"}}"#).unwrap();
@@ -464,10 +464,10 @@ mod tests {
     }
 
     #[test]
-    fn usage_bar_defaults_to_visible() {
-        assert!(UsageSettings::default().visible);
+    fn usage_bar_defaults_to_hidden() {
+        assert!(!UsageSettings::default().visible);
         assert_eq!(UsageSettings::load(&json!({})), UsageSettings::default());
-        assert!(!UsageSettings::load(&json!({"display": "hidden"})).visible);
+        assert!(UsageSettings::load(&json!({"display": "visible"})).visible);
     }
 
     #[test]

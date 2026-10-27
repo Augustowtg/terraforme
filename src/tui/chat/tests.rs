@@ -1061,6 +1061,7 @@ fn session(percent: f64) -> UsageWindow {
 fn usage_bar_sits_beside_the_context_bar() {
     let mut chat = Chat {
         context_settings: visible(),
+        usage_settings: UsageSettings { visible: true },
         ..Chat::default()
     };
     chat.set_session_usage(Some(session(42.0)));
@@ -1085,16 +1086,10 @@ fn usage_bar_sits_beside_the_context_bar() {
 }
 
 #[test]
-fn hidden_usage_bar_does_not_show() {
+fn usage_bar_is_hidden_by_default() {
     let mut chat = Chat::default();
     chat.set_session_usage(Some(session(42.0)));
-    chat.apply_settings(
-        &AgentSettings {
-            usage: UsageSettings { visible: false },
-            ..AgentSettings::default()
-        },
-        None,
-    );
+    chat.apply_settings(&AgentSettings::default(), None);
     assert_eq!(chat.usage_bar(), None);
     assert_eq!(chat.height(), HEIGHT - badge::HEIGHT);
 }

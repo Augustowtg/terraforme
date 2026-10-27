@@ -78,7 +78,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Shift+Enter` (escrevendo) | Pula uma linha. No GNOME Terminal e em outros que não diferenciam o `Shift+Enter`, use `\` + `Enter`, `Alt+Enter` ou `Ctrl+J` |
 | `Esc` no modo INSERT | Volta ao modo NORMAL |
 | Mouse no input (aba Chat) | Clique posiciona o cursor; arrastar seleciona o texto (digitar substitui a seleção) |
-| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 150K (30%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra vem oculta: para vê-la, troque o Display na seção Contexto da aba Config. À esquerda dela, a **barra de consumo** mostra quanto resta da sessão de 5 horas do provedor e quando ela zera (ex.: `58% · reseta 15:00`): verde, laranja de 50% para baixo, vermelha de 25% para baixo e cinza ao chegar em 0%. Ela vem visível e é atualizada a cada minuto; para escondê-la, troque o Display na seção Consumo da aba Config |
+| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 150K (30%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra vem oculta: para vê-la, troque o Display na seção Contexto da aba Config. À esquerda dela, a **barra de consumo** mostra quanto resta da sessão de 5 horas do provedor e quando ela zera (ex.: `58% · reseta 15:00`): verde, laranja de 50% para baixo, vermelha de 25% para baixo e cinza ao chegar em 0%. Ela vem oculta; para vê-la, troque o Display na seção Consumo da aba Config. Visível, é atualizada a cada minuto |
 | `↑` / `↓` (aba Extensões) | Escolhem a extensão; `r` atualiza o relatório dela |
 | `Shift+Tab` (aba Config) | Alterna entre a seção Agente e a seção Extensões |
 | `Espaço` (aba Config, Extensões) | Ativa ou desativa a extensão em foco neste workspace; `←`/`→` trocam de página |
@@ -147,7 +147,7 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
     "effort": "high",
     "interface": "terraforme",
     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 },
-    "usage": { "display": "visible" }
+    "usage": { "display": "hidden" }
   },
   "extensions": { "enabled": ["rtk", "ai-memory"] }
 }
@@ -174,7 +174,7 @@ Embaixo do Contexto, também separada por uma linha, fica a seção **Consumo**,
 
 | Configuração | Valores |
 | --- | --- |
-| Display | **Visível** (o padrão) ou **Oculto**: mostra ou esconde a barra de consumo (a sessão de 5 horas). Oculta, o terra não busca o consumo para ela |
+| Display | **Oculto** (o padrão) ou **Visível**: esconde ou mostra a barra de consumo (a sessão de 5 horas). Oculta, o terra não busca o consumo para ela |
 
 À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) ativa ou desativa a extensão neste workspace. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada aparece como **indisponível** (`(indisponível)` na lista e `indisponível (não instalada)` embaixo) e não pode ser ativada. As ativas ficam em `extensions.enabled` no `config.json` e valem a partir da próxima mensagem; sem a chave, nenhuma.
 

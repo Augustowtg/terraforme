@@ -849,7 +849,7 @@ mod tests {
         press(&mut view, &mut settings, KeyCode::Down);
         assert_eq!(view.focus, FIELDS.len() - 1, "a última fica");
         press(&mut view, &mut settings, KeyCode::Enter);
-        assert!(!settings.usage.visible, "Visível → Oculto");
+        assert!(settings.usage.visible, "Oculto → Visível");
     }
 
     #[test]
@@ -903,6 +903,6 @@ mod tests {
         assert_eq!(row(12), "   Compactar em        75% · 150K tokens");
         assert!(row(13).starts_with("  ─"));
         assert_eq!(row(14), "  Consumo");
-        assert_eq!(row(15), "   Display             Visível");
+        assert_eq!(row(15), "   Display             Oculto");
     }
 }
