@@ -73,6 +73,16 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Enter` na confirmação | **Sim** sai; **Não** fecha a caixa |
 | `Ctrl+C` | Sai direto, sem confirmação |
 
+### Aba Config
+
+A seção **Agente** reúne as configurações do agente do chat. `↑`/`↓` escolhem e `←`/`→` ou `Enter` trocam o valor; a mudança é salva e vale na hora.
+
+| Configuração | Valores |
+| --- | --- |
+| Provedor | Qual agente o chat usa e se está disponível (só leitura) |
+| Modo inicial | Do provedor (o `defaultMode` do Claude), Agente, Yolo, Manual, Accept Edits ou Plan |
+| Modelo | Padrão ou um modelo do provedor (Opus, Sonnet, Haiku), enviado com `--model` |
+
 ### Navegação no `terra workspace`
 
 | Tecla | Ação |
@@ -129,6 +139,7 @@ Tudo fica em `~/.terraforme/terra.sqlite`, criado na primeira execução.
 
 - `recents`: `id`, `path` (único), `last_used_at` (epoch em ms)
 - `workspaces`: `id`, `name` (único), `path` (único), `created_at` (epoch em ms)
+- `settings`: `key` (único) e `value`, com as configurações da aba Config (ex.: `agent.model`)
 
 Os paths são canonicalizados antes de serem salvos: ficam absolutos, sem `..` e sem barra no final. No Windows, a comparação de paths não diferencia maiúsculas de minúsculas.
 
@@ -144,6 +155,7 @@ O código é organizado por funcionalidade: cada módulo tem uma responsabilidad
 ```
 src/
 ├── main.rs, cli.rs, db.rs, theme.rs
+├── settings.rs           # configurações da aba Config, salvas no banco
 ├── files.rs              # índice dos arquivos do diretório, atualizado em tempo real
 ├── agent.rs              # o agente por trás do chat (só o contrato)
 │   ├── adapter.rs        # ChatAdapter, Session e Request: o contrato
@@ -158,6 +170,7 @@ src/
 └── tui.rs                # loop da tela principal e do terminal
     ├── app.rs            # tela principal: abas, Sair e confirmação
     ├── workspace.rs      # navegador de workspaces
+    ├── config.rs         # aba Config: seção Agente
     ├── widgets.rs → widgets/badge.rs
     └── chat.rs           # aba Chat: liga o adapter, histórico, input e badges
         ├── mode.rs       # como status e modo aparecem

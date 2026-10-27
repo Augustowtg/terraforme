@@ -4,6 +4,18 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.1] - 2026-10-26
+
+### Adicionado
+
+- Seção **Agente** na aba Config (antes "Em construção"), no padrão visual da aplicação (título de seção, `▌` e destaque no item em foco, legenda no rodapé):
+  - **Provedor**: qual agente o chat usa e se está disponível;
+  - **Modo inicial**: o modo com que o chat começa, "Do provedor" (segue o `defaultMode` do Claude, como antes) ou um modo fixo (Agente, Yolo, Manual, Accept Edits, Plan);
+  - **Modelo**: Padrão ou um dos modelos do provedor (Opus, Sonnet, Haiku), enviado com `--model` nas próximas mensagens.
+- `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor; a mudança vale na hora para o chat (trocar só o modelo não desfaz um Shift+Tab).
+- As configurações ficam salvas na tabela `settings` do `~/.terraforme/terra.sqlite`.
+- O contrato `ChatAdapter` ganhou `models()` e o `Request` ganhou `model`, para cada provedor oferecer os seus modelos.
+
 ## [0.4.0] - 2026-10-26
 
 ### Adicionado

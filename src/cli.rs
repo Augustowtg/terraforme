@@ -51,8 +51,9 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Cli => {
-            Db::open_default()?.touch_recent(&current_dir()?)?;
-            tui::run_app()?;
+            let db = Db::open_default()?;
+            db.touch_recent(&current_dir()?)?;
+            tui::run_app(db)?;
         }
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,

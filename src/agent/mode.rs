@@ -31,6 +31,21 @@ impl PermissionMode {
         Self::ALL[(self as usize + 1) % Self::ALL.len()]
     }
 
+    /// Nome para salvar nas configurações.
+    pub fn key(self) -> &'static str {
+        match self {
+            PermissionMode::Agente => "agente",
+            PermissionMode::Yolo => "yolo",
+            PermissionMode::Manual => "manual",
+            PermissionMode::AcceptEdits => "accept_edits",
+            PermissionMode::Plan => "plan",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<PermissionMode> {
+        Self::ALL.into_iter().find(|mode| mode.key() == key)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             PermissionMode::Agente => "Agente",
@@ -45,6 +60,14 @@ impl PermissionMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_round_trip() {
+        for mode in PermissionMode::ALL {
+            assert_eq!(PermissionMode::from_key(mode.key()), Some(mode));
+        }
+        assert_eq!(PermissionMode::from_key("x"), None);
+    }
 
     #[test]
     fn next_cycles_in_order() {

@@ -28,6 +28,7 @@ use self::mode::{AgentStatus, mode_variant};
 use super::widgets::badge;
 use crate::agent::{self, AgentEvent, ChatAdapter, PermissionMode, ReportedMode, Request, Session};
 use crate::platform::clipboard;
+use crate::settings::{AgentSettings, StartMode};
 use crate::theme::{self, Variant};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -52,6 +53,8 @@ pub struct Chat {
     adapter: Option<Box<dyn ChatAdapter>>,
     /// Modelo informado pelo agente (ex.: `claude-opus-5-5`).
     model: Option<String>,
+    /// Modelo escolhido na Config, enviado nas próximas mensagens.
+    chosen_model: Option<String>,
     /// Sessão do agente, para continuar a conversa.
     session_id: Option<String>,
     /// Resposta em andamento.
@@ -79,6 +82,7 @@ impl Default for Chat {
         Self {
             adapter: None,
             model: None,
+            chosen_model: None,
             session_id: None,
             run: None,
             requested_mode: None,
@@ -97,30 +101,54 @@ impl Default for Chat {
 
 impl Chat {
     /// Chat ligado ao primeiro provedor disponível (ou Desconectado).
-    pub fn connect() -> Self {
-        Self::with_adapter(agent::adapters::default())
+    pub fn connect(settings: &AgentSettings) -> Self {
+        Self::with_adapter(agent::adapters::default(), settings)
     }
 
-    /// Chat ligado a `adapter`. Começa no modo padrão configurado no
-    /// provedor, para os dois estarem em sincronia desde o início; o Yolo
-    /// nunca vem do provedor, então lá o padrão é Agente.
-    pub fn with_adapter(adapter: Box<dyn ChatAdapter>) -> Self {
+    /// Chat ligado a `adapter`, com as configurações da seção Agente.
+    pub fn with_adapter(adapter: Box<dyn ChatAdapter>, settings: &AgentSettings) -> Self {
         let agent_status = if adapter.is_available() {
             AgentStatus::Ocioso
         } else {
             AgentStatus::Desconectado
         };
-        let permission_mode = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| adapter.configured_mode(&cwd))
-            .filter(|mode| *mode != PermissionMode::Yolo)
-            .unwrap_or_default();
-        Self {
+        let mut chat = Self {
             adapter: Some(adapter),
             agent_status,
-            permission_mode,
             ..Self::default()
+        };
+        chat.apply_settings(settings, None);
+        chat
+    }
+
+    /// Aplica as configurações da seção Agente. O modo só muda quando o
+    /// modo inicial mudou (ou no início, sem `previous`), para não desfazer
+    /// um Shift+Tab; o modelo vale a partir da próxima mensagem.
+    pub fn apply_settings(&mut self, settings: &AgentSettings, previous: Option<&AgentSettings>) {
+        if previous.is_none_or(|p| p.start_mode != settings.start_mode) {
+            self.permission_mode = self.start_mode(settings.start_mode);
         }
+        self.chosen_model = settings.model.clone();
+    }
+
+    /// O modo de um modo inicial. "Do provedor" segue a configuração dele,
+    /// para os dois estarem em sincronia desde o início; o Yolo nunca vem do
+    /// provedor, então lá o padrão é Agente.
+    fn start_mode(&self, start: StartMode) -> PermissionMode {
+        match start {
+            StartMode::Fixed(mode) => mode,
+            StartMode::Provider => std::env::current_dir()
+                .ok()
+                .zip(self.adapter.as_deref())
+                .and_then(|(cwd, adapter)| adapter.configured_mode(&cwd))
+                .filter(|mode| *mode != PermissionMode::Yolo)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// O provedor do chat, para a Config mostrar e oferecer as opções dele.
+    pub fn adapter(&self) -> Option<&dyn ChatAdapter> {
+        self.adapter.as_deref()
     }
 
     /// O provedor, se estiver pronto para receber mensagens.
@@ -211,6 +239,7 @@ impl Chat {
             prompt: &prompt,
             mode: self.permission_mode,
             session_id: self.session_id.as_deref(),
+            model: self.chosen_model.as_deref(),
         });
         match started {
             Ok(run) => {

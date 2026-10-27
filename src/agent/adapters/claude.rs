@@ -20,7 +20,7 @@ use std::thread;
 use serde_json::Value;
 
 use self::stream::{StreamParser, text};
-use crate::agent::{AgentEvent, ChatAdapter, PermissionMode, Request, Session};
+use crate::agent::{AgentEvent, ChatAdapter, ModelOption, PermissionMode, Request, Session};
 
 const NOT_FOUND: &str =
     "Claude CLI não encontrado no PATH. Instale em https://claude.com/claude-code";
@@ -55,6 +55,17 @@ impl ChatAdapter for ClaudeAdapter {
         configured_mode(cwd).and_then(|name| parse_mode(&name))
     }
 
+    /// Os apelidos que o `claude --model` aceita.
+    fn models(&self) -> Vec<ModelOption> {
+        [("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")]
+            .into_iter()
+            .map(|(id, label)| ModelOption {
+                id: id.to_string(),
+                label: label.to_string(),
+            })
+            .collect()
+    }
+
     fn model_label(&self, id: &str) -> String {
         display_model(id)
     }
@@ -69,6 +80,7 @@ impl ChatAdapter for ClaudeAdapter {
             cli_mode(request.mode),
             request.session_id,
             request.mode == PermissionMode::Yolo,
+            request.model,
         )?;
         Ok(Box::new(run))
     }
@@ -119,7 +131,12 @@ fn find_claude() -> Option<PathBuf> {
 ///
 /// Com `auto_allow`, os pedidos de permissão do agente chegam pelo stdin/stdout
 /// (`--permission-prompt-tool stdio`) e são aprovados por [`control_response`].
-fn cli_args<'a>(mode: &'a str, session: Option<&'a str>, auto_allow: bool) -> Vec<&'a str> {
+fn cli_args<'a>(
+    mode: &'a str,
+    session: Option<&'a str>,
+    auto_allow: bool,
+    model: Option<&'a str>,
+) -> Vec<&'a str> {
     let mut args = vec![
         "-p",
         "--input-format",
@@ -137,6 +154,9 @@ fn cli_args<'a>(mode: &'a str, session: Option<&'a str>, auto_allow: bool) -> Ve
     ];
     if auto_allow {
         args.extend(["--permission-prompt-tool", "stdio"]);
+    }
+    if let Some(model) = model {
+        args.extend(["--model", model]);
     }
     if let Some(id) = session {
         args.extend(["--resume", id]);
@@ -221,6 +241,7 @@ impl Run {
         mode: &str,
         session: Option<&str>,
         auto_allow: bool,
+        model: Option<&str>,
     ) -> Result<Run, String> {
         let mut cmd = if claude.extension().is_some_and(|ext| ext == "cmd") {
             // Instalação via npm no Windows: o .cmd precisa do cmd.exe.
@@ -230,7 +251,7 @@ impl Run {
         } else {
             Command::new(claude)
         };
-        cmd.args(cli_args(mode, session, auto_allow));
+        cmd.args(cli_args(mode, session, auto_allow, model));
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -338,7 +359,7 @@ mod tests {
 
     #[test]
     fn cli_args_skip_user_environment_and_resume_session() {
-        let args = cli_args("plan", None, false);
+        let args = cli_args("plan", None, false, None);
         for flag in [
             "--strict-mcp-config",
             "--disable-slash-commands",
@@ -348,9 +369,11 @@ mod tests {
         }
         assert!(!args.contains(&"--resume"));
         assert!(!args.contains(&"--permission-prompt-tool"));
+        assert!(!args.contains(&"--model"));
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
 
-        let args = cli_args("manual", Some("s1"), true);
+        let args = cli_args("manual", Some("s1"), true, Some("haiku"));
+        assert!(args.windows(2).any(|w| w == ["--model", "haiku"]));
         assert!(args.ends_with(&["--resume", "s1"]));
         assert!(
             args.windows(2)
@@ -447,8 +470,11 @@ mod tests {
             prompt: "oi",
             mode: PermissionMode::Agente,
             session_id: None,
+            model: None,
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
+        let models: Vec<_> = adapter.models().into_iter().map(|m| m.id).collect();
+        assert_eq!(models, ["opus", "sonnet", "haiku"]);
         assert_eq!(adapter.model_label("claude-opus-5-5"), "Opus - 5.5");
     }
 
