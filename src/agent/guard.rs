@@ -187,6 +187,11 @@ impl Session for GuardedSession {
         catch(|| self.inner.poll())
             .unwrap_or_else(|reason| vec![AgentEvent::Failed(failed(&self.name, &reason))])
     }
+
+    fn respond(&mut self, id: &str, allow: bool) {
+        // Um panic ao responder não derruba o terra.
+        let _ = catch(|| self.inner.respond(id, allow));
+    }
 }
 
 /// O provedor que não conseguiu nem ser criado: fica Desconectado.

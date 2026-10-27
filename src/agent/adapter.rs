@@ -299,4 +299,8 @@ pub trait Session {
     /// Eventos que chegaram desde a última chamada, sem esperar. A resposta
     /// termina com [`AgentEvent::Done`] ou [`AgentEvent::Failed`].
     fn poll(&mut self) -> Vec<AgentEvent>;
+
+    /// Responde a um [`AgentEvent::PermissionRequest`]: `allow` aprova o uso
+    /// da ferramenta, senão ele é negado.
+    fn respond(&mut self, _id: &str, _allow: bool) {}
 }

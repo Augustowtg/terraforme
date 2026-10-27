@@ -184,7 +184,7 @@ fn result(value: &Value) -> AgentEvent {
 }
 
 /// O dado mais útil da chamada: o comando, o arquivo, o padrão...
-fn tool_detail(input: &Value) -> String {
+pub fn tool_detail(input: &Value) -> String {
     const KEYS: [&str; 8] = [
         "command",
         "file_path",
