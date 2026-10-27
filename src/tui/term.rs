@@ -22,6 +22,8 @@ pub struct Term {
     child: Box<dyn Child + Send + Sync>,
     parser: Arc<Mutex<vt100::Parser>>,
     size: (u16, u16),
+    /// O cliente já enviou uma mensagem (um `Enter`): há uma sessão.
+    sent: bool,
 }
 
 impl Term {
@@ -62,6 +64,7 @@ impl Term {
             child,
             parser,
             size: (rows, cols),
+            sent: false,
         })
     }
 
@@ -78,7 +81,16 @@ impl Term {
         }
     }
 
+    /// Se o cliente já enviou alguma mensagem: aí a sessão não deve ser
+    /// fechada sem ele pedir.
+    pub fn has_session(&self) -> bool {
+        self.sent
+    }
+
     pub fn send_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+            self.sent = true;
+        }
         let app_cursor = self
             .parser
             .lock()
@@ -258,6 +270,18 @@ mod tests {
             b"\x1bOA"
         );
         assert!(key_bytes(KeyEvent::new(KeyCode::F(1), none), false).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enter_starts_a_session() {
+        let mut term = Term::spawn(&Command::new("cat"), 3, 20).unwrap();
+        assert!(!term.has_session());
+        term.send_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        term.send_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert!(!term.has_session(), "Shift+Enter só pula linha");
+        term.send_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(term.has_session());
     }
 
     #[cfg(unix)]

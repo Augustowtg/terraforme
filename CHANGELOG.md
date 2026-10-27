@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.17] - 2026-10-27
+
+### Alterado
+
+- Trocar a Interface para **Agente Terraforme** não fecha mais o `claude` da Interface **Original do provedor** quando o cliente **já enviou alguma mensagem** nele: a sessão continua rodando e reaparece, como estava, ao voltar a Interface. Sem nenhuma mensagem enviada, ele é fechado como antes. Sair do terra continua encerrando o processo.
+
 ## [0.4.16] - 2026-10-27
 
 ### Alterado

@@ -268,16 +268,28 @@ impl App {
     }
 
     /// Mantém a interface original em dia com a tela de tamanho `screen`:
-    /// abre quando pedido, acompanha o tamanho da área de conteúdo, fecha
-    /// quando a Interface volta ao Agente Terraforme e nota quando ela sai.
+    /// abre quando pedido, acompanha o tamanho da área de conteúdo e nota
+    /// quando ela sai. Quando a Interface volta ao Agente Terraforme, ela só
+    /// é fechada se o cliente ainda não enviou nenhuma mensagem; com uma
+    /// sessão, continua rodando e reaparece ao voltar a Interface.
     pub fn sync_term(&mut self, screen: Rect) {
-        if !self.uses_provider() {
+        let area = content_area(screen);
+        if let Some(term) = &mut self.term
+            && let Some(result) = term.finished()
+        {
             self.term = None;
+            self.term_focus = false;
+            self.provider_result = Some(result);
+            self.usage.invalidate();
+        }
+        if !self.uses_provider() {
+            if self.term.as_ref().is_some_and(|t| !t.has_session()) {
+                self.term = None;
+            }
             self.term_focus = false;
             self.open_provider = false;
             return;
         }
-        let area = content_area(screen);
         if std::mem::take(&mut self.open_provider) {
             match self
                 .provider_command()
@@ -295,12 +307,6 @@ impl App {
             return;
         };
         term.resize(area.height, area.width);
-        if let Some(result) = term.finished() {
-            self.term = None;
-            self.term_focus = false;
-            self.provider_result = Some(result);
-            self.usage.invalidate();
-        }
     }
 
     /// As teclas vão para o terminal: o `Ctrl+C` também é dele.
@@ -800,6 +806,40 @@ mod tests {
             Tab::Consumo,
             "Tab troca a aba"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn switching_interface_keeps_the_terminal_only_with_a_session() {
+        let screen = Rect::new(0, 0, 80, 24);
+        let mut app = App {
+            settings: AgentSettings {
+                interface: Interface::Provider,
+                ..AgentSettings::default()
+            },
+            ..App::default()
+        };
+        let cat = Command::new("cat");
+        app.term = Some(Term::spawn(&cat, 20, 80).unwrap());
+        app.term_focus = true;
+
+        // Sem mensagem enviada, trocar para o Agente Terraforme fecha.
+        app.settings.interface = Interface::Terraforme;
+        app.sync_term(screen);
+        assert!(app.term.is_none());
+
+        // Com uma mensagem enviada, continua rodando e reaparece.
+        app.settings.interface = Interface::Provider;
+        app.term = Some(Term::spawn(&cat, 20, 80).unwrap());
+        app.term_focus = true;
+        key(&mut app, KeyCode::Enter);
+        app.settings.interface = Interface::Terraforme;
+        app.sync_term(screen);
+        assert!(app.term.is_some(), "a sessão não é fechada");
+        assert!(!app.captures_keys());
+        app.settings.interface = Interface::Provider;
+        app.sync_term(screen);
+        assert!(app.term.is_some());
     }
 
     /// Uma tela num workspace não salvo, com o `config.json` em `dir`.
