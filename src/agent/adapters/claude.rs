@@ -10,6 +10,7 @@
 mod accounts;
 mod catalog;
 mod stream;
+mod usage;
 
 use std::env;
 use std::fs;
@@ -24,6 +25,7 @@ use serde_json::Value;
 use self::stream::{StreamParser, text};
 use crate::agent::{
     AccountOption, AgentEvent, Catalog, ChatAdapter, ModelOption, PermissionMode, Request, Session,
+    Usage,
 };
 
 const NOT_FOUND: &str =
@@ -94,6 +96,15 @@ impl ChatAdapter for ClaudeAdapter {
         let bin = self.bin.clone()?;
         let dir = self.account_dir(account).ok().flatten();
         Some(catalog::load(bin, dir))
+    }
+
+    /// O consumo da conta, do endpoint de uso do Claude (sem gastar tokens).
+    fn load_usage(&self, account: Option<&str>) -> Option<Receiver<Result<Usage, String>>> {
+        let dir = match self.account_dir(account).ok()? {
+            Some(dir) => dir,
+            None => default_config_dir()?,
+        };
+        Some(usage::load(dir))
     }
 
     /// Os apelidos que o `claude --model` aceita.
@@ -245,9 +256,15 @@ fn control_response(line: &str, auto_allow: bool) -> Option<String> {
 fn configured_mode(cwd: &Path, account_dir: Option<&Path>) -> Option<String> {
     let config_dir = account_dir
         .map(Path::to_path_buf)
-        .or_else(|| env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
-        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))?;
+        .or_else(default_config_dir)?;
     configured_mode_in(&config_dir, cwd)
+}
+
+/// A pasta que o `claude` usa sem conta escolhida.
+fn default_config_dir() -> Option<PathBuf> {
+    env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
 }
 
 /// O arquivo mais específico que define o modo vence: local, projeto,

@@ -12,6 +12,7 @@ mod mode;
 
 pub use adapter::{
     AccountOption, Catalog, ChatAdapter, CommandInfo, ModelInfo, ModelOption, Request, Session,
+    Usage, UsageWindow,
 };
 pub use event::{AgentEvent, ReportedMode};
 pub use mode::PermissionMode;

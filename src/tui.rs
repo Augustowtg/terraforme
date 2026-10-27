@@ -4,6 +4,7 @@
 mod app;
 mod chat;
 mod config;
+mod usage;
 mod widgets;
 mod workspace;
 

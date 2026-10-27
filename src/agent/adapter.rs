@@ -78,6 +78,25 @@ pub struct Catalog {
     pub default_model: Option<String>,
 }
 
+/// Uma janela de limite de uso (ex.: as 5 horas da sessão).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageWindow {
+    /// O que aparece na tela (ex.: `Sessão (5 h)`).
+    pub label: String,
+    /// Quanto da janela já foi usado, de 0 a 100.
+    pub percent: f64,
+    /// Quando a janela zera (segundos Unix); `None` quando o provedor não diz.
+    pub resets_at: Option<i64>,
+}
+
+/// O consumo da conta no provedor (aba Consumo).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Usage {
+    /// Plano da conta (ex.: `Max`), quando o provedor informa.
+    pub plan: Option<String>,
+    pub windows: Vec<UsageWindow>,
+}
+
 /// Um provedor de agente para o chat.
 pub trait ChatAdapter {
     /// Nome no botão do título do input (ex.: "Claude").
@@ -117,6 +136,12 @@ pub trait ChatAdapter {
     /// Começa a carregar, em segundo plano, os comandos e modelos do agente
     /// para a conta `account`. `None` quando o provedor não informa nada.
     fn load_catalog(&self, _account: Option<&str>) -> Option<Receiver<Result<Catalog, String>>> {
+        None
+    }
+
+    /// Começa a carregar, em segundo plano, o consumo da conta `account`.
+    /// `None` quando o provedor não informa consumo.
+    fn load_usage(&self, _account: Option<&str>) -> Option<Receiver<Result<Usage, String>>> {
         None
     }
 
