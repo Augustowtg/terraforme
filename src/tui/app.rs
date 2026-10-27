@@ -2,6 +2,7 @@
 //! ativa logo abaixo. `Esc` leva o foco ao botão "Sair"; `Enter` nele abre a
 //! confirmação de saída.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
@@ -69,22 +70,24 @@ pub struct App {
     tab: Tab,
     focus: Focus,
     chat: Chat,
-    config: ConfigView,
+    config_view: ConfigView,
     usage: UsageView,
     settings: AgentSettings,
-    /// Onde as configurações são salvas (`None` nos testes).
-    db: Option<Db>,
+    /// O `config.json` do workspace, onde as configurações são salvas
+    /// (`None` nos testes).
+    config: Option<PathBuf>,
 }
 
 impl App {
     /// Tela principal com o chat ligado ao provedor disponível e as
-    /// configurações salvas em `db`.
-    pub fn new(db: Db) -> Self {
-        let settings = AgentSettings::load(&db);
+    /// configurações do workspace, salvas em `config`. Um workspace sem o
+    /// arquivo começa com as configurações globais do `db`.
+    pub fn new(db: Db, config: PathBuf) -> Self {
+        let settings = initial_settings(&db, &config);
         Self {
             chat: Chat::connect(&settings),
             settings,
-            db: Some(db),
+            config: Some(config),
             ..Self::default()
         }
     }
@@ -94,7 +97,10 @@ impl App {
     fn handle_config_key(&mut self, key: KeyEvent) -> bool {
         let choices = self.choices();
         let previous = self.settings.clone();
-        match self.config.handle_key(key, &mut self.settings, &choices) {
+        match self
+            .config_view
+            .handle_key(key, &mut self.settings, &choices)
+        {
             config::Outcome::Ignored => false,
             config::Outcome::Moved => true,
             config::Outcome::Changed => {
@@ -118,9 +124,9 @@ impl App {
 
     /// Salva as configurações e as aplica ao chat.
     fn save_settings(&mut self, previous: &AgentSettings) {
-        if let Some(db) = &self.db {
+        if let Some(config) = &self.config {
             // Sem conseguir salvar, a mudança vale só nesta execução.
-            let _ = self.settings.save(db);
+            let _ = self.settings.save_file(config);
         }
         self.chat.apply_settings(&self.settings, Some(previous));
     }
@@ -291,12 +297,13 @@ impl App {
             return;
         }
         if self.tab == Tab::Config {
-            self.config.draw(
+            self.config_view.draw(
                 frame,
                 area,
                 &self.settings,
                 self.chat.adapter(),
                 &self.choices(),
+                self.config.as_deref(),
             );
             return;
         }
@@ -306,6 +313,11 @@ impl App {
         };
         self.usage.draw(frame, area, self.chat.adapter(), &route);
     }
+}
+
+/// As configurações do workspace (`config`) ou, sem o arquivo, as globais.
+fn initial_settings(db: &Db, config: &std::path::Path) -> AgentSettings {
+    AgentSettings::load_file(config).unwrap_or_else(|| AgentSettings::load(db))
 }
 
 /// Caixa de confirmação de saída, centralizada sobre a tela.
@@ -453,6 +465,39 @@ mod tests {
         // Qualquer tecla que o chat trate (aqui, entrar no modo INSERT).
         key(&mut app, KeyCode::Char('i'));
         assert_eq!(app.tab, Tab::Consumo);
+    }
+
+    #[test]
+    fn settings_come_from_the_workspace_file_or_the_global_ones() {
+        use crate::settings::config_file;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config_file(dir.path(), "terra");
+        let db = Db::open_in_memory().unwrap();
+        let global = AgentSettings {
+            model: Some("haiku".into()),
+            ..AgentSettings::default()
+        };
+        global.save(&db).unwrap();
+        // Sem o arquivo do workspace: as globais.
+        assert_eq!(initial_settings(&db, &config), global);
+
+        // Mudar na Config grava no arquivo do workspace.
+        let mut app = App {
+            settings: global.clone(),
+            config: Some(config.clone()),
+            ..App::default()
+        };
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Down); // Modo inicial
+        key(&mut app, KeyCode::Right);
+        let saved = AgentSettings::load_file(&config).expect("config.json gravado");
+        assert_eq!(saved, app.settings);
+        assert_eq!(saved.model.as_deref(), Some("haiku"));
+        // Com o arquivo, ele vence as globais.
+        assert_eq!(initial_settings(&db, &config), saved);
+        assert_eq!(AgentSettings::load(&db), global, "as globais não mudam");
     }
 
     #[test]

@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.12] - 2026-10-27
+
+### Alterado
+
+- As configurações da aba **Config** (conta, modo inicial, modelo e o esforço padrão do `/model`) passam a ser de cada **workspace**, salvas em `~/.terraforme/workspace/<nome do workspace>/config.json`:
+  - o nome é o do workspace salvo para o diretório ou, sem um, o nome da pasta (o mesmo padrão do `terra workspace --save`);
+  - um workspace sem o arquivo começa com as configurações globais de antes (do `terra.sqlite`), que não mudam mais;
+  - a Config mostra onde salva (`Salvo em ~/.terraforme/workspace/terraforme-cli/config.json`);
+  - outras chaves que existirem no `config.json` são mantidas ao salvar.
+
 ## [0.4.11] - 2026-10-27
 
 ### Corrigido

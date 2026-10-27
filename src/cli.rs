@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use crate::db::{self, Db, SaveOutcome};
+use crate::settings;
 use crate::theme;
 use crate::tui;
 
@@ -52,8 +53,15 @@ pub fn run() -> Result<()> {
     match cli.command {
         Command::Cli => {
             let db = Db::open_default()?;
-            db.touch_recent(&current_dir()?)?;
-            tui::run_app(db)?;
+            let dir = current_dir()?;
+            db.touch_recent(&dir)?;
+            // As configurações do agente são do workspace: o nome salvo deste
+            // diretório ou, sem um, o nome da pasta.
+            let name = db
+                .workspace_name(&dir)?
+                .unwrap_or_else(|| db::default_name(&dir));
+            let config = settings::config_file(&db::data_dir()?, &name);
+            tui::run_app(db, config)?;
         }
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,
