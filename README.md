@@ -71,6 +71,8 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | Mouse no input (aba Chat) | Clique posiciona o cursor; arrastar seleciona o texto (digitar substitui a seleção) |
 | `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token |
 | `r` (aba Consumo) | Atualiza o consumo na hora (ele também se atualiza sozinho a cada minuto com a aba aberta) |
+| `c` ou clique nos botões (aba Consumo) | Alterna o gráfico Consumo por dia entre **Sem cache** (padrão) e **Com cache** |
+| Clique num dia (aba Consumo) | Mostra o consumo daquele dia por hora; **‹ Dias** ou `Esc` volta |
 | `Esc` | Leva o foco ao botão vermelho **Sair**; de novo (ou `Tab`), volta às abas |
 | `Enter` em **Sair** | Abre a confirmação de saída |
 | `←` / `→` | Alterna entre **Sim** (verde) e **Não** (vermelho) na confirmação |
@@ -99,6 +101,8 @@ Mostra o **route** (provedor e conta do chat, com o plano) e, para cada limite d
 ```
 
 A barra do **Crédito extra** só aparece quando a conta tem o crédito extra ativo.
+
+Ao lado das barras, com a mesma altura da seção dos limites (embaixo, em telas com menos de 100 colunas), fica o gráfico **Consumo por dia**: os tokens de cada um dos últimos 14 dias, com o de hoje em destaque, o maior valor e o resumo (`Hoje · média/dia · total`). Os botões **Sem cache** (verde, o padrão: entrada e saída) e **Com cache** (vermelho: soma a criação e a leitura de cache) trocam o que é somado, com um clique ou com `c`. **Clicar num dia** mostra as horas daquele dia (00 a 23), com o consumo do dia embaixo (total e o horário de pico); **‹ Dias** ou `Esc` volta aos dias. No Claude, ele soma os transcripts do Claude Code da conta (`projects/**/*.jsonl`, incluindo as conversas do terra), no fuso local; não depende do login.
 
 No Claude, os limites são os mesmos do `/usage` do Claude Code (sessão de 5 h e semana, mais Opus/Sonnet quando o plano tem), lidos do endpoint de uso com o token da conta escolhida na Config. Não chama o modelo nem gasta tokens; precisa do `curl` no `PATH`.
 
@@ -232,7 +236,7 @@ O chat usa o padrão **Adapter**: ele só conhece o trait `ChatAdapter` (`src/ag
    - `name()`: o nome no botão do título (ex.: `"Claude"`);
    - `is_available()`: se o provedor está instalado ou configurado (sem ele, o chat fica Desconectado com o `unavailable_hint()`);
    - `start(Request)`: começa uma resposta e devolve uma `Session`, cujo `poll()` entrega os `AgentEvent`s até `Done` ou `Failed`. No `PermissionMode::Yolo`, aprove tudo o que o agente pedir;
-   - opcionais: `configured_mode()` (modo inicial vindo da configuração do provedor), `model_label()` (nome amigável do modelo), `load_usage()` (o consumo da aba Consumo, em segundo plano) e `login()` (o comando interativo do `/login`).
+   - opcionais: `configured_mode()` (modo inicial vindo da configuração do provedor), `model_label()` (nome amigável do modelo), `load_usage()` e `load_daily()` (o consumo e os tokens por dia da aba Consumo, em segundo plano) e `login()` (o comando interativo do `/login`).
 2. Declare o módulo e inclua-o na lista de `all()` em `src/agent/adapters.rs`.
 
 Nada na interface muda: o histórico, os modos, o consumo e a sincronia do modo funcionam com qualquer adapter. O `src/tui/chat/tests.rs` tem um `FakeAdapter` que serve de exemplo mínimo.

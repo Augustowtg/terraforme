@@ -4,6 +4,19 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.9] - 2026-10-27
+
+### Adicionado
+
+- Gráfico **Consumo por dia** na aba Consumo, ao lado das barras de limite e com a mesma altura da seção dos limites (embaixo delas em telas com menos de 100 colunas):
+  - botões **Sem cache** (verde, o padrão) e **Com cache** (vermelho), escolhidos com o mouse (ou `c`); o escolhido fica preenchido;
+  - uma barra sólida por dia dos últimos 14 dias, com o dia do mês embaixo e a de hoje em destaque;
+  - o maior valor (`máx. 892.6K · últimos 14 dias`) e o resumo `Hoje 201.1K · média 196.3K/dia · total 2.7M`;
+  - em telas estreitas, mostra só os dias que cabem;
+  - **clicar num dia** troca o gráfico para as **horas daquele dia** (00 a 23), com o consumo do dia embaixo: `27-10-2026 · total 224.7K · pico às 10h (103.2K)`. O botão **‹ Dias** (ou `Esc`) volta aos dias; os botões de cache também valem nas horas.
+- No Claude, os tokens vêm dos transcripts do Claude Code na pasta da conta (`projects/**/*.jsonl`), que incluem as conversas do terra: por dia e por hora, a entrada e a saída e, à parte, o cache (criação e leitura), no fuso local, contando cada resposta uma vez. Funciona mesmo sem login válido (é local).
+- `ChatAdapter::load_daily`: os tokens por dia de cada provedor, em segundo plano.
+
 ## [0.4.8] - 2026-10-27
 
 ### Corrigido

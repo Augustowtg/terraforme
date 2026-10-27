@@ -101,6 +101,40 @@ pub struct Usage {
     pub windows: Vec<UsageWindow>,
 }
 
+/// Os tokens gastos numa hora de um dia.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HourTokens {
+    /// Entrada e saída.
+    pub tokens: u64,
+    /// Criação e leitura de cache.
+    pub cache: u64,
+}
+
+/// Os tokens gastos num dia (aba Consumo, gráfico por dia e por hora).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DailyTokens {
+    /// O dia, no fuso local.
+    pub date: jiff::civil::Date,
+    /// Entrada e saída.
+    pub tokens: u64,
+    /// Criação e leitura de cache.
+    pub cache: u64,
+    /// Cada hora do dia (0 a 23), no fuso local.
+    pub hours: [HourTokens; 24],
+}
+
+impl DailyTokens {
+    /// Um dia sem consumo.
+    pub fn empty(date: jiff::civil::Date) -> Self {
+        Self {
+            date,
+            tokens: 0,
+            cache: 0,
+            hours: [HourTokens::default(); 24],
+        }
+    }
+}
+
 /// Um provedor de agente para o chat.
 pub trait ChatAdapter {
     /// Nome no botão do título do input (ex.: "Claude").
@@ -153,6 +187,17 @@ pub trait ChatAdapter {
     /// foi revogado). Ele é interativo: o terra sai da tela enquanto ele roda.
     /// `None` quando o provedor não tem login.
     fn login(&self, _account: Option<&str>) -> Option<Command> {
+        None
+    }
+
+    /// Começa a somar, em segundo plano, os tokens por dia da conta
+    /// `account` nos últimos `days` dias (até hoje, o mais antigo primeiro;
+    /// dias sem uso vêm com 0). `None` quando o provedor não informa.
+    fn load_daily(
+        &self,
+        _account: Option<&str>,
+        _days: usize,
+    ) -> Option<Receiver<Result<Vec<DailyTokens>, String>>> {
         None
     }
 

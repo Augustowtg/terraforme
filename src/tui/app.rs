@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use super::chat::Chat;
 use super::config::{self, ConfigView};
-use super::usage::{self, UsageView};
+use super::usage::UsageView;
 use crate::db::Db;
 use crate::platform::keyboard;
 use crate::settings::AgentSettings;
@@ -183,10 +183,16 @@ impl App {
         false
     }
 
-    /// Mouse só age no input da aba Chat (posicionar o cursor e selecionar).
+    /// Mouse: no input da aba Chat (posicionar o cursor e selecionar) e nos
+    /// botões do gráfico da aba Consumo.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if self.tab == Tab::Chat && self.focus == Focus::Tabs {
-            self.chat.handle_mouse(mouse);
+        if self.focus != Focus::Tabs {
+            return;
+        }
+        match self.tab {
+            Tab::Chat => self.chat.handle_mouse(mouse),
+            Tab::Consumo => self.usage.handle_mouse(mouse),
+            Tab::Config => {}
         }
     }
 
@@ -218,7 +224,7 @@ impl App {
         let help = match self.focus {
             Focus::Tabs if self.tab == Tab::Chat => self.chat.help(),
             Focus::Tabs if self.tab == Tab::Config => config::HELP.into(),
-            Focus::Tabs if self.tab == Tab::Consumo => usage::HELP.into(),
+            Focus::Tabs if self.tab == Tab::Consumo => self.usage.help().into(),
             Focus::Tabs => HELP.into(),
             Focus::Quit => HELP_QUIT.into(),
             Focus::Confirm(_) => HELP_CONFIRM.into(),

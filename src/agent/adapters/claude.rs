@@ -9,6 +9,7 @@
 
 mod accounts;
 mod catalog;
+mod daily;
 mod stream;
 mod usage;
 
@@ -24,8 +25,8 @@ use serde_json::Value;
 
 use self::stream::{StreamParser, text};
 use crate::agent::{
-    AccountOption, AgentEvent, Catalog, ChatAdapter, ModelOption, PermissionMode, Request, Session,
-    Usage,
+    AccountOption, AgentEvent, Catalog, ChatAdapter, DailyTokens, ModelOption, PermissionMode,
+    Request, Session, Usage,
 };
 
 const NOT_FOUND: &str =
@@ -122,6 +123,19 @@ impl ChatAdapter for ClaudeAdapter {
             None => default_config_dir()?,
         };
         Some(usage::load(dir))
+    }
+
+    /// Os tokens por dia, dos transcripts do Claude Code na pasta da conta.
+    fn load_daily(
+        &self,
+        account: Option<&str>,
+        days: usize,
+    ) -> Option<Receiver<Result<Vec<DailyTokens>, String>>> {
+        let dir = match self.account_dir(account).ok()? {
+            Some(dir) => dir,
+            None => default_config_dir()?,
+        };
+        Some(daily::load(dir, days))
     }
 
     /// Os apelidos que o `claude --model` aceita.
