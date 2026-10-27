@@ -121,6 +121,43 @@ install_ai_memory() {
   ui_note "ai-memory configurado: servidor como serviço do usuário e agentes ligados"
 }
 
+# O terraforme antigo, o de antes do terra (com o daemon terraforme-mcp e
+# o mascote terraforme-pet): os binários dele no PATH ou em BIN_DIR.
+OLD_BINS=(terraforme terraforme-mcp terraforme-pet)
+OLD_PATHS=()
+for bin in "${OLD_BINS[@]}"; do
+  for path in "$(command -v "$bin" || true)" "$BIN_DIR/$bin"; do
+    if [ -f "$path" ] && ! printf '%s\n' "${OLD_PATHS[@]}" | grep -qxF "$path"; then
+      OLD_PATHS+=("$path")
+    fi
+  done
+done
+
+# Guarda uma pasta do terraforme antigo com o sufixo .antigo-<data>, em vez
+# de apagar, para dar para voltar.
+backup_dir() {
+  local dir="$1" backup
+  [ -d "$dir" ] || return 0
+  backup="$dir.antigo-$(date +%Y%m%d-%H%M%S)"
+  mv "$dir" "$backup"
+  ui_note "Pasta do terraforme antigo guardada em $backup"
+}
+
+# Encerra o daemon e o mascote (o `terraforme cli` aberto continua até ser
+# fechado), remove os binários e guarda a config e os dados. O RTK, o
+# ai-memory e o ~/.terraforme do terra ficam.
+uninstall_old_terraforme() {
+  local path
+  pkill -x terraforme-mcp || true
+  pkill -x terraforme-pet || true
+  for path in "${OLD_PATHS[@]}"; do
+    rm -f "$path"
+    ui_note "Removido o terraforme antigo: $path"
+  done
+  backup_dir "${XDG_CONFIG_HOME:-$HOME/.config}/terraforme"
+  backup_dir "${XDG_DATA_HOME:-$HOME/.local/share}/terraforme"
+}
+
 # As extensões que já estão no PATH (como o terra as detecta): 1 para o RTK
 # e para o ai-memory, na ordem do menu.
 EXT_INSTALLED=(0 0)
@@ -151,6 +188,10 @@ ui_summaries \
   "copia target/release/terra" \
   "$(shell_files)"
 
+# O passo do terraforme antigo só aparece se ele estiver na máquina.
+if [ "${#OLD_PATHS[@]}" -gt 0 ]; then
+  ui_add_step "Desinstalar o terraforme antigo" "encerra e remove terraforme, terraforme-mcp e terraforme-pet"
+fi
 # Com todas as extensões instaladas, o instalador nem pergunta.
 if [ "${EXT_INSTALLED[0]}" -eq 0 ] || [ "${EXT_INSTALLED[1]}" -eq 0 ]; then
   ui_add_step "Instalar as extensões?" ""
@@ -160,6 +201,9 @@ ui_confirm "Instalar o terraforme CLI?" || exit 0
 ui_step build
 ui_step install_bin
 ui_step setup_shells
+if [ "${#OLD_PATHS[@]}" -gt 0 ]; then
+  ui_ask_step "Desinstalar o terraforme antigo (a config fica guardada como .antigo)?" uninstall_old_terraforme
+fi
 # Os passos das extensões só entram na lista com o SIM, e só os das
 # escolhidas no menu; as já instaladas aparecem nele com a bola verde.
 if [ "${EXT_INSTALLED[0]}" -eq 1 ] && [ "${EXT_INSTALLED[1]}" -eq 1 ]; then

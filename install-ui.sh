@@ -7,6 +7,7 @@
 #   ui_confirm "Pergunta?" || exit 0
 #   ui_step <função> [args...]                     (roda o próximo passo)
 #   ui_ask "Pergunta?"                             (passo com SIM/NÃO; NÃO segue)
+#   ui_ask_step "Pergunta?" <função> [args...]     (com SIM, roda o passo; NÃO segue)
 #   ui_select "Pergunta?" "Opção 1" "Opção 2" ...  (marca as opções em UI_SELECTED;
 #                                                  as com UI_INSTALLED[i]=1 ficam fora)
 #   ui_add_step "Passo" "Resumo"                   (acrescenta um passo no fim)
@@ -193,6 +194,18 @@ ui_ask() {
   ui_choose "$1" || rc=1
   UI_CURRENT=$((UI_CURRENT + 1))
   return "$rc"
+}
+
+# Um passo que pergunta antes de rodar: com SIM, roda a função como o
+# ui_step; com NÃO, o passo conta como feito sem rodar.
+ui_ask_step() {
+  local question="$1"
+  shift
+  if ui_choose "$question"; then
+    ui_step "$@"
+  else
+    UI_CURRENT=$((UI_CURRENT + 1))
+  fi
 }
 
 # As linhas do menu do ui_select, como a lista de extensões da Config:
