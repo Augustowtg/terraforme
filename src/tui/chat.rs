@@ -24,7 +24,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKin
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Gauge, Paragraph};
 
 use self::history::{Entry, History};
 use self::input::{InputBox, InputMode, Outcome};
@@ -47,6 +47,12 @@ const PAGE_LINES: usize = 10;
 const WHEEL_LINES: usize = 3;
 /// Ticks que o aviso "Copiado" fica no rodapé (~2 s).
 const NOTICE_TICKS: u32 = 20;
+/// Limite de contexto enquanto o agente não informa o do modelo.
+const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+/// Largura da barra de contexto, com as bordas.
+const CONTEXT_WIDTH: u16 = 26;
+/// Texto da barra de contexto quando ele chega no limite.
+const COMPACT_HINT: &str = "Compacte a conversa";
 
 const HELP_NORMAL: &str =
     "i escrever · Shift+Tab modo · PgUp/PgDn rolar · Tab trocar aba · Esc ir para Sair";
@@ -97,6 +103,10 @@ pub struct Chat {
     permission_mode: PermissionMode,
     spinner_frame: usize,
     tokens_used: u64,
+    /// Tamanho do contexto da sessão, depois da primeira chamada ao modelo.
+    context: Option<u64>,
+    /// Limite de contexto do modelo, quando o agente informa.
+    context_window: Option<u64>,
     /// Comandos e modelos do agente, depois de carregados.
     catalog: Option<Catalog>,
     /// Carregamento do catálogo em andamento.
@@ -131,6 +141,8 @@ impl Default for Chat {
             permission_mode: PermissionMode::default(),
             spinner_frame: 0,
             tokens_used: 0,
+            context: None,
+            context_window: None,
             catalog: None,
             catalog_loading: None,
         }
@@ -178,6 +190,7 @@ impl Chat {
             self.session_id = None;
             self.agent_mode = None;
             self.model = None;
+            self.context = None;
             let label = self.account_label();
             self.history.push(Entry::Info(format!(
                 "Conta: {label}. A próxima mensagem começa uma conversa nova."
@@ -326,6 +339,7 @@ impl Chat {
     fn run_command(&mut self, name: &str) {
         match name {
             "clear" => self.clear_conversation(),
+            "compact" => self.compact(),
             "login" => self.start_login(),
             // O consumo é a aba Consumo do terra.
             "usage" => self.open_usage = true,
@@ -520,8 +534,28 @@ impl Chat {
         if self.agent_status != AgentStatus::Desconectado {
             self.agent_status = AgentStatus::Ocioso;
         }
+        self.context = None;
         self.history = History::default();
         self.history.push(Entry::Info("Nova conversa.".to_string()));
+    }
+
+    /// `/compact`: pede ao agente para resumir a conversa, liberando o
+    /// contexto.
+    fn compact(&mut self) {
+        if self.session_id.is_none() {
+            self.history.push(Entry::Info(
+                "Ainda não há conversa para compactar.".to_string(),
+            ));
+        } else if self.run.is_some() {
+            self.history.push(Entry::Info(
+                "Espere o agente terminar para compactar a conversa.".to_string(),
+            ));
+        } else {
+            self.start(
+                "/compact",
+                Entry::Info("Compactando a conversa...".to_string()),
+            );
+        }
     }
 
     /// A roda rola a conversa em qualquer ponto da aba; arrastar no
@@ -557,12 +591,20 @@ impl Chat {
         if prompt.is_empty() || self.run.is_some() {
             return;
         }
+        if self.start(&prompt, Entry::User(prompt.clone())) {
+            self.input.clear();
+        }
+    }
+
+    /// Manda `prompt` ao agente na sessão atual e, se ele começou, põe
+    /// `entry` no histórico. Retorna se a resposta começou.
+    fn start(&mut self, prompt: &str, entry: Entry) -> bool {
         let Some(adapter) = self.available_adapter() else {
             self.history.push(Entry::Error(self.unavailable_hint()));
-            return;
+            return false;
         };
         let started = adapter.start(Request {
-            prompt: &prompt,
+            prompt,
             mode: self.permission_mode,
             session_id: self.session_id.as_deref(),
             model: self
@@ -575,12 +617,12 @@ impl Chat {
                 .as_deref()
                 .or(self.default_effort.as_deref()),
         });
+        let ok = started.is_ok();
         match started {
             Ok(run) => {
                 self.run = Some(run);
                 self.requested_mode = Some(self.permission_mode);
-                self.history.push(Entry::User(prompt));
-                self.input.clear();
+                self.history.push(entry);
                 self.agent_status = AgentStatus::Pensando;
                 self.agent_activity = Some("Pensando...".to_string());
             }
@@ -590,6 +632,7 @@ impl Chat {
             }
         }
         self.history.follow();
+        ok
     }
 
     /// Interrompe a resposta em andamento (soltar a sessão a encerra).
@@ -625,6 +668,19 @@ impl Chat {
             AgentEvent::ToolResult { is_error, summary } => {
                 self.agent_activity = Some("Pensando...".to_string());
                 self.history.push(Entry::ToolResult { is_error, summary });
+            }
+            AgentEvent::Context { tokens, window } => {
+                self.context = Some(tokens);
+                // O limite só vem no fim da resposta: fica o último informado.
+                if window.is_some() {
+                    self.context_window = window;
+                }
+            }
+            AgentEvent::Compacted => {
+                // O tamanho novo vem na próxima chamada ao modelo.
+                self.context = None;
+                self.history
+                    .push(Entry::Info("Conversa compactada.".to_string()));
             }
             AgentEvent::Done {
                 is_error,
@@ -791,7 +847,7 @@ impl Chat {
     /// Altura do painel: sem badges para mostrar, a linha deles some e o
     /// espaço fica para a conversa.
     pub fn height(&self) -> u16 {
-        if self.badges().is_empty() {
+        if self.badges().is_empty() && self.context_bar().is_none() {
             HEIGHT - badge::HEIGHT
         } else {
             HEIGHT
@@ -823,6 +879,25 @@ impl Chat {
             ));
         }
         badges
+    }
+
+    /// A barra de contexto, quando o agente já informou o tamanho dele: o
+    /// texto e quanto do limite está ocupado (de 0 a 1).
+    fn context_bar(&self) -> Option<(String, f64)> {
+        let tokens = self.context?;
+        let limit = self.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        let ratio = tokens as f64 / limit as f64;
+        let label = if ratio >= 1.0 {
+            COMPACT_HINT.to_string()
+        } else {
+            format!(
+                "{} / {} ({:.0}%)",
+                compact_count(tokens),
+                compact_count(limit),
+                (ratio * 100.0).floor()
+            )
+        };
+        Some((label, ratio.min(1.0)))
     }
 
     /// Painel: atividade do agente, caixa de input e badges.
@@ -871,7 +946,27 @@ impl Chat {
         ])
     }
 
+    /// Os badges à esquerda e, no canto direito, embaixo do status, a barra
+    /// de contexto.
     fn draw_badges(&self, frame: &mut Frame, area: Rect) {
+        let mut area = area;
+        if let Some((label, ratio)) = self.context_bar() {
+            let [badges, context] =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Length(CONTEXT_WIDTH)])
+                    .spacing(1)
+                    .areas(area);
+            area = badges;
+            let gauge = Gauge::default()
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(theme::context_border(ratio)),
+                )
+                .gauge_style(theme::context_bar(ratio))
+                .ratio(ratio)
+                .label(label);
+            frame.render_widget(gauge, context);
+        }
         let badges = self.badges();
         let areas = Layout::horizontal(
             badges

@@ -152,6 +152,30 @@ pub fn badge_border(variant: Variant) -> Style {
     self::variant(variant)
 }
 
+/// Cor do contexto da sessão: verde, laranja da metade do limite e vermelho
+/// a partir de 75% dele (`ratio` é a parte do limite ocupada).
+fn context_color(ratio: f64) -> Color {
+    let name = match ratio {
+        r if r < 0.5 => ColorName::Green,
+        r if r < 0.75 => ColorName::Peach,
+        _ => ColorName::Red,
+    };
+    color(name)
+}
+
+/// Barra de contexto: a parte ocupada na cor do contexto.
+pub fn context_bar(ratio: f64) -> Style {
+    Style::new()
+        .fg(context_color(ratio))
+        .bg(color(ColorName::Surface0))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Borda da barra de contexto, na cor dele.
+pub fn context_border(ratio: f64) -> Style {
+    Style::new().fg(context_color(ratio))
+}
+
 /// Texto selecionado com o mouse: mesmo destaque do item em foco.
 pub fn selection() -> Style {
     focused()
