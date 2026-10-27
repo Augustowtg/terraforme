@@ -128,24 +128,53 @@ impl AgentSettings {
     /// Grava o `config.json` de um workspace, criando a pasta. Outras chaves
     /// do arquivo (de fora da seção do agente) são mantidas.
     pub fn save_file(&self, path: &Path) -> Result<()> {
-        let mut json: Value = fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .filter(Value::is_object)
-            .unwrap_or_else(|| json!({}));
-        json["agent"] = json!({
-            "start_mode": self.start_mode.key(),
-            "model": self.model,
-            "account": self.account,
-            "effort": self.effort,
-        });
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)
-                .with_context(|| format!("não foi possível criar {}", dir.display()))?;
-        }
-        let text = serde_json::to_string_pretty(&json)? + "\n";
-        fs::write(path, text).with_context(|| format!("não foi possível gravar {}", path.display()))
+        update_file(path, |json| {
+            json["agent"] = json!({
+                "start_mode": self.start_mode.key(),
+                "model": self.model,
+                "account": self.account,
+                "effort": self.effort,
+            });
+        })
     }
+}
+
+/// Se o terra pergunta, ao sair, se o workspace deve ser salvo. O "Não
+/// (não perguntar novamente)" grava `"workspace": {"ask_to_save": false}`.
+pub fn asks_to_save(path: &Path) -> bool {
+    read_file(path)["workspace"]["ask_to_save"] != false
+}
+
+/// O "Não (não perguntar novamente)": não pergunta mais neste workspace.
+pub fn stop_asking_to_save(path: &Path) -> Result<()> {
+    update_file(path, |json| {
+        if !json["workspace"].is_object() {
+            json["workspace"] = json!({});
+        }
+        json["workspace"]["ask_to_save"] = json!(false);
+    })
+}
+
+/// O `config.json` como objeto (vazio quando não existe ou não é JSON).
+fn read_file(path: &Path) -> Value {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+/// Lê o `config.json`, aplica `change` e grava, criando a pasta. As chaves
+/// que `change` não mexe ficam como estavam.
+fn update_file(path: &Path, change: impl FnOnce(&mut Value)) -> Result<()> {
+    let mut json = read_file(path);
+    change(&mut json);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)
+            .with_context(|| format!("não foi possível criar {}", dir.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&json)? + "\n";
+    fs::write(path, text).with_context(|| format!("não foi possível gravar {}", path.display()))
 }
 
 /// O `config.json` do workspace `name` dentro de `root` (o
@@ -225,6 +254,24 @@ mod tests {
         let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(json["outra"], 1);
         assert_eq!(json["agent"]["model"], "sonnet");
+    }
+
+    #[test]
+    fn stop_asking_to_save_keeps_the_agent_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_file(dir.path(), "terra");
+        assert!(asks_to_save(&path), "pergunta por padrão");
+        let settings = AgentSettings {
+            model: Some("opus".into()),
+            ..AgentSettings::default()
+        };
+        settings.save_file(&path).unwrap();
+        stop_asking_to_save(&path).unwrap();
+        assert!(!asks_to_save(&path));
+        assert_eq!(AgentSettings::load_file(&path), Some(settings.clone()));
+        // Salvar o agente de novo não volta a perguntar.
+        settings.save_file(&path).unwrap();
+        assert!(!asks_to_save(&path));
     }
 
     #[test]

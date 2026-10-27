@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.13] - 2026-10-27
+
+### Adicionado
+
+- Ao sair (**Sim** na confirmação) de um workspace que **não está salvo**, o terra pergunta **"Este workspace não está salvo. Deseja salvar?"** com 3 opções:
+  - **Sim**: salva o diretório como workspace (com o nome da pasta, como o `terra workspace --save`) e sai;
+  - **Não**: sai sem salvar; na próxima vez pergunta de novo;
+  - **Não (não perguntar novamente)**: sai e não pergunta mais neste workspace (grava `"workspace": {"ask_to_save": false}` no `config.json` dele).
+  - `←`/`→` escolhem, `Enter` confirma e `Esc` desiste de sair. O `Ctrl+C` continua saindo direto.
+
 ## [0.4.12] - 2026-10-27
 
 ### Alterado

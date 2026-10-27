@@ -61,7 +61,7 @@ pub fn run() -> Result<()> {
                 .workspace_name(&dir)?
                 .unwrap_or_else(|| db::default_name(&dir));
             let config = settings::config_file(&db::data_dir()?, &name);
-            tui::run_app(db, config)?;
+            tui::run_app(db, dir, config)?;
         }
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,

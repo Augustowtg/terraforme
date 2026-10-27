@@ -38,8 +38,8 @@ const TICK: Duration = Duration::from_millis(100);
 
 /// Tela principal com a barra de abas; sai pelo botão "Sair" (`Esc`, `Enter` e
 /// confirmação) ou direto com `Ctrl+C`.
-pub fn run_app(db: Db, config: PathBuf) -> Result<()> {
-    let mut app = app::App::new(db, config);
+pub fn run_app(db: Db, dir: PathBuf, config: PathBuf) -> Result<()> {
+    let mut app = app::App::new(db, dir, config);
     with_terminal(|terminal| {
         // Nos terminais com o protocolo de teclado do kitty, o Shift+Enter chega
         // diferente do Enter; nos outros, Alt+Enter e Ctrl+J pulam linha.
