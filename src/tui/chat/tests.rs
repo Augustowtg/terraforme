@@ -12,8 +12,8 @@ use ratatui::{Terminal, backend::TestBackend};
 
 use super::*;
 
-/// O que o chat pediu ao provedor: texto, modo e sessão.
-type Sent = Rc<RefCell<Vec<(String, PermissionMode, Option<String>)>>>;
+/// O que o chat pediu ao provedor: texto, modo, sessão e modelo.
+type Sent = Rc<RefCell<Vec<(String, PermissionMode, Option<String>, Option<String>)>>>;
 
 /// Provedor de mentira: responde cada mensagem com os eventos de `reply` e
 /// guarda o que recebeu.
@@ -53,19 +53,28 @@ impl ChatAdapter for FakeAdapter {
             request.prompt.to_string(),
             request.mode,
             request.session_id.map(str::to_string),
+            request.model.map(str::to_string),
         ));
         Ok(Box::new(FakeSession(self.reply.clone())))
     }
 }
 
 fn fake_chat(available: bool, reply: Vec<AgentEvent>) -> (Chat, Sent) {
+    fake_chat_with(available, reply, &AgentSettings::default())
+}
+
+fn fake_chat_with(
+    available: bool,
+    reply: Vec<AgentEvent>,
+    settings: &AgentSettings,
+) -> (Chat, Sent) {
     let sent = Sent::default();
     let adapter = FakeAdapter {
         available,
         reply,
         sent: Rc::clone(&sent),
     };
-    (Chat::with_adapter(Box::new(adapter)), sent)
+    (Chat::with_adapter(Box::new(adapter), settings), sent)
 }
 
 fn done(tokens: u64) -> AgentEvent {
@@ -146,14 +155,54 @@ fn sends_through_adapter_and_continues_the_session() {
     assert_eq!(
         *sent.borrow(),
         [
-            ("olá".to_string(), PermissionMode::Agente, None),
+            ("olá".to_string(), PermissionMode::Agente, None, None),
             (
                 "e agora?".to_string(),
                 PermissionMode::Yolo,
-                Some("s1".to_string())
+                Some("s1".to_string()),
+                None
             ),
         ]
     );
+}
+
+#[test]
+fn settings_choose_start_mode_and_model() {
+    let settings = AgentSettings {
+        start_mode: StartMode::Fixed(PermissionMode::Plan),
+        model: Some("haiku".into()),
+    };
+    let (mut chat, sent) = fake_chat_with(true, vec![done(1)], &settings);
+    assert_eq!(chat.permission_mode, PermissionMode::Plan);
+
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow()[0].3.as_deref(), Some("haiku"));
+}
+
+#[test]
+fn changing_only_the_model_keeps_shift_tab_choice() {
+    let settings = AgentSettings::default();
+    let (mut chat, _) = fake_chat_with(true, Vec::new(), &settings);
+    press(&mut chat, KeyCode::BackTab);
+    assert_eq!(chat.permission_mode, PermissionMode::Yolo);
+
+    let changed = AgentSettings {
+        model: Some("opus".into()),
+        ..settings.clone()
+    };
+    chat.apply_settings(&changed, Some(&settings));
+    assert_eq!(chat.permission_mode, PermissionMode::Yolo);
+    assert_eq!(chat.chosen_model.as_deref(), Some("opus"));
+
+    // Trocar o modo inicial muda o modo na hora.
+    let fixed = AgentSettings {
+        start_mode: StartMode::Fixed(PermissionMode::AcceptEdits),
+        ..changed.clone()
+    };
+    chat.apply_settings(&fixed, Some(&changed));
+    assert_eq!(chat.permission_mode, PermissionMode::AcceptEdits);
 }
 
 #[test]
