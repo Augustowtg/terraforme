@@ -55,6 +55,8 @@ pub struct Chat {
     model: Option<String>,
     /// Modelo escolhido na Config, enviado nas próximas mensagens.
     chosen_model: Option<String>,
+    /// Conta escolhida na Config (`None` é a Default do provedor).
+    account: Option<String>,
     /// Sessão do agente, para continuar a conversa.
     session_id: Option<String>,
     /// Resposta em andamento.
@@ -83,6 +85,7 @@ impl Default for Chat {
             adapter: None,
             model: None,
             chosen_model: None,
+            account: None,
             session_id: None,
             run: None,
             requested_mode: None,
@@ -124,11 +127,49 @@ impl Chat {
     /// Aplica as configurações da seção Agente. O modo só muda quando o
     /// modo inicial mudou (ou no início, sem `previous`), para não desfazer
     /// um Shift+Tab; o modelo vale a partir da próxima mensagem.
+    ///
+    /// Trocar de conta começa uma conversa nova: a sessão anterior é da outra
+    /// conta e não pode ser continuada com esta. O aviso só aparece quando
+    /// havia uma conversa, para passar pelas contas não encher o histórico.
     pub fn apply_settings(&mut self, settings: &AgentSettings, previous: Option<&AgentSettings>) {
-        if previous.is_none_or(|p| p.start_mode != settings.start_mode) {
+        let account_changed = previous.is_some_and(|p| p.account != settings.account);
+        self.account = settings.account.clone();
+        if account_changed && self.session_id.is_some() {
+            self.session_id = None;
+            self.agent_mode = None;
+            self.model = None;
+            let label = self.account_label();
+            self.history.push(Entry::Info(format!(
+                "Conta: {label}. A próxima mensagem começa uma conversa nova."
+            )));
+        }
+        let start_changed = previous.is_none_or(|p| p.start_mode != settings.start_mode);
+        // "Do provedor" depende da conta: a configuração é de cada uma.
+        let provider_mode = settings.start_mode == StartMode::Provider && account_changed;
+        if start_changed || provider_mode {
             self.permission_mode = self.start_mode(settings.start_mode);
         }
         self.chosen_model = settings.model.clone();
+    }
+
+    /// Nome da conta escolhida, como o provedor a mostra.
+    fn account_label(&self) -> String {
+        let accounts = self
+            .adapter
+            .as_ref()
+            .map(|a| a.accounts())
+            .unwrap_or_default();
+        accounts
+            .into_iter()
+            .find(|a| a.id == self.account)
+            .map_or_else(
+                || {
+                    self.account
+                        .clone()
+                        .unwrap_or_else(|| "Default".to_string())
+                },
+                |a| a.label,
+            )
     }
 
     /// O modo de um modo inicial. "Do provedor" segue a configuração dele,
@@ -140,7 +181,7 @@ impl Chat {
             StartMode::Provider => std::env::current_dir()
                 .ok()
                 .zip(self.adapter.as_deref())
-                .and_then(|(cwd, adapter)| adapter.configured_mode(&cwd))
+                .and_then(|(cwd, adapter)| adapter.configured_mode(&cwd, self.account.as_deref()))
                 .filter(|mode| *mode != PermissionMode::Yolo)
                 .unwrap_or_default(),
         }
@@ -240,6 +281,7 @@ impl Chat {
             mode: self.permission_mode,
             session_id: self.session_id.as_deref(),
             model: self.chosen_model.as_deref(),
+            account: self.account.as_deref(),
         });
         match started {
             Ok(run) => {

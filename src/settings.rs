@@ -7,6 +7,7 @@ use crate::db::Db;
 
 const START_MODE: &str = "agent.start_mode";
 const MODEL: &str = "agent.model";
+const ACCOUNT: &str = "agent.account";
 const PROVIDER: &str = "provider";
 
 /// Modo de permissão com que o chat começa.
@@ -56,6 +57,8 @@ pub struct AgentSettings {
     pub start_mode: StartMode,
     /// Modelo escolhido (um id dos modelos do provedor); `None` é o padrão.
     pub model: Option<String>,
+    /// Conta escolhida (um id das contas do provedor); `None` é a Default.
+    pub account: Option<String>,
 }
 
 impl AgentSettings {
@@ -67,12 +70,14 @@ impl AgentSettings {
                 .and_then(|key| StartMode::from_key(&key))
                 .unwrap_or_default(),
             model: get(MODEL),
+            account: get(ACCOUNT),
         }
     }
 
     pub fn save(&self, db: &Db) -> Result<()> {
         db.set_setting(START_MODE, Some(self.start_mode.key()))?;
         db.set_setting(MODEL, self.model.as_deref())?;
+        db.set_setting(ACCOUNT, self.account.as_deref())?;
         Ok(())
     }
 }
@@ -94,13 +99,15 @@ mod tests {
             let settings = AgentSettings {
                 start_mode,
                 model: Some("haiku".into()),
+                account: Some(".claude-trabalho".into()),
             };
             settings.save(&db).unwrap();
             assert_eq!(AgentSettings::load(&db), settings);
         }
-        // Voltar ao modelo padrão apaga a configuração.
+        // Voltar ao modelo e à conta padrão apaga as configurações.
         AgentSettings::default().save(&db).unwrap();
         assert_eq!(AgentSettings::load(&db).model, None);
+        assert_eq!(AgentSettings::load(&db).account, None);
     }
 
     #[test]
