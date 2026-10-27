@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.4] - 2026-10-27
+
+### Alterado
+
+- A aba **Consumo** mostra **quanto falta** de cada limite, e não mais quanto foi usado: a barra vem cheia e esvazia conforme o uso, com a porcentagem que resta (ex.: `58% restantes`). As cores continuam as mesmas: verde, **amarela** quando restam 30% ou menos e **vermelha** quando restam 10% ou menos.
+- O **Crédito extra (mensal)** mostra o valor que resta no mês (ex.: `US$ 38,22 restantes de US$ 40,00 no mês`), no lugar do valor gasto.
+
 ## [0.5.3] - 2026-10-27
 
 ### Alterado
