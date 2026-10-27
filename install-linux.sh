@@ -121,12 +121,17 @@ install_ai_memory() {
   ui_note "ai-memory configurado: servidor como serviço do usuário e agentes ligados"
 }
 
+# As extensões que já estão no PATH (como o terra as detecta): 1 para o RTK
+# e para o ai-memory, na ordem do menu.
+EXT_INSTALLED=(0 0)
+if command -v rtk >/dev/null 2>&1; then EXT_INSTALLED[0]=1; fi
+if command -v ai-memory >/dev/null 2>&1; then EXT_INSTALLED[1]=1; fi
+
 ui_init "$SCRIPT_DIR" \
   "Confirmar instalação" \
   "Compilar em modo release" \
   "Instalar o binário em $BIN_DIR" \
-  "Adicionar a função 'terra' aos shells" \
-  "Instalar as extensões?"
+  "Adicionar a função 'terra' aos shells"
 
 # Os arquivos que o setup_shells altera, para o resumo do passo.
 shell_files() {
@@ -144,16 +149,23 @@ ui_summaries \
   "" \
   "cargo build --release; pode levar alguns minutos" \
   "copia target/release/terra" \
-  "$(shell_files)" \
-  ""
+  "$(shell_files)"
+
+# Com todas as extensões instaladas, o instalador nem pergunta.
+if [ "${EXT_INSTALLED[0]}" -eq 0 ] || [ "${EXT_INSTALLED[1]}" -eq 0 ]; then
+  ui_add_step "Instalar as extensões?" ""
+fi
 
 ui_confirm "Instalar o terraforme CLI?" || exit 0
 ui_step build
 ui_step install_bin
 ui_step setup_shells
 # Os passos das extensões só entram na lista com o SIM, e só os das
-# escolhidas no menu.
-if ui_ask "Instalar as extensões (RTK e ai-memory)?"; then
+# escolhidas no menu; as já instaladas aparecem nele com a bola verde.
+if [ "${EXT_INSTALLED[0]}" -eq 1 ] && [ "${EXT_INSTALLED[1]}" -eq 1 ]; then
+  ui_note "Extensões já instaladas: RTK e ai-memory"
+elif ui_ask "Instalar as extensões (RTK e ai-memory)?"; then
+  UI_INSTALLED=("${EXT_INSTALLED[@]}")
   ui_select "Quais extensões instalar?" \
     "RTK - filtra e comprime a saída dos comandos antes de ela chegar ao agente" \
     "ai-memory - memória de longo prazo entre sessões e agentes"

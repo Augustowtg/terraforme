@@ -4,6 +4,17 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.6.4] - 2026-10-27
+
+### Adicionado
+
+- Instaladores: antes de perguntar, verificam quais extensões já estão instaladas (o `rtk` e o `ai-memory` no `PATH`, como o terra as detecta). No menu, as instaladas aparecem com uma **bola verde** no lugar da caixa (`● 1. RTK - descrição (instalada)`), não podem ser marcadas e o `↑`/`↓` pula por elas; as outras continuam com a caixa para marcar.
+- `install-ui.sh`: `UI_INSTALLED`, as opções do `ui_select` que já estão instaladas, e `ui_select_next`, que acha a próxima opção que pode ser marcada.
+
+### Alterado
+
+- Com todas as extensões instaladas, o instalador não pergunta "Instalar as extensões?": o passo nem entra na lista, e o resumo final mostra `Extensões já instaladas: RTK e ai-memory`. Com `-y`, só as que faltam são instaladas.
+
 ## [0.6.3] - 2026-10-27
 
 ### Alterado
