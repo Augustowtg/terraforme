@@ -55,7 +55,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | Comando | O que faz |
 | --- | --- |
 | `terra --version` | Mostra a versão |
-| `terra cli` | Abre a interface com as abas Chat, Consumo, Extensões e Configurações (e Orquestrador, com o MCP online) e registra o diretório atual em **Recentes** |
+| `terra cli` | Abre a interface com as abas Chat, Consumo, Extensões, Orquestrador (com o MCP online) e Configurações e registra o diretório atual em **Recentes** |
 | `terra workspace` | Lista Recentes e Salvos; `Enter` entra no diretório escolhido |
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
@@ -65,7 +65,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 
 | Tecla | Ação |
 | --- | --- |
-| `Tab` | Troca de aba (Chat, Consumo, Extensões, Configurações e, com o MCP online, Orquestrador) |
+| `Tab` | Troca de aba (Chat, Consumo, Extensões, Orquestrador, com o MCP online, e Configurações) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
 | `↑` / `↓` (escrevendo) | Mostram as mensagens já enviadas (desde que o terra abriu, de todas as sessões), da mais nova para a mais antiga. Com o texto em várias linhas, primeiro andam entre as linhas. Depois da mais nova, o `↓` volta ao que estava sendo escrito |
@@ -194,7 +194,7 @@ O MCP do terra é um servidor [MCP](https://modelcontextprotocol.io) (JSON-RPC p
 
 Ativado, ao iniciar o `terra cli` verifica se já há um MCP na porta 30303: se houver, usa ele; se não, abre um num processo novo (`terra mcp`, que continua rodando depois que o terra fecha). Cada terra se registra nele e avisa, a cada 2 segundos, o workspace e se há uma sessão ativa com o agente; um terra que para de avisar por 6 segundos sai da lista.
 
-Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP ●`) e aparece a aba **Orquestrador**, ao lado das Configurações. Em **Sessões**, ela mostra os spaces (os workspaces salvos e os abertos em algum terra) e, embaixo de cada um, os terra abertos nele, agrupados pelo workspace, com o pid de cada um:
+Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP ●`) e aparece a aba **Orquestrador**, entre as abas Extensões e Configurações. Em **Sessões**, ela mostra os spaces (os workspaces salvos e os abertos em algum terra) e, embaixo de cada um, os terra abertos nele, agrupados pelo workspace, com o pid de cada um:
 
 ```
  Orquestrador · http://127.0.0.1:30303/mcp

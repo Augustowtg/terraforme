@@ -52,9 +52,9 @@ pub enum Tab {
     Chat,
     Consumo,
     Extensoes,
-    Config,
     /// O orquestrador: só com o MCP online.
     Mcp,
+    Config,
 }
 
 impl Tab {
@@ -62,8 +62,8 @@ impl Tab {
         Tab::Chat,
         Tab::Consumo,
         Tab::Extensoes,
-        Tab::Config,
         Tab::Mcp,
+        Tab::Config,
     ];
 
     fn title(self) -> &'static str {
@@ -899,9 +899,11 @@ mod tests {
 
     #[test]
     fn mcp_tab_only_shows_with_the_mcp_online() {
-        assert_eq!(Tab::Config.next(false), Tab::Chat);
-        assert_eq!(Tab::Config.next(true), Tab::Mcp);
-        assert_eq!(Tab::Mcp.next(true), Tab::Chat);
+        // O Orquestrador fica entre Extensões e Configurações.
+        assert_eq!(Tab::Extensoes.next(false), Tab::Config);
+        assert_eq!(Tab::Extensoes.next(true), Tab::Mcp);
+        assert_eq!(Tab::Mcp.next(true), Tab::Config);
+        assert_eq!(Tab::Config.next(true), Tab::Chat);
     }
 
     #[test]

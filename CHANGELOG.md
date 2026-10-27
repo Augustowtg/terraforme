@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.7.3] - 2026-10-27
+
+### Alterado
+
+- Aba Orquestrador: passa a ficar entre as abas Extensões e Configurações (antes ficava depois das Configurações), e o `Tab` segue essa ordem.
+
 ## [0.7.2] - 2026-10-27
 
 ### Alterado
