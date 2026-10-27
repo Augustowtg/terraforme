@@ -601,16 +601,28 @@ impl Chat {
     }
 
     /// Envia o texto do input ao agente. Ignora texto vazio e, enquanto o
-    /// agente ainda responde, mantém o texto para enviar depois.
+    /// agente ainda responde, mantém o texto para enviar depois. Um comando
+    /// com `/` e argumentos (ex.: `/config model=opus`) vai como está: é o
+    /// padrão do router; sem argumentos, um comando com interface no terra
+    /// (ex.: `/clear`) roda a interface.
     fn send(&mut self) {
         let prompt = self.input.text().trim().to_string();
         if prompt.is_empty() || self.run.is_some() {
             return;
         }
+        if let Some(name) = prompt.strip_prefix('/')
+            && commands::has_interface(name)
+        {
+            self.input.remember();
+            self.input.clear();
+            self.run_command(name);
+            return;
+        }
         if self.start(&prompt, Entry::User(prompt.clone())) {
             self.input.remember();
             self.input.clear();
-            self.auto_compact_armed = true;
+            // A auto compactação é para as mensagens, não para os comandos.
+            self.auto_compact_armed = !prompt.starts_with('/');
         }
     }
 

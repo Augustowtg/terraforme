@@ -330,6 +330,39 @@ fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
 }
 
 #[test]
+fn slash_commands_typed_with_arguments_go_to_the_agent() {
+    let reply = vec![init(PermissionMode::Agente), done(1)];
+    let (mut chat, sent) = fake_chat(true, reply);
+    chat.tick();
+
+    // Tab completa o comando do padrão do router; os argumentos vão juntos.
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/cont");
+    press(&mut chat, KeyCode::Tab);
+    type_text(&mut chat, "model=opus");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow().last().unwrap().0, "/context model=opus");
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::User("/context model=opus".into()))
+    );
+    assert_eq!(chat.input.text(), "");
+    // Um comando não arma a auto compactação.
+    assert!(!chat.auto_compact_armed);
+    chat.tick();
+    assert!(chat.run.is_none());
+
+    // Escrito sem argumentos, um comando com interface roda a interface.
+    type_text(&mut chat, "/clear ");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow().len(), 1);
+    assert_eq!(
+        chat.history.entries(),
+        [Entry::Info("Nova conversa.".into())]
+    );
+}
+
+#[test]
 fn login_is_a_terra_command_that_runs_the_provider_login() {
     let (mut chat, _) = fake_chat(true, Vec::new());
     chat.tick();
