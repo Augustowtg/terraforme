@@ -4,6 +4,14 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.15] - 2026-10-27
+
+### Adicionado
+
+- Configuração **Interface** na aba Config (salva como `"interface"` no `config.json` do workspace):
+  - **Agente Terraforme** (padrão): o chat e o input do terra, como antes;
+  - **Original do provedor**: a aba Chat abre a interface original do provedor (o `claude` interativo) no diretório do workspace, ao iniciar e com `Enter`, com a conta, o modelo, o esforço e o modo inicial da Config (o Yolo vira `bypassPermissions`). Ao sair dele, a tela do terra volta.
+
 ## [0.4.14] - 2026-10-27
 
 ### Alterado

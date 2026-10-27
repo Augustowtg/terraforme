@@ -207,6 +207,7 @@ fn settings_choose_start_mode_and_model() {
         model: Some("haiku".into()),
         account: None,
         effort: None,
+        interface: Default::default(),
     };
     let (mut chat, sent) = fake_chat_with(true, vec![done(1)], &settings);
     assert_eq!(chat.permission_mode, PermissionMode::Plan);
