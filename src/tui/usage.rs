@@ -218,13 +218,14 @@ fn window_lines(window: &UsageWindow, bar: usize, tz: &TimeZone, now: i64) -> Ve
     let style = level_style(window.percent);
     let filled = ((window.percent / 100.0) * bar as f64).round() as usize;
     let filled = filled.min(bar);
-    let reset = match window.resets_at {
-        Some(at) => format!(
+    let reset = match (&window.detail, window.resets_at) {
+        (Some(detail), _) => detail.clone(),
+        (None, Some(at)) => format!(
             "Reseta {} · zera em {}",
             format_date(at, tz),
             format_remaining(at - now)
         ),
-        None => "Sem horário para zerar".to_string(),
+        (None, None) => "Sem horário para zerar".to_string(),
     };
     vec![
         indent(Span::styled(window.label.clone(), theme::text())),
@@ -312,6 +313,7 @@ mod tests {
             label: "Sessão (5 h)".into(),
             percent: 25.0,
             resets_at: Some(1_793_124_000),
+            detail: None,
         };
         let lines = window_lines(&window, 20, &tz, 1_793_124_000 - (2 * 3600 + 13 * 60));
         assert_eq!(text(&lines[0]), "  Sessão (5 h)");

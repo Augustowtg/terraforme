@@ -115,10 +115,11 @@ fn read_credentials(config_dir: &Path) -> Result<Credentials, String> {
 
 /// A resposta do endpoint: cada janela tem `utilization` (0–100) e
 /// `resets_at` (ISO 8601); janelas que não valem para o plano vêm `null`.
+/// O crédito extra entra no fim, só quando a conta o tem ativo.
 fn parse(body: &str, plan: Option<String>) -> Result<Usage, String> {
     let json: Value =
         serde_json::from_str(body).map_err(|_| "resposta inválida do Claude".to_string())?;
-    let windows = WINDOWS
+    let mut windows: Vec<UsageWindow> = WINDOWS
         .iter()
         .filter_map(|(key, label)| {
             let window = &json[key];
@@ -129,10 +130,65 @@ fn parse(body: &str, plan: Option<String>) -> Result<Usage, String> {
                     .as_str()
                     .and_then(|s| s.parse::<jiff::Timestamp>().ok())
                     .map(|t| t.as_second()),
+                detail: None,
             })
         })
         .collect();
+    windows.extend(extra_usage(&json["extra_usage"]));
     Ok(Usage { plan, windows })
+}
+
+/// O crédito extra (cobrado quando os limites do plano acabam): o gasto do
+/// mês contra o limite mensal, os dois em centavos (`decimal_places`).
+fn extra_usage(extra: &Value) -> Option<UsageWindow> {
+    if extra["is_enabled"] != true {
+        return None;
+    }
+    let limit = extra["monthly_limit"].as_f64()?;
+    let used = extra["used_credits"].as_f64().unwrap_or(0.0);
+    let percent = extra["utilization"]
+        .as_f64()
+        .or_else(|| (limit > 0.0).then(|| used / limit * 100.0))?
+        .clamp(0.0, 100.0);
+    let places = extra["decimal_places"].as_u64().unwrap_or(2) as i32;
+    let currency = extra["currency"].as_str().unwrap_or("USD");
+    let money = |minor: f64| format_money(minor / 10f64.powi(places), currency, places);
+    let mut detail = format!("{} de {} usados no mês", money(used), money(limit));
+    if extra["spend_limit_reached"] == true {
+        detail.push_str(" · limite atingido");
+    }
+    Some(UsageWindow {
+        label: "Crédito extra (mensal)".to_string(),
+        percent,
+        resets_at: None,
+        detail: Some(detail),
+    })
+}
+
+/// `US$ 1.234,56`: símbolo da moeda e número no formato brasileiro.
+fn format_money(value: f64, currency: &str, places: i32) -> String {
+    let symbol = match currency {
+        "USD" => "US$",
+        "BRL" => "R$",
+        "EUR" => "€",
+        other => other,
+    };
+    let places = places.max(0) as usize;
+    let text = format!("{value:.places$}");
+    let (int, frac) = text.split_once('.').unwrap_or((&text, ""));
+    let digits: Vec<char> = int.chars().collect();
+    let mut grouped = String::new();
+    for (i, c) in digits.iter().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push('.');
+        }
+        grouped.push(*c);
+    }
+    if frac.is_empty() {
+        format!("{symbol} {grouped}")
+    } else {
+        format!("{symbol} {grouped},{frac}")
+    }
 }
 
 fn capitalize(s: &str) -> String {
@@ -165,13 +221,54 @@ mod tests {
                     label: "Sessão (5 h)".into(),
                     percent: 42.5,
                     resets_at: Some(1_793_124_000),
+                    detail: None,
                 },
                 UsageWindow {
                     label: "Semana (todos os modelos)".into(),
                     percent: 100.0,
                     resets_at: None,
+                    detail: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn shows_extra_credit_only_when_enabled() {
+        let body = r#"{
+            "five_hour": {"utilization": 7, "resets_at": null},
+            "extra_usage": {"is_enabled": true, "monthly_limit": 4000, "used_credits": 178.0,
+                "utilization": 4.45, "currency": "USD", "decimal_places": 2,
+                "spend_limit_reached": false}
+        }"#;
+        let usage = parse(body, None).unwrap();
+        assert_eq!(
+            usage.windows.last(),
+            Some(&UsageWindow {
+                label: "Crédito extra (mensal)".into(),
+                percent: 4.45,
+                resets_at: None,
+                detail: Some("US$ 1,78 de US$ 40,00 usados no mês".into()),
+            })
+        );
+
+        let disabled = body.replace(r#""is_enabled": true"#, r#""is_enabled": false"#);
+        assert_eq!(parse(&disabled, None).unwrap().windows.len(), 1);
+        let missing = r#"{"five_hour": {"utilization": 7, "resets_at": null}}"#;
+        assert_eq!(parse(missing, None).unwrap().windows.len(), 1);
+    }
+
+    #[test]
+    fn extra_credit_shows_when_limit_is_reached() {
+        let extra = serde_json::json!({
+            "is_enabled": true, "monthly_limit": 123456, "used_credits": 123456,
+            "currency": "BRL", "decimal_places": 2, "spend_limit_reached": true
+        });
+        let window = extra_usage(&extra).unwrap();
+        assert_eq!(window.percent, 100.0);
+        assert_eq!(
+            window.detail.as_deref(),
+            Some("R$ 1.234,56 de R$ 1.234,56 usados no mês · limite atingido")
         );
     }
 
