@@ -86,7 +86,8 @@ impl Db {
         Self::init(conn)
     }
 
-    #[cfg(test)]
+    /// Um banco só desta execução: o terra abre mesmo sem conseguir abrir o
+    /// `terra.sqlite`.
     pub fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }

@@ -51,22 +51,46 @@ struct WorkspaceArgs {
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Cli => {
-            let db = Db::open_default()?;
-            let dir = current_dir()?;
-            db.touch_recent(&dir)?;
-            // As configurações do agente são do workspace: o nome salvo deste
-            // diretório ou, sem um, o nome da pasta.
-            let name = db
-                .workspace_name(&dir)?
-                .unwrap_or_else(|| db::default_name(&dir));
-            let config = settings::config_file(&db::data_dir()?, &name);
-            tui::run_app(db, dir, config)?;
-        }
+        Command::Cli => open_app()?,
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,
     }
     Ok(())
+}
+
+/// Abre a tela principal. Ela sempre abre: um problema com o banco, o
+/// diretório ou o home vira um aviso no chat, e o que faltou fica só nesta
+/// execução (banco em memória, configurações numa pasta temporária).
+fn open_app() -> Result<()> {
+    let mut warnings = Vec::new();
+    let mut warn = |err: anyhow::Error| warnings.push(format!("{err:#}"));
+    let db = match Db::open_default() {
+        Ok(db) => db,
+        Err(err) => {
+            warn(err.context("o terra abriu sem o banco; recentes e salvos não serão gravados"));
+            Db::open_in_memory()?
+        }
+    };
+    let dir = current_dir().unwrap_or_else(|err| {
+        warn(err);
+        env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    });
+    if let Err(err) = db.touch_recent(&dir) {
+        warn(err);
+    }
+    // As configurações do agente são do workspace: o nome salvo deste
+    // diretório ou, sem um, o nome da pasta.
+    let name = db
+        .workspace_name(&dir)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| db::default_name(&dir));
+    let root = db::data_dir().unwrap_or_else(|err| {
+        warn(err);
+        env::temp_dir().join(".terraforme")
+    });
+    let config = settings::config_file(&root, &name);
+    tui::run_app(db, dir, config, warnings)
 }
 
 fn save_workspace(name: Option<&str>) -> Result<()> {

@@ -145,6 +145,11 @@ impl App {
         }
     }
 
+    /// Um problema ao abrir (ex.: sem o banco), mostrado no chat.
+    pub fn warn(&mut self, message: String) {
+        self.chat.warn(message);
+    }
+
     /// Ao sair, pergunta se salva o workspace: só quando ele não está salvo e
     /// ninguém escolheu "não perguntar novamente".
     fn asks_to_save(&self) -> bool {
@@ -404,6 +409,9 @@ impl App {
 
     /// Avança as animações; chamado a cada tick do loop.
     pub fn tick(&mut self) {
+        for reason in crate::agent::guard::take_panics() {
+            self.chat.provider_failed(&reason);
+        }
         self.chat
             .set_caps_lock(keyboard::caps_lock().unwrap_or(false));
         self.chat.tick();
