@@ -51,6 +51,9 @@ pub struct Request<'a> {
     /// que decide os pedidos de permissão do agente, no lugar de negá-los
     /// (ex.: num chat delegado, quem delegou decide).
     pub permission_tool: Option<(&'a str, &'a str)>,
+    /// Ferramentas liberadas só nesta mensagem: os `allow` dos
+    /// [`AgentEvent::Blocked`] que o usuário permitiu.
+    pub allowed_tools: &'a [String],
 }
 
 /// Uma conta do provedor que pode ser escolhida na Config.

@@ -512,6 +512,11 @@ impl Run {
             &settings,
         ));
         cmd.args(mcp_args(request.extensions));
+        // As ferramentas que o usuário liberou depois de o modo bloquear: uma
+        // regra por argumento, porque a do Bash tem espaços.
+        if !request.allowed_tools.is_empty() {
+            cmd.arg("--allowedTools").args(request.allowed_tools);
+        }
         if let (false, Some((server, tool))) = (auto_allow, request.permission_tool) {
             cmd.args([
                 "--permission-prompt-tool",
@@ -897,6 +902,7 @@ mod tests {
             effort: None,
             extensions: &Contribution::default(),
             permission_tool: None,
+            allowed_tools: &[],
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
         assert!(adapter.accounts().is_empty());

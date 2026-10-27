@@ -38,6 +38,17 @@ pub enum AgentEvent {
         name: String,
         detail: String,
     },
+    /// O modo do agente bloqueou uma ferramenta sem perguntar (ex.: o
+    /// classificador do modo Agente). O agente segue sem ela; se o usuário
+    /// permitir, `allow` vai em
+    /// [`Request::allowed_tools`](super::Request::allowed_tools) numa
+    /// mensagem nova, que libera a ferramenta.
+    Blocked {
+        name: String,
+        detail: String,
+        reason: String,
+        allow: String,
+    },
     /// Resultado de uma ferramenta (primeira linha).
     ToolResult { is_error: bool, summary: String },
     /// Tamanho do contexto da sessão na última chamada ao modelo (entrada e
