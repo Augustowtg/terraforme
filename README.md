@@ -58,7 +58,8 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Tab` | Troca de aba (Chat, Consumo, Config) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
-| `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Tab`/`Enter` executam; cada comando é uma interface do terra (hoje, `/clear`: conversa nova), e os que ainda não têm aparecem esmaecidos |
+| `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Tab`/`Enter` executam; cada comando é uma interface do terra (hoje, `/clear`: conversa nova; `/model`: modelo e esforço), e os que ainda não têm aparecem esmaecidos |
+| `/model` | Escolhe o modelo e o esforço desta conversa (`↑`/`↓` modelo, `←`/`→` esforço, `Enter` escolhe). O item Default abre o menu do modelo padrão, que fica salvo |
 | `@` (escrevendo) | Abre a lista de arquivos e pastas do diretório, filtrada pelo que vier depois do `@` e atualizada em tempo real. `↑`/`↓` escolhem, `Tab`/`Enter` inserem o caminho como um badge cinza (`@/src/main.rs`), `Esc` fecha |
 | `Esc` no modo NORMAL, com o Claude respondendo | Interrompe a resposta |
 | `PageUp` / `PageDown`, roda do mouse | Rola o histórico do chat (a barra de rolagem aparece ao rolar e some 2 s depois) |
@@ -182,6 +183,7 @@ src/
         │   └── tests.rs
         ├── mention.rs    # menções de arquivo com @: lista, filtro e badge
         ├── commands.rs   # comandos com /: lista do agente e interfaces do terra
+        ├── model_menu.rs # interface do /model: modelo e esforço
         ├── history.rs    # histórico: quebra de linha, rolagem, seleção
         └── tests.rs      # testes do Chat (com um adapter de mentira)
 ```
