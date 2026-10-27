@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.15] - 2026-10-27
+
+### Adicionado
+
+- Instalação direto do GitHub, sem clonar o repositório: `curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.sh | bash` (Linux ou Git Bash) e `irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex` (PowerShell, que roda o instalador no Git Bash). O `install.sh` baixa o código de `TERRAFORME_REF` (padrão: `main`) e chama o `install-linux.sh` ou o `install-win.sh`, com as teclas lidas do terminal; `bash -s -- -y` instala sem a pergunta.
+
 ## [0.8.14] - 2026-10-27
 
 ### Adicionado
