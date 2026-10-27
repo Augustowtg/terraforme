@@ -1,24 +1,37 @@
 //! Aba Config: as configurações do terra, em seções (como as seções Recentes
-//! e Salvos do navegador de workspaces). Hoje há a seção Agente e, dentro
-//! dela, separada por uma linha, a do Contexto.
+//! e Salvos do navegador de workspaces). Há a seção Agente e, dentro dela,
+//! separada por uma linha, a do Contexto; à direita (embaixo, em telas
+//! estreitas), a seção Extensões.
 //!
 //! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor; a
-//! tela principal salva e aplica a mudança.
+//! tela principal salva e aplica a mudança. `Shift+Tab` alterna entre o
+//! Agente e as Extensões. Nas Extensões, a lista é paginada (como a dos
+//! modelos do `/model`, mas com páginas): `↑`/`↓` escolhem, `←`/`→` trocam
+//! de página e `Espaço` (ou `Enter`) liga ou desliga a extensão.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
 
 use super::chat::compact_count;
 use crate::agent::{AccountOption, ChatAdapter, ModelOption};
-use crate::settings::{AgentSettings, ContextSettings, Interface, StartMode};
+use crate::extension::Status;
+use crate::settings::{AgentSettings, ContextSettings, ExtensionSettings, Interface, StartMode};
 use crate::theme::{self, Variant};
 
-pub const HELP: &str = "↑/↓ escolher · ←/→ ou Enter alterar · Tab trocar aba · Esc ir para Sair";
+const HELP: &str =
+    "↑/↓ escolher · ←/→ ou Enter alterar · Shift+Tab extensões · Tab trocar aba · Esc ir para Sair";
+const HELP_EXTENSIONS: &str = "↑/↓ escolher · Espaço ativar · ←/→ página · Shift+Tab agente · Tab trocar aba · Esc ir para Sair";
 /// Largura da coluna dos nomes das configurações.
 const LABEL_WIDTH: usize = 18;
+/// Extensões em cada página.
+const PAGE: usize = 5;
+/// Largura mínima da seção Extensões ao lado do Agente; com menos, ela fica
+/// embaixo.
+const EXTENSIONS_MIN_WIDTH: u16 = 40;
 
 /// Uma configuração que pode ser alterada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,12 +60,24 @@ const FIELDS: [Field; 8] = [
 const CONTEXT_START: usize = 4;
 
 /// As opções que vêm do provedor: contas e modelos, e o limite de contexto
-/// do modelo (para mostrar em tokens o ponto de compactar).
+/// do modelo (para mostrar em tokens o ponto de compactar). E as extensões
+/// do registro.
 #[derive(Debug, Default, Clone)]
 pub struct Choices {
     pub accounts: Vec<AccountOption>,
     pub models: Vec<ModelOption>,
     pub context_window: u64,
+    pub extensions: Vec<ExtensionOption>,
+}
+
+/// Uma extensão que pode ser ativada na seção Extensões.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionOption {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub homepage: String,
+    pub status: Status,
 }
 
 /// O que a Config fez com uma tecla.
@@ -60,23 +85,54 @@ pub struct Choices {
 pub enum Outcome {
     Ignored,
     Moved,
-    /// Um valor mudou: salvar e aplicar.
+    /// Um valor do Agente mudou: salvar e aplicar.
     Changed,
+    /// Uma extensão foi ligada ou desligada: salvar e aplicar.
+    ExtensionsChanged,
+}
+
+/// A seção em foco.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    #[default]
+    Agent,
+    Extensions,
 }
 
 #[derive(Default)]
 pub struct ConfigView {
+    section: Section,
     /// Posição em [`FIELDS`].
     focus: usize,
+    /// Posição na lista das extensões.
+    extension: usize,
 }
 
 impl ConfigView {
+    pub fn help(&self) -> &'static str {
+        match self.section {
+            Section::Agent => HELP,
+            Section::Extensions => HELP_EXTENSIONS,
+        }
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
         settings: &mut AgentSettings,
+        extensions: &mut ExtensionSettings,
         choices: &Choices,
     ) -> Outcome {
+        if key.code == KeyCode::BackTab {
+            self.section = match self.section {
+                Section::Agent => Section::Extensions,
+                Section::Extensions => Section::Agent,
+            };
+            return Outcome::Moved;
+        }
+        if self.section == Section::Extensions {
+            return self.handle_extension_key(key, extensions, &choices.extensions);
+        }
         let last = FIELDS.len() - 1;
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.focus = self.focus.saturating_sub(1),
@@ -94,11 +150,52 @@ impl ConfigView {
         Outcome::Moved
     }
 
+    /// `↑`/`↓` andam pela lista (trocando de página), `←`/`→` trocam de
+    /// página e `Espaço`/`Enter` ligam ou desligam. Uma extensão que não
+    /// está instalada não liga, mas desliga.
+    fn handle_extension_key(
+        &mut self,
+        key: KeyEvent,
+        settings: &mut ExtensionSettings,
+        options: &[ExtensionOption],
+    ) -> Outcome {
+        let Some(last) = options.len().checked_sub(1) else {
+            return match key.code {
+                KeyCode::Tab | KeyCode::Esc => Outcome::Ignored,
+                _ => Outcome::Moved,
+            };
+        };
+        self.extension = self.extension.min(last);
+        let page = self.extension / PAGE;
+        let pages = last / PAGE;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.extension = self.extension.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.extension = (self.extension + 1).min(last),
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.extension = page.saturating_sub(1) * PAGE;
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.extension = ((page + 1).min(pages) * PAGE).min(last);
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                let option = &options[self.extension];
+                if !option.status.is_installed() && !settings.is_enabled(&option.id) {
+                    return Outcome::Moved;
+                }
+                settings.toggle(&option.id);
+                return Outcome::ExtensionsChanged;
+            }
+            _ => return Outcome::Ignored,
+        }
+        Outcome::Moved
+    }
+
     pub fn draw(
         &self,
         frame: &mut Frame,
         area: Rect,
         settings: &AgentSettings,
+        extensions: &ExtensionSettings,
         adapter: Option<&dyn ChatAdapter>,
         choices: &Choices,
     ) {
@@ -115,9 +212,10 @@ impl ConfigView {
             Line::styled(" Agente", theme::section_title()),
             info_row("Provedor", provider),
         ];
+        let agent_focus = self.section == Section::Agent;
         let row = |i: usize, field: Field| {
             let value = value_label(field, settings, choices);
-            field_row(field_label(field), value, i == self.focus)
+            field_row(field_label(field), value, agent_focus && i == self.focus)
         };
         let (agent, context) = FIELDS.split_at(CONTEXT_START);
         lines.extend(agent.iter().enumerate().map(|(i, f)| row(i, *f)));
@@ -131,10 +229,110 @@ impl ConfigView {
         lines.push(separator(width.unwrap_or(0)));
         lines.push(Line::styled(" Contexto", theme::section_title()));
         lines.extend(context);
+
+        let extension_lines = self.extension_lines(extensions, &choices.extensions);
+        // A seção Agente com o recuo (1) e a folga (2) do bloco.
+        let agent_width = width.unwrap_or(0) as u16 + 3;
+        let (agent_area, extensions_area) = if area.width >= agent_width + EXTENSIONS_MIN_WIDTH {
+            let [left, right] =
+                Layout::horizontal([Constraint::Length(agent_width), Constraint::Fill(1)])
+                    .areas(area);
+            (left, right)
+        } else {
+            let [top, bottom] = Layout::vertical([
+                Constraint::Length(lines.len() as u16 + 1),
+                Constraint::Fill(1),
+            ])
+            .areas(area);
+            (top, bottom)
+        };
         frame.render_widget(
             Paragraph::new(lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
-            area,
+            agent_area,
         );
+        frame.render_widget(
+            Paragraph::new(extension_lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
+            extensions_area,
+        );
+    }
+
+    /// A seção Extensões: a página da extensão em foco, como a lista do
+    /// `/model` (`1. RTK - descrição`), com `[x]` nas ativas, os detalhes da
+    /// que está em foco e a página.
+    fn extension_lines(
+        &self,
+        settings: &ExtensionSettings,
+        options: &[ExtensionOption],
+    ) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::styled(" Extensões", theme::section_title())];
+        if options.is_empty() {
+            lines.push(Line::styled(
+                "  Nenhuma extensão disponível.",
+                theme::muted(),
+            ));
+            return lines;
+        }
+        let focused = self.section == Section::Extensions;
+        let current = self.extension.min(options.len() - 1);
+        let page = current / PAGE;
+        let pages = options.len().div_ceil(PAGE);
+        for (i, option) in options.iter().enumerate().skip(page * PAGE).take(PAGE) {
+            let enabled = settings.is_enabled(&option.id);
+            let check = if enabled { "[x]" } else { "[ ]" };
+            let text = format!("{}. {} - {}", i + 1, option.name, option.description);
+            lines.push(if focused && i == current {
+                Line::from(vec![
+                    Span::raw(format!("{} ", theme::FOCUS_MARKER)),
+                    Span::raw(format!("{check} {text}")),
+                ])
+                .style(theme::variant(Variant::Success).add_modifier(Modifier::BOLD))
+            } else {
+                let check_style = if enabled {
+                    theme::variant(Variant::Success)
+                } else {
+                    theme::muted()
+                };
+                let text_style = if option.status.is_installed() {
+                    theme::text()
+                } else {
+                    theme::muted()
+                };
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(check, check_style),
+                    Span::styled(format!(" {text}"), text_style),
+                ])
+            });
+        }
+        lines.push(Line::styled(
+            format!("  ‹ Página {}/{pages} ›", page + 1),
+            theme::muted(),
+        ));
+        lines.push(Line::default());
+
+        let option = &options[current];
+        let state = if settings.is_enabled(&option.id) {
+            Span::styled("ativa neste workspace", theme::variant(Variant::Success))
+        } else {
+            Span::styled("inativa", theme::muted())
+        };
+        let status = match &option.status {
+            Status::Installed { version: Some(v) } => {
+                Span::styled(format!("{} {v} · ", option.name), theme::text())
+            }
+            Status::Installed { version: None } => {
+                Span::styled(format!("{} · ", option.name), theme::text())
+            }
+            Status::Missing => {
+                Span::styled(format!("{} não instalada · ", option.name), theme::error())
+            }
+        };
+        lines.push(Line::from(vec![Span::raw("  "), status, state]));
+        lines.push(Line::styled(
+            format!("  {}", option.homepage),
+            theme::path(),
+        ));
+        lines
     }
 }
 
@@ -335,6 +533,7 @@ mod tests {
                 })
                 .collect(),
             context_window: 200_000,
+            extensions: Vec::new(),
         }
     }
 
@@ -342,8 +541,138 @@ mod tests {
         view.handle_key(
             KeyEvent::new(code, KeyModifiers::NONE),
             settings,
+            &mut ExtensionSettings::default(),
             &choices(),
         )
+    }
+
+    fn extension_options(n: usize) -> Vec<ExtensionOption> {
+        (1..=n)
+            .map(|i| ExtensionOption {
+                id: format!("ext{i}"),
+                name: format!("Ext{i}"),
+                description: format!("faz {i}"),
+                homepage: format!("https://ext{i}"),
+                status: if i == 2 {
+                    Status::Missing
+                } else {
+                    Status::Installed {
+                        version: Some("1.0".into()),
+                    }
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shift_tab_moves_to_extensions_where_space_toggles_and_arrows_page() {
+        let mut view = ConfigView::default();
+        let mut settings = AgentSettings::default();
+        let mut extensions = ExtensionSettings::default();
+        let choices = Choices {
+            extensions: extension_options(7),
+            ..choices()
+        };
+        let mut press = |view: &mut ConfigView, code: KeyCode| {
+            view.handle_key(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut settings,
+                &mut extensions,
+                &choices,
+            )
+        };
+        assert_eq!(press(&mut view, KeyCode::BackTab), Outcome::Moved);
+        assert_eq!(view.help(), HELP_EXTENSIONS);
+        assert_eq!(
+            press(&mut view, KeyCode::Char(' ')),
+            Outcome::ExtensionsChanged
+        );
+        press(&mut view, KeyCode::Down);
+        // A segunda não está instalada: não liga.
+        assert_eq!(press(&mut view, KeyCode::Char(' ')), Outcome::Moved);
+        // → vai para a próxima página; ← volta para o começo da anterior.
+        press(&mut view, KeyCode::Right);
+        assert_eq!(view.extension, 5);
+        press(&mut view, KeyCode::Right);
+        assert_eq!(view.extension, 5, "na última página fica");
+        press(&mut view, KeyCode::Down);
+        press(&mut view, KeyCode::Down);
+        assert_eq!(view.extension, 6, "a última fica");
+        press(&mut view, KeyCode::Enter);
+        press(&mut view, KeyCode::Left);
+        assert_eq!(view.extension, 0);
+        press(&mut view, KeyCode::Char(' '));
+        assert_eq!(press(&mut view, KeyCode::Tab), Outcome::Ignored);
+        assert_eq!(press(&mut view, KeyCode::BackTab), Outcome::Moved);
+        assert_eq!(view.help(), HELP);
+        assert_eq!(extensions.enabled, ["ext7"]);
+        assert_eq!(settings, AgentSettings::default());
+    }
+
+    #[test]
+    fn missing_extension_can_still_be_turned_off() {
+        let mut view = ConfigView {
+            section: Section::Extensions,
+            extension: 1,
+            ..ConfigView::default()
+        };
+        let mut extensions = ExtensionSettings {
+            enabled: vec!["ext2".into()],
+        };
+        let outcome = view.handle_key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut AgentSettings::default(),
+            &mut extensions,
+            &Choices {
+                extensions: extension_options(2),
+                ..choices()
+            },
+        );
+        assert_eq!(outcome, Outcome::ExtensionsChanged);
+        assert!(extensions.enabled.is_empty());
+    }
+
+    #[test]
+    fn draws_extensions_page_beside_the_agent() {
+        let view = ConfigView {
+            section: Section::Extensions,
+            extension: 6,
+            ..ConfigView::default()
+        };
+        let extensions = ExtensionSettings {
+            enabled: vec!["ext7".into()],
+        };
+        let choices = Choices {
+            extensions: extension_options(7),
+            ..choices()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(110, 15)).unwrap();
+        terminal
+            .draw(|frame| {
+                let settings = AgentSettings::default();
+                view.draw(frame, frame.area(), &settings, &extensions, None, &choices)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| {
+            (0..110)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        assert!(row(1).ends_with("  Extensões"), "{}", row(1));
+        assert!(row(2).ends_with("[ ] 6. Ext6 - faz 6"), "{}", row(2));
+        assert!(row(3).ends_with("▌ [x] 7. Ext7 - faz 7"), "{}", row(3));
+        assert!(row(4).ends_with("‹ Página 2/2 ›"), "{}", row(4));
+        assert!(
+            row(6).ends_with("Ext7 1.0 · ativa neste workspace"),
+            "{}",
+            row(6)
+        );
+        assert!(row(7).ends_with("https://ext7"), "{}", row(7));
+        // Sem foco no Agente: a Conta não tem o marcador.
+        assert!(row(3).starts_with("   Conta"), "{}", row(3));
     }
 
     #[test]
@@ -424,6 +753,7 @@ mod tests {
     fn context_settings_toggle_and_cycle() {
         let mut view = ConfigView {
             focus: CONTEXT_START,
+            ..ConfigView::default()
         };
         let mut settings = AgentSettings::default();
         press(&mut view, &mut settings, KeyCode::Enter);
@@ -478,7 +808,17 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
         terminal
-            .draw(|frame| view.draw(frame, frame.area(), &settings, None, &choices()))
+            .draw(|frame| {
+                let extensions = ExtensionSettings::default();
+                view.draw(
+                    frame,
+                    frame.area(),
+                    &settings,
+                    &extensions,
+                    None,
+                    &choices(),
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let row = |y: u16| {

@@ -34,6 +34,7 @@ use super::widgets::badge;
 use crate::agent::{
     self, AgentEvent, Catalog, ChatAdapter, PermissionMode, ReportedMode, Request, Session,
 };
+use crate::extension::Contribution;
 use crate::platform::clipboard;
 use crate::settings::{AgentSettings, ContextSettings, StartMode};
 use crate::theme::{self, Variant};
@@ -85,6 +86,8 @@ pub struct Chat {
     default_choice: Option<(String, Option<String>)>,
     /// Conta escolhida na Config (`None` é a Default do provedor).
     account: Option<String>,
+    /// O que as extensões ativas no workspace acrescentam ao agente.
+    extensions: Contribution,
     /// Sessão do agente, para continuar a conversa.
     session_id: Option<String>,
     /// Resposta em andamento.
@@ -135,6 +138,7 @@ impl Default for Chat {
             open_usage: false,
             default_choice: None,
             account: None,
+            extensions: Contribution::default(),
             session_id: None,
             run: None,
             requested_mode: None,
@@ -251,6 +255,16 @@ impl Chat {
     }
 
     /// O provedor do chat, para a Config mostrar e oferecer as opções dele.
+    /// As extensões ativas mudaram: valem a partir da próxima mensagem.
+    pub fn set_extensions(&mut self, extensions: Contribution) {
+        self.extensions = extensions;
+    }
+
+    /// O que as extensões ativas acrescentam ao agente.
+    pub fn extensions(&self) -> &Contribution {
+        &self.extensions
+    }
+
     pub fn adapter(&self) -> Option<&dyn ChatAdapter> {
         self.adapter.as_deref()
     }
@@ -646,6 +660,7 @@ impl Chat {
                 .session_effort
                 .as_deref()
                 .or(self.default_effort.as_deref()),
+            extensions: &self.extensions,
         });
         let ok = started.is_ok();
         match started {

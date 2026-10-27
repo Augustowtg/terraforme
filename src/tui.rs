@@ -4,6 +4,7 @@
 mod app;
 mod chat;
 mod config;
+mod extensions;
 mod login;
 mod term;
 mod usage;

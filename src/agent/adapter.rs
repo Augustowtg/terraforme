@@ -11,6 +11,7 @@ use std::process::Command;
 use std::sync::mpsc::Receiver;
 
 use super::{AgentEvent, PermissionMode};
+use crate::extension::Contribution;
 
 /// Uma mensagem para o agente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,8 @@ pub struct Request<'a> {
     pub account: Option<&'a str>,
     /// Nível de esforço (um dos [`ModelInfo::efforts`]); `None` usa o padrão.
     pub effort: Option<&'a str>,
+    /// O que as extensões ativas no workspace acrescentam ao agente.
+    pub extensions: &'a Contribution,
 }
 
 /// Uma conta do provedor que pode ser escolhida na Config.
@@ -142,6 +145,8 @@ pub struct Interactive<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub mode: Option<PermissionMode>,
+    /// O que as extensões ativas no workspace acrescentam ao agente.
+    pub extensions: Option<&'a Contribution>,
 }
 
 /// Um provedor de agente para o chat.

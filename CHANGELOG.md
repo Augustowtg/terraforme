@@ -4,6 +4,20 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.6.0] - 2026-10-27
+
+### Adicionado
+
+- **Extensões**: aplicações secundárias que melhoram o agente do chat. Cada uma é uma estratégia (padrão **Strategy**, o trait `Extension`) registrada num **Registry**: diz se está instalada, o que acrescenta ao agente (hooks e servidores MCP) e o relatório que mostra. Para adicionar uma, basta implementar o trait e incluí-la em `extension::extensions::all`. As primeiras:
+  - **[RTK](https://github.com/rtk-ai/rtk)**: o hook `PreToolUse` do Bash (`rtk hook claude`) enxuga a saída dos comandos antes de ela chegar ao agente.
+  - **[ai-memory](https://github.com/akitaonrails/ai-memory)**: o servidor MCP e os hooks do ciclo de vida que o próprio `ai-memory` informa para o Claude Code, para a memória de longo prazo entre sessões.
+- Seção **Extensões** na aba Config, à direita da seção Agente (embaixo, em telas estreitas): a lista das extensões no estilo da lista de modelos (`1. RTK - descrição`), com `[x]` nas ativas, **paginada** (5 por página, `←`/`→` trocam de página). `Espaço` (ou `Enter`) ativa ou desativa a extensão; `Shift+Tab` alterna entre o Agente e as Extensões. As ativas ficam em `extensions.enabled` no `config.json` do workspace (sem a chave, nenhuma). Uma extensão que não está instalada não pode ser ativada.
+- Aba **Extensões** na barra de abas, entre Consumo e Config: a lista das extensões (ativa, inativa ou não instalada) e o relatório da escolhida com `↑`/`↓`: no RTK, os tokens economizados (total, economia média, comandos) e o gráfico dos tokens economizados por dia; no ai-memory, páginas, sessões, observações, tamanho do banco e o estado dos embeddings e do LLM. Carrega ao abrir a aba, atualiza a cada minuto com ela aberta e com `r`.
+
+### Alterado
+
+- Com extensões ativas, as mensagens do chat levam os servidores MCP delas (`--mcp-config`, ainda com o `--strict-mcp-config`) e os hooks delas (`--settings`). Com uma extensão de hooks ativa, o `disableAllHooks` sai, porque ele desliga até os hooks do `--settings`: os hooks do Claude Code do usuário também passam a rodar. A Interface **Original do provedor** também abre com as extensões ativas.
+
 ## [0.5.11] - 2026-10-27
 
 ### Alterado

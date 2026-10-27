@@ -46,7 +46,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | Comando | O que faz |
 | --- | --- |
 | `terra --version` | Mostra a versão |
-| `terra cli` | Abre a interface com as abas Chat, Consumo e Config e registra o diretório atual em **Recentes** |
+| `terra cli` | Abre a interface com as abas Chat, Consumo, Extensões e Config e registra o diretório atual em **Recentes** |
 | `terra workspace` | Lista Recentes e Salvos; `Enter` entra no diretório escolhido |
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
@@ -55,7 +55,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 
 | Tecla | Ação |
 | --- | --- |
-| `Tab` | Troca de aba (Chat, Consumo, Config) |
+| `Tab` | Troca de aba (Chat, Consumo, Extensões, Config) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
 | `↑` / `↓` (escrevendo) | Mostram as mensagens já enviadas (desde que o terra abriu, de todas as sessões), da mais nova para a mais antiga. Com o texto em várias linhas, primeiro andam entre as linhas. Depois da mais nova, o `↓` volta ao que estava sendo escrito |
@@ -72,6 +72,9 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Esc` no modo INSERT | Volta ao modo NORMAL |
 | Mouse no input (aba Chat) | Clique posiciona o cursor; arrastar seleciona o texto (digitar substitui a seleção) |
 | `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 150K (30%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra vem oculta: para vê-la, troque o Display na seção Contexto da aba Config |
+| `↑` / `↓` (aba Extensões) | Escolhem a extensão; `r` atualiza o relatório dela |
+| `Shift+Tab` (aba Config) | Alterna entre a seção Agente e a seção Extensões |
+| `Espaço` (aba Config, Extensões) | Ativa ou desativa a extensão em foco neste workspace; `←`/`→` trocam de página |
 | `r` (aba Consumo) | Atualiza o consumo na hora (ele também se atualiza sozinho a cada minuto com a aba aberta) |
 | `c` ou clique nos botões (aba Consumo) | Alterna o gráfico Consumo por dia entre **Sem cache** (padrão) e **Com cache** |
 | Clique num dia (aba Consumo) | Mostra o consumo daquele dia por hora; **‹ Dias** ou `Esc` volta |
@@ -109,6 +112,19 @@ Ao lado das barras, com a mesma altura da seção dos limites (embaixo, em telas
 
 No Claude, os limites são os mesmos do `/usage` do Claude Code (sessão de 5 h e semana, mais Opus/Sonnet quando o plano tem), lidos do endpoint de uso com o token da conta escolhida na Config. Não chama o modelo nem gasta tokens; precisa do `curl` no `PATH`.
 
+### Aba Extensões
+
+Extensões são aplicações secundárias que melhoram o agente do chat. Hoje:
+
+| Extensão | O que faz | Como entra no agente |
+| --- | --- | --- |
+| [RTK](https://github.com/rtk-ai/rtk) | Filtra e comprime a saída dos comandos antes de ela chegar ao agente (60-90% menos tokens) | Hook `PreToolUse` do Bash (`rtk hook claude`), que troca o comando pelo do RTK (ex.: `git status` → `rtk git status`) |
+| [ai-memory](https://github.com/akitaonrails/ai-memory) | Memória de longo prazo entre sessões e agentes, num wiki versionado com git | Servidor MCP e hooks do ciclo de vida, os que o próprio `ai-memory install-mcp`/`install-hooks` imprime para o Claude Code |
+
+Cada extensão precisa estar instalada e no `PATH`; o terra não instala nem muda a configuração do Claude: ele só passa as extensões ativas para o agente, em cada mensagem (e para a Interface original do provedor).
+
+A aba lista as extensões (ativa, inativa ou não instalada) e mostra, da escolhida com `↑`/`↓`, a versão, o link e o relatório: no RTK, os tokens economizados (do `rtk gain`), com o gráfico dos tokens economizados por dia; no ai-memory, as páginas, sessões e observações guardadas, o tamanho do banco e o estado dos embeddings e do LLM (do `ai-memory status`). O relatório é carregado ao abrir a aba e atualizado a cada minuto com ela aberta; `r` atualiza na hora.
+
 ### Aba Config
 
 A seção **Agente** reúne as configurações do agente do chat, que são de cada workspace. `↑`/`↓` escolhem e `←`/`→` ou `Enter` trocam o valor; a mudança é salva e vale na hora.
@@ -124,7 +140,8 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
     "effort": "high",
     "interface": "terraforme",
     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 }
-  }
+  },
+  "extensions": { "enabled": ["rtk", "ai-memory"] }
 }
 ```
 
@@ -144,6 +161,8 @@ Dentro da seção Agente, separada por uma linha, fica a seção **Contexto**, d
 | Auto compactação | **Não** (o padrão) ou **Sim**: ao fim de uma resposta que deixou o contexto no ponto de compactar, o terra manda o `/compact` sozinho, no máximo uma vez por mensagem enviada (nunca depois de um `/compact`, nem quando o próprio agente já compactou a conversa naquela resposta) |
 | Limite de tokens | Um limite fixo, de 50K a 1M (padrão **200K**), ou **Do modelo** (o limite que o agente informa, ou 200K até ele informar). No `config.json`, `"limit"` aceita qualquer número de tokens, e `null` é o do modelo |
 | Compactar em | O ponto de compactar, de 50% a 95% do limite de tokens (padrão **75%**), com os tokens que ele representa (ex.: `75% · 150K tokens`). A barra vai até ele: fica laranja na metade, vermelha a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele |
+
+À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) ativa ou desativa a extensão neste workspace. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada não pode ser ativada. As ativas ficam em `extensions.enabled` no `config.json` e valem a partir da próxima mensagem; sem a chave, nenhuma.
 
 ### Navegação no `terra workspace`
 
@@ -180,6 +199,8 @@ Cada mensagem roda `claude -p` (entrada e saída em `stream-json`) no diretório
 | Plan Mode | `plan` |
 
 Para gastar menos tokens, o chat não carrega o ambiente do seu Claude Code: servidores MCP, skills e hooks ficam de fora (`--strict-mcp-config`, `--disable-slash-commands` e `disableAllHooks`). As ferramentas embutidas (Bash, Read, Edit, Write, Grep, WebFetch...) continuam disponíveis.
+
+As extensões ativas (aba Config) são a exceção: os servidores MCP delas entram com `--mcp-config` (continuam só eles, pelo `--strict-mcp-config`) e os hooks delas, no `--settings`. Com uma extensão de hooks ativa, o `disableAllHooks` sai (ele desliga até os hooks do `--settings`), então os hooks do seu Claude Code também rodam.
 
 O modo fica sincronizado com o agente, menos o Yolo, que é só do terra: nele o agente pede permissão e o terra aceita tudo. O `terra cli` começa no `permissions.defaultMode` configurado no Claude (settings local, do projeto ou do usuário), e a cada resposta confere o modo em que o agente diz estar; se for outro, o terminal passa a mostrar o modo real. Trocar com `Shift+Tab` durante uma resposta mostra `Modo: atual → próximo`, e o novo modo vale a partir da próxima mensagem. Com o agente ativo, o badge de modo fica sempre visível.
 
@@ -221,6 +242,12 @@ src/
 ├── main.rs, cli.rs, db.rs, theme.rs
 ├── settings.rs           # configurações da aba Config, salvas no banco
 ├── files.rs              # índice dos arquivos do diretório, atualizado em tempo real
+├── extension.rs          # extensões do agente (Strategy + Registry)
+│   ├── contract.rs       # Extension (a estratégia), Contribution e Report
+│   ├── registry.rs       # Registry: as extensões e o que as ativas acrescentam
+│   └── extensions.rs     # registro das extensões conhecidas
+│       ├── rtk.rs        # RTK: hook do Bash e o rtk gain
+│       └── ai_memory.rs  # ai-memory: MCP, hooks e o ai-memory status
 ├── agent.rs              # o agente por trás do chat (só o contrato)
 │   ├── adapter.rs        # ChatAdapter, Session e Request: o contrato
 │   ├── event.rs          # AgentEvent: o que volta de uma resposta
@@ -236,7 +263,8 @@ src/
 └── tui.rs                # loop da tela principal e do terminal
     ├── app.rs            # tela principal: abas, Sair e confirmação
     ├── workspace.rs      # navegador de workspaces
-    ├── config.rs         # aba Config: seção Agente
+    ├── config.rs         # aba Config: seções Agente e Extensões
+    ├── extensions.rs     # aba Extensões: relatório de cada extensão
     ├── widgets.rs → widgets/badge.rs, widgets/popup.rs
     └── chat.rs           # aba Chat: liga o adapter, histórico, input e badges
         ├── mode.rs       # como status e modo aparecem
@@ -254,8 +282,9 @@ src/
 | `src/cli.rs` | Argumentos (clap) e execução dos comandos |
 | `src/db.rs` | SQLite, canonicalização de paths e regras de nome |
 | `src/agent/` | Agente do chat: eventos e integração com o Claude CLI |
+| `src/extension/` | Extensões do agente: o contrato (Strategy), o Registry e as extensões |
 | `src/platform/` | Área de transferência e estado do teclado |
-| `src/tui/` | Telas ratatui: tela principal, chat, consumo, config e workspaces |
+| `src/tui/` | Telas ratatui: tela principal, chat, consumo, extensões, config e workspaces |
 | `src/theme.rs` | Cores do Catppuccin; troque `FLAVOR` para mudar de variante |
 
 ### Adicionar um provedor (route) ao chat
