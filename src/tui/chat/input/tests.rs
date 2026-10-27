@@ -443,6 +443,25 @@ fn slash_at_start_opens_commands_and_enter_returns_command() {
 }
 
 #[test]
+fn tab_completes_router_commands_to_take_arguments() {
+    let mut input = input_with_commands();
+    // Com interface no terra, o Tab roda o comando.
+    type_text(&mut input, "/cl");
+    assert_eq!(
+        press(&mut input, KeyCode::Tab),
+        Outcome::Command("clear".into())
+    );
+    // No padrão do router, ele completa o texto para os argumentos.
+    type_text(&mut input, "/con");
+    assert_eq!(press(&mut input, KeyCode::Tab), Outcome::Handled);
+    assert!(!input.picker_open());
+    assert_eq!(input.text(), "/context ");
+    type_text(&mut input, "all");
+    assert_eq!(input.text(), "/context all");
+    assert_eq!(press(&mut input, KeyCode::Enter), Outcome::Submit);
+}
+
+#[test]
 fn slash_in_the_middle_does_not_open_commands() {
     let mut input = input_with_commands();
     type_text(&mut input, "a/b");
@@ -456,7 +475,7 @@ fn commands_list_navigates_and_esc_keeps_the_text() {
     type_text(&mut input, "/");
     press(&mut input, KeyCode::Down);
     assert_eq!(
-        press(&mut input, KeyCode::Tab),
+        press(&mut input, KeyCode::Enter),
         Outcome::Command("context".into())
     );
     type_text(&mut input, "/co");

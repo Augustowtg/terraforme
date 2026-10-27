@@ -4,6 +4,17 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.9] - 2026-10-27
+
+### Adicionado
+
+- **Argumentos nos comandos do padrão do router**: na lista da `/`, o `Tab` num comando sem interface no terra completa o input com o comando e um espaço (ex.: `/config `), para escrever os argumentos e mandar com `Enter` (ex.: `/config model=opus`, que muda a configuração do Claude). O `Enter` na lista continua rodando o comando na hora, sem argumentos. Nos comandos com interface no terra, `Tab` e `Enter` continuam rodando a interface.
+
+### Alterado
+
+- Escrito à mão e enviado sem argumentos, um comando com interface no terra (ex.: `/clear `, com espaço no fim) roda a interface, em vez de ir para o agente.
+- Um comando com `/` enviado pelo input não arma mais a **Auto compactação**: ela é para as mensagens, não para os comandos.
+
 ## [0.5.8] - 2026-10-27
 
 ### Alterado

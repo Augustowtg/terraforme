@@ -409,7 +409,9 @@ impl InputBox {
     }
 
     /// Teclas da lista de comandos, como as da lista de arquivos; Tab/Enter
-    /// tiram a `/consulta` do texto e devolvem o comando para o chat.
+    /// tiram a `/consulta` do texto e devolvem o comando para o chat. Num
+    /// comando do padrão do router, o Tab completa o texto (`/config `) para
+    /// receber argumentos, e o Enter roda ele sem argumentos.
     fn handle_command_picker(&mut self, key: KeyEvent) -> Option<Outcome> {
         let mut picker = self.command_picker?;
         let found = self.found_commands();
@@ -424,6 +426,13 @@ impl InputBox {
                 if key.modifiers.is_empty() || key.code == KeyCode::Tab =>
             {
                 let chosen = found.and_then(|f| f.into_iter().nth(picker.selected));
+                let complete = key.code == KeyCode::Tab
+                    && chosen
+                        .as_ref()
+                        .is_some_and(|c| !commands::has_interface(&c.name));
+                if complete {
+                    return Some(self.complete_command(chosen));
+                }
                 return Some(self.accept_command(chosen));
             }
             KeyCode::Esc => self.command_picker = None,
@@ -461,6 +470,23 @@ impl InputBox {
         self.cursor = picker.start;
         self.anchor = None;
         Outcome::Command(command.name)
+    }
+
+    /// Troca a `/consulta` pelo nome do comando e um espaço, para escrever os
+    /// argumentos (ex.: `/config model=opus`). Sem item, só fecha.
+    fn complete_command(&mut self, command: Option<CommandInfo>) -> Outcome {
+        let Some(picker) = self.command_picker.take() else {
+            return Outcome::Handled;
+        };
+        let Some(command) = command else {
+            return Outcome::Handled;
+        };
+        let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
+        let text = format!("/{} ", command.name);
+        self.buffer.replace_range(bytes, &text);
+        self.cursor = picker.start + text.chars().count();
+        self.anchor = None;
+        Outcome::Handled
     }
 
     /// Abre a lista com o `@` na posição `start`. Os arquivos começam a ser
