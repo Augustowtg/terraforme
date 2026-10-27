@@ -20,6 +20,18 @@ pub struct Request<'a> {
     /// Modelo escolhido na Config (um [`ModelOption::id`]); `None` usa o
     /// padrão do provedor.
     pub model: Option<&'a str>,
+    /// Conta escolhida na Config (um [`AccountOption::id`]); `None` usa a
+    /// conta padrão do provedor.
+    pub account: Option<&'a str>,
+}
+
+/// Uma conta do provedor que pode ser escolhida na Config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountOption {
+    /// O que fica salvo e vai no [`Request`]; `None` é a conta padrão.
+    pub id: Option<String>,
+    /// O que aparece na tela (ex.: `Trabalho · eu@empresa.com (Empresa)`).
+    pub label: String,
 }
 
 /// Um modelo que o provedor oferece na Config.
@@ -45,10 +57,16 @@ pub trait ChatAdapter {
         format!("{} não está disponível.", self.name())
     }
 
-    /// Modo padrão configurado no provedor para o diretório `cwd`, para o
-    /// chat começar em sincronia com ele.
-    fn configured_mode(&self, _cwd: &Path) -> Option<PermissionMode> {
+    /// Modo padrão configurado no provedor para o diretório `cwd` e a conta
+    /// `account`, para o chat começar em sincronia com ele.
+    fn configured_mode(&self, _cwd: &Path, _account: Option<&str>) -> Option<PermissionMode> {
         None
+    }
+
+    /// Contas que podem ser escolhidas na Config, a padrão primeiro. Vazio
+    /// quando o provedor não tem contas.
+    fn accounts(&self) -> Vec<AccountOption> {
+        Vec::new()
     }
 
     /// Modelos que podem ser escolhidos na Config, além do padrão.

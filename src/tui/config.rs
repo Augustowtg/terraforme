@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
 
-use crate::agent::{ChatAdapter, ModelOption};
+use crate::agent::{AccountOption, ChatAdapter, ModelOption};
 use crate::settings::{AgentSettings, StartMode};
 use crate::theme::{self, Variant};
 
@@ -21,11 +21,28 @@ const LABEL_WIDTH: usize = 16;
 /// Uma configuração que pode ser alterada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
+    Account,
     StartMode,
     Model,
 }
 
-const FIELDS: [Field; 2] = [Field::StartMode, Field::Model];
+const FIELDS: [Field; 3] = [Field::Account, Field::StartMode, Field::Model];
+
+/// As opções que vêm do provedor: contas e modelos.
+#[derive(Debug, Default, Clone)]
+pub struct Choices {
+    pub accounts: Vec<AccountOption>,
+    pub models: Vec<ModelOption>,
+}
+
+impl Choices {
+    pub fn of(adapter: Option<&dyn ChatAdapter>) -> Self {
+        adapter.map_or_else(Self::default, |a| Self {
+            accounts: a.accounts(),
+            models: a.models(),
+        })
+    }
+}
 
 /// O que a Config fez com uma tecla.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,18 +64,18 @@ impl ConfigView {
         &mut self,
         key: KeyEvent,
         settings: &mut AgentSettings,
-        models: &[ModelOption],
+        choices: &Choices,
     ) -> Outcome {
         let last = FIELDS.len() - 1;
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.focus = self.focus.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.focus = (self.focus + 1).min(last),
             KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => {
-                change(FIELDS[self.focus], settings, models, 1);
+                change(FIELDS[self.focus], settings, choices, 1);
                 return Outcome::Changed;
             }
             KeyCode::Left | KeyCode::Char('h') => {
-                change(FIELDS[self.focus], settings, models, -1);
+                change(FIELDS[self.focus], settings, choices, -1);
                 return Outcome::Changed;
             }
             _ => return Outcome::Ignored,
@@ -73,7 +90,7 @@ impl ConfigView {
         settings: &AgentSettings,
         adapter: Option<&dyn ChatAdapter>,
     ) {
-        let models = adapter.map(|a| a.models()).unwrap_or_default();
+        let choices = Choices::of(adapter);
         let provider = match adapter {
             Some(a) if a.is_available() => Span::styled(
                 format!("{} · disponível", a.name()),
@@ -88,7 +105,7 @@ impl ConfigView {
             info_row("Provedor", provider),
         ];
         for (i, field) in FIELDS.into_iter().enumerate() {
-            let value = value_label(field, settings, &models);
+            let value = value_label(field, settings, &choices);
             lines.push(field_row(field_label(field), value, i == self.focus));
         }
         frame.render_widget(
@@ -100,13 +117,28 @@ impl ConfigView {
 
 fn field_label(field: Field) -> &'static str {
     match field {
+        Field::Account => "Conta",
         Field::StartMode => "Modo inicial",
         Field::Model => "Modelo",
     }
 }
 
-fn value_label(field: Field, settings: &AgentSettings, models: &[ModelOption]) -> String {
+fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> String {
+    let models = &choices.models;
     match field {
+        Field::Account => choices
+            .accounts
+            .iter()
+            .find(|a| a.id == settings.account)
+            .map_or_else(
+                || {
+                    settings
+                        .account
+                        .clone()
+                        .unwrap_or_else(|| "Default".to_string())
+                },
+                |a| a.label.clone(),
+            ),
         Field::StartMode => settings.start_mode.label().to_string(),
         Field::Model => match &settings.model {
             None => "Padrão".to_string(),
@@ -119,8 +151,22 @@ fn value_label(field: Field, settings: &AgentSettings, models: &[ModelOption]) -
 }
 
 /// Avança (`step = 1`) ou volta (`-1`) o valor, dando a volta no fim.
-fn change(field: Field, settings: &mut AgentSettings, models: &[ModelOption], step: isize) {
+fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: isize) {
+    let models = &choices.models;
     match field {
+        Field::Account => {
+            // Sem contas do provedor, só a Default.
+            let mut options: Vec<Option<String>> =
+                choices.accounts.iter().map(|a| a.id.clone()).collect();
+            if options.is_empty() {
+                options.push(None);
+            }
+            let i = options
+                .iter()
+                .position(|a| *a == settings.account)
+                .unwrap_or(0);
+            settings.account = options[cycle(i, options.len(), step)].clone();
+        }
         Field::StartMode => {
             let all = StartMode::ALL;
             let i = all
@@ -185,24 +231,74 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use ratatui::{Terminal, backend::TestBackend};
 
-    fn models() -> Vec<ModelOption> {
-        ["opus", "haiku"]
-            .iter()
-            .map(|id| ModelOption {
-                id: id.to_string(),
-                label: id.to_uppercase(),
-            })
-            .collect()
+    fn choices() -> Choices {
+        Choices {
+            accounts: vec![
+                AccountOption {
+                    id: None,
+                    label: "Default · eu@gmail.com".into(),
+                },
+                AccountOption {
+                    id: Some(".claude-empresa".into()),
+                    label: "Trabalho · eu@empresa.com (Empresa)".into(),
+                },
+            ],
+            models: ["opus", "haiku"]
+                .iter()
+                .map(|id| ModelOption {
+                    id: id.to_string(),
+                    label: id.to_uppercase(),
+                })
+                .collect(),
+        }
     }
 
     fn press(view: &mut ConfigView, settings: &mut AgentSettings, code: KeyCode) -> Outcome {
-        view.handle_key(KeyEvent::new(code, KeyModifiers::NONE), settings, &models())
+        view.handle_key(
+            KeyEvent::new(code, KeyModifiers::NONE),
+            settings,
+            &choices(),
+        )
+    }
+
+    #[test]
+    fn account_cycles_through_provider_accounts() {
+        let mut view = ConfigView::default();
+        let mut settings = AgentSettings::default();
+        // A Conta é a primeira configuração.
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Right),
+            Outcome::Changed
+        );
+        assert_eq!(settings.account.as_deref(), Some(".claude-empresa"));
+        press(&mut view, &mut settings, KeyCode::Right);
+        assert_eq!(settings.account, None, "depois da última, volta à Default");
+        assert_eq!(
+            value_label(Field::Account, &settings, &choices()),
+            "Default · eu@gmail.com"
+        );
+    }
+
+    #[test]
+    fn without_accounts_only_default_exists() {
+        let mut settings = AgentSettings::default();
+        change(Field::Account, &mut settings, &Choices::default(), 1);
+        assert_eq!(settings.account, None);
+        assert_eq!(
+            value_label(Field::Account, &settings, &Choices::default()),
+            "Default"
+        );
     }
 
     #[test]
     fn arrows_change_start_mode_and_model() {
         let mut view = ConfigView::default();
         let mut settings = AgentSettings::default();
+        // Pula a Conta, a primeira configuração.
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Down),
+            Outcome::Moved
+        );
 
         assert_eq!(
             press(&mut view, &mut settings, KeyCode::Right),
@@ -239,8 +335,9 @@ mod tests {
         let settings = AgentSettings {
             start_mode: StartMode::Provider,
             model: Some("haiku".into()),
+            account: None,
         };
-        let mut terminal = Terminal::new(TestBackend::new(50, 6)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(50, 7)).unwrap();
         terminal
             .draw(|frame| view.draw(frame, frame.area(), &settings, None))
             .unwrap();
@@ -254,9 +351,10 @@ mod tests {
         };
         assert_eq!(row(1), "  Agente");
         assert_eq!(row(2), "   Provedor        Nenhum");
-        assert_eq!(row(3), " ▌ Modo inicial    ‹ Do provedor ›");
+        assert_eq!(row(3), " ▌ Conta           ‹ Default ›");
+        assert_eq!(row(4), "   Modo inicial      Do provedor");
         // Sem provedor, o id salvo aparece como está.
-        assert_eq!(row(4), "   Modelo            haiku");
+        assert_eq!(row(5), "   Modelo            haiku");
         assert_eq!(buffer[(3, 3)].bg, theme::focused().bg.unwrap());
     }
 }

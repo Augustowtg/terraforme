@@ -88,9 +88,9 @@ impl App {
     /// Na aba Config, as setas mudam as configurações; cada mudança é salva
     /// e vale na hora para o chat. Retorna `true` se a tecla foi usada.
     fn handle_config_key(&mut self, key: KeyEvent) -> bool {
-        let models = self.chat.adapter().map(|a| a.models()).unwrap_or_default();
+        let choices = config::Choices::of(self.chat.adapter());
         let previous = self.settings.clone();
-        match self.config.handle_key(key, &mut self.settings, &models) {
+        match self.config.handle_key(key, &mut self.settings, &choices) {
             config::Outcome::Ignored => false,
             config::Outcome::Moved => true,
             config::Outcome::Changed => {
@@ -353,6 +353,8 @@ mod tests {
         let mut app = App::default();
         press(&mut app, KeyCode::Tab);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
+        // Conta é a primeira; ↓ vai para o Modo inicial.
+        assert!(!key(&mut app, KeyCode::Down));
         assert!(!key(&mut app, KeyCode::Right));
         assert_eq!(
             app.settings.start_mode,
