@@ -5,8 +5,11 @@
 //!
 //! Com o MCP ativado na Config, o terra abre o MCP ao iniciar (se ninguém
 //! abriu) e se registra nele; com ele online, aparece a aba MCP, o
-//! orquestrador.
+//! orquestrador. O agente recebe o MCP do terra, e com a ferramenta `chat`
+//! abre um chat novo num terra: ele aparece numa barra de chats embaixo da
+//! barra de abas, no mesmo tema, e `Alt+←/→` troca de chat.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -35,6 +38,10 @@ const TAB_GAP: &str = " ";
 const HELP: &str = "Tab trocar aba · Esc ir para Sair";
 const HELP_QUIT: &str = "Enter sair · Tab/Esc voltar às abas";
 const HELP_PROVIDER: &str = "Enter entrar no terminal · Tab trocar aba · Esc ir para Sair";
+const HELP_CHATS: &str = "Alt+N novo chat · Alt+←/→ trocar chat · Alt+W fechar chat";
+const HELP_NEW_CHAT: &str = "Alt+N novo chat";
+/// O título do chat do terra na barra de chats.
+const MAIN_CHAT_TITLE: &str = "Principal";
 const HELP_TERM: &str = "Ctrl+Q voltar às abas";
 const HELP_CONFIRM: &str = "←/→ escolher · Enter confirmar · Esc cancelar";
 const CONFIRM_TITLE: &str = " Sair ";
@@ -131,11 +138,24 @@ pub struct ConfigFiles {
     pub global: PathBuf,
 }
 
+/// Um chat aberto pelo orquestrador, a pedido de um agente.
+struct ChatTab {
+    title: String,
+    chat: Chat,
+}
+
 #[derive(Default)]
 pub struct App {
     tab: Tab,
     focus: Focus,
     chat: Chat,
+    /// Os chats abertos pelo orquestrador, depois do chat do terra.
+    chats: Vec<ChatTab>,
+    /// Os tokens dos chats já fechados, que continuam no consumo geral.
+    closed_tokens: u64,
+    /// O chat que aparece na aba Chat: 0 é o do terra, os outros são os
+    /// de [`App::chats`].
+    active_chat: usize,
     config_view: ConfigView,
     usage: UsageView,
     /// O consumo da sessão, para a barra de consumo do chat.
@@ -218,13 +238,16 @@ impl App {
             name: self.name.clone(),
             dir,
             session: self.has_session(),
+            chats: Vec::new(),
         }));
+        self.apply_extensions();
     }
 
     /// Sai do MCP e o fecha (desativado, ele fecha para todos os terra).
     fn stop_mcp(&mut self) {
         if self.mcp_link.take().is_some() {
             let _ = mcp::shutdown();
+            self.apply_extensions();
         }
         if self.tab == Tab::Mcp {
             self.tab = Tab::Config;
@@ -239,13 +262,83 @@ impl App {
     /// Há uma conversa com o agente: no chat do terra ou na interface
     /// original do provedor.
     fn has_session(&self) -> bool {
-        self.chat.has_session() || self.term.as_ref().is_some_and(Term::has_session)
+        self.chat.has_session()
+            || self.chats.iter().any(|c| c.chat.has_session())
+            || self.term.as_ref().is_some_and(Term::has_session)
     }
 
-    /// Passa ao chat o que as extensões ativas acrescentam ao agente (vale
-    /// a partir da próxima mensagem); as que falharem viram avisos.
+    /// O chat que aparece na aba Chat.
+    fn current_chat(&self) -> &Chat {
+        match self.active_chat {
+            0 => &self.chat,
+            i => &self.chats[i - 1].chat,
+        }
+    }
+
+    fn current_chat_mut(&mut self) -> &mut Chat {
+        match self.active_chat {
+            0 => &mut self.chat,
+            i => &mut self.chats[i - 1].chat,
+        }
+    }
+
+    /// Abre um chat novo, pedido por um agente pelo orquestrador, com as
+    /// configurações do workspace, e manda a primeira mensagem.
+    fn open_chat(&mut self, request: &mcp::ChatRequest) {
+        let mut chat = Chat::connect(&self.settings);
+        chat.set_delegation(request.id);
+        chat.set_extensions(delegated(self.chat.extensions().clone(), request.id));
+        chat.set_session_usage(self.session_usage.window().cloned());
+        chat.set_start_mode(self.mcp.spawn_mode);
+        chat.submit(&request.prompt());
+        let title = request
+            .title
+            .clone()
+            .or_else(|| request.from.as_ref().map(|from| format!("De {from}")))
+            .unwrap_or_else(|| format!("Chat {}", self.chats.len() + 2));
+        self.chats.push(ChatTab { title, chat });
+    }
+
+    /// Abre um chat novo e vazio neste terra, com as configurações do
+    /// workspace, e passa para ele.
+    fn new_chat(&mut self) {
+        let mut chat = Chat::connect(&self.settings);
+        chat.set_extensions(self.chat.extensions().clone());
+        chat.set_session_usage(self.session_usage.window().cloned());
+        let title = format!("Chat {}", self.chats.len() + 2);
+        self.chats.push(ChatTab { title, chat });
+        self.active_chat = self.chats.len();
+    }
+
+    /// Fecha o chat aberto pelo orquestrador que está na aba Chat (o do
+    /// terra não fecha).
+    fn close_chat(&mut self) {
+        if self.active_chat > 0 {
+            let tab = self.chats.remove(self.active_chat - 1);
+            self.closed_tokens += tab.chat.tokens_used();
+            self.active_chat -= 1;
+        }
+    }
+
+    /// Passa aos chats o que as extensões ativas acrescentam ao agente (vale
+    /// a partir da próxima mensagem), mais o MCP do terra quando ligado; as
+    /// que falharem viram avisos.
     fn apply_extensions(&mut self) {
-        let (contribution, warnings) = self.registry.contribution(&self.extensions.enabled);
+        let (mut contribution, warnings) = self.registry.contribution(&self.extensions.enabled);
+        if self.mcp_link.is_some() {
+            contribution.mcp_servers.push(crate::extension::McpServer {
+                name: mcp::SERVER_NAME.to_string(),
+                url: Some(mcp::agent_url(std::process::id())),
+                ..Default::default()
+            });
+        }
+        for tab in &mut self.chats {
+            let extensions = match tab.chat.delegation() {
+                Some(id) => delegated(contribution.clone(), id),
+                None => contribution.clone(),
+            };
+            tab.chat.set_extensions(extensions);
+        }
         self.chat.set_extensions(contribution);
         for warning in warnings {
             self.chat.warn(format!("Extensão {warning}"));
@@ -311,6 +404,12 @@ impl App {
                 self.apply_extensions();
                 true
             }
+            config::Outcome::McpSpawnModeChanged => {
+                if let Some(global) = &self.global_config {
+                    let _ = self.mcp.save_file(global);
+                }
+                true
+            }
             config::Outcome::McpChanged => {
                 if let Some(global) = &self.global_config {
                     // Sem conseguir salvar, a mudança vale só nesta execução.
@@ -351,8 +450,65 @@ impl App {
             mcp: config::McpState {
                 settings: self.mcp,
                 online: self.mcp_online(),
+                servers: self.mcp_servers(),
             },
+            skills: self.skills(),
         }
+    }
+
+    /// As skills instaladas no agente, para a seção Skills da Config.
+    fn skills(&self) -> Vec<config::SkillInfo> {
+        let Some(adapter) = self.chat.adapter() else {
+            return Vec::new();
+        };
+        std::env::current_dir()
+            .map(|cwd| adapter.skills(&cwd, self.settings.account.as_deref()))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|skill| config::SkillInfo {
+                name: skill.name,
+                origin: format!("{} · {}", adapter.name(), skill.scope),
+                description: skill.description,
+            })
+            .collect()
+    }
+
+    /// Os servidores MCP conectados ao agente: os configurados no provedor e
+    /// os que o terraforme acrescenta (extensões e o MCP do terra). Um que
+    /// está nos dois aparece uma vez, com as duas origens.
+    fn mcp_servers(&self) -> Vec<config::McpServerInfo> {
+        let detail = |server: &crate::extension::McpServer| {
+            server.url.clone().unwrap_or_else(|| {
+                std::iter::once(server.command.as_str())
+                    .chain(server.args.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+        };
+        let provider = self.chat.adapter().map_or_else(Vec::new, |adapter| {
+            std::env::current_dir()
+                .map(|cwd| adapter.mcp_servers(&cwd, self.settings.account.as_deref()))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|mcp| config::McpServerInfo {
+                    name: mcp.server.name.clone(),
+                    origin: format!("{} · {}", adapter.name(), mcp.scope),
+                    detail: detail(&mcp.server),
+                })
+                .collect()
+        });
+        let mut servers: Vec<config::McpServerInfo> = provider;
+        for server in &self.chat.extensions().mcp_servers {
+            match servers.iter_mut().find(|s| s.name == server.name) {
+                Some(known) => known.origin.push_str(" · terraforme"),
+                None => servers.push(config::McpServerInfo {
+                    name: server.name.clone(),
+                    origin: "terraforme".to_string(),
+                    detail: detail(server),
+                }),
+            }
+        }
+        servers
     }
 
     /// Salva as configurações e as aplica ao chat.
@@ -362,6 +518,9 @@ impl App {
             let _ = self.settings.save_file(config);
         }
         self.chat.apply_settings(&self.settings, Some(previous));
+        for tab in &mut self.chats {
+            tab.chat.apply_settings(&self.settings, Some(previous));
+        }
     }
 
     /// O `/model` escolheu um novo modelo padrão: vai para as configurações.
@@ -378,6 +537,18 @@ impl App {
     /// Com o nome da conta, para o login mostrar.
     pub fn take_login(&mut self) -> Option<(Command, String)> {
         self.chat.take_login()
+    }
+
+    /// A interface original pedida por um comando da `/` do chat.
+    pub fn take_original(&mut self) -> Option<(Command, String)> {
+        self.current_chat_mut().take_original()
+    }
+
+    /// Volta da interface original: o chat avisa e o consumo é recarregado.
+    pub fn original_finished(&mut self, command: &str, result: Result<(), String>) {
+        self.current_chat_mut().finish_original(command, result);
+        self.usage.invalidate();
+        self.session_usage.invalidate();
     }
 
     /// Volta do login: o chat avisa e o consumo é recarregado com o novo
@@ -406,6 +577,7 @@ impl App {
                 StartMode::Fixed(mode) => Some(mode),
             },
             extensions: Some(self.chat.extensions()),
+            ..Interactive::default()
         };
         self.chat
             .adapter()
@@ -494,10 +666,15 @@ impl App {
                 }
                 return false;
             }
-        } else if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.chat.handle_key(key) {
+        } else if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.handle_chats_key(key) {
+            return false;
+        } else if self.tab == Tab::Chat
+            && self.focus == Focus::Tabs
+            && self.current_chat_mut().handle_key(key)
+        {
             // Na aba Chat, o painel do agente tem prioridade (modo INSERT, Shift+Tab).
             self.take_default_model();
-            if self.chat.take_open_usage() {
+            if self.current_chat_mut().take_open_usage() {
                 self.tab = Tab::Consumo;
             }
             return false;
@@ -552,6 +729,29 @@ impl App {
         false
     }
 
+    /// Na barra de chats, `Alt+N` abre um chat novo, `Alt+←/→` troca de chat
+    /// e `Alt+W` fecha o chat aberto. Retorna `true` se a tecla foi usada.
+    fn handle_chats_key(&mut self, key: KeyEvent) -> bool {
+        if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+            return false;
+        }
+        if let KeyCode::Char('n' | 'N') = key.code {
+            self.new_chat();
+            return true;
+        }
+        if self.chats.is_empty() {
+            return false;
+        }
+        let total = self.chats.len() + 1;
+        match key.code {
+            KeyCode::Left => self.active_chat = (self.active_chat + total - 1) % total,
+            KeyCode::Right => self.active_chat = (self.active_chat + 1) % total,
+            KeyCode::Char('w' | 'W') => self.close_chat(),
+            _ => return false,
+        }
+        true
+    }
+
     /// Mouse: no input da aba Chat (posicionar o cursor e selecionar) e nos
     /// botões do gráfico da aba Consumo.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
@@ -560,7 +760,7 @@ impl App {
         }
         match self.tab {
             Tab::Chat if self.uses_provider() => {}
-            Tab::Chat => self.chat.handle_mouse(mouse),
+            Tab::Chat => self.current_chat_mut().handle_mouse(mouse),
             Tab::Consumo => self.usage.handle_mouse(mouse),
             Tab::Extensoes | Tab::Config | Tab::Mcp => {}
         }
@@ -574,6 +774,9 @@ impl App {
         self.chat
             .set_caps_lock(keyboard::caps_lock().unwrap_or(false));
         self.chat.tick();
+        for tab in &mut self.chats {
+            tab.chat.tick();
+        }
         // O consumo só é carregado com a aba aberta.
         if self.tab == Tab::Consumo {
             self.usage
@@ -586,8 +789,11 @@ impl App {
                 .refresh_if_stale(self.chat.adapter(), self.settings.account.as_deref());
         }
         if self.session_usage.tick() {
-            self.chat
-                .set_session_usage(self.session_usage.window().cloned());
+            let window = self.session_usage.window().cloned();
+            self.chat.set_session_usage(window.clone());
+            for tab in &mut self.chats {
+                tab.chat.set_session_usage(window.clone());
+            }
         }
         // O relatório das extensões, também só com a aba aberta.
         if self.tab == Tab::Extensoes {
@@ -599,12 +805,35 @@ impl App {
 
     /// Avisa o MCP se há uma sessão e, com a aba MCP aberta, recarrega os
     /// spaces. Com o MCP offline, a aba some.
+    /// Os chats deste terra e o consumo de cada um, para o MCP.
+    fn chat_stats(&self) -> Vec<mcp::ChatStats> {
+        let stats = |title: &str, chat: &Chat| mcp::ChatStats {
+            title: title.to_string(),
+            tokens: chat.tokens_used(),
+            cache_tokens: chat.cache_tokens_used(),
+            busy: chat.is_busy(),
+            // Só os delegados mandam a resposta: ela volta a quem delegou.
+            id: chat.delegation(),
+            reply: chat.delegation().and_then(|_| chat.last_reply()),
+        };
+        std::iter::once(stats(MAIN_CHAT_TITLE, &self.chat))
+            .chain(self.chats.iter().map(|tab| stats(&tab.title, &tab.chat)))
+            .collect()
+    }
+
     fn tick_mcp(&mut self) {
         let session = self.has_session();
         let Some(link) = &self.mcp_link else {
             return;
         };
         link.set_session(session);
+        link.set_chats(self.chat_stats());
+        for request in link.take_chats() {
+            self.open_chat(&request);
+        }
+        let Some(link) = &self.mcp_link else {
+            return;
+        };
         if self.tab != Tab::Mcp {
             return;
         }
@@ -629,10 +858,15 @@ impl App {
 
         self.draw_nav(frame, nav);
         self.draw_content(frame, content);
-        let help = match self.focus {
+        let help: Cow<'static, str> = match self.focus {
             Focus::Tabs if self.captures_keys() => HELP_TERM.into(),
             Focus::Tabs if self.tab == Tab::Chat && self.uses_provider() => HELP_PROVIDER.into(),
-            Focus::Tabs if self.tab == Tab::Chat => self.chat.help(),
+            Focus::Tabs if self.tab == Tab::Chat && !self.chats.is_empty() => {
+                format!("{} · {HELP_CHATS}", self.current_chat().help()).into()
+            }
+            Focus::Tabs if self.tab == Tab::Chat => {
+                format!("{} · {HELP_NEW_CHAT}", self.current_chat().help()).into()
+            }
             Focus::Tabs if self.tab == Tab::Config => self.config_view.help().into(),
             Focus::Tabs if self.tab == Tab::Extensoes => extensions::HELP.into(),
             Focus::Tabs if self.tab == Tab::Mcp => mcp_tab::HELP.into(),
@@ -660,11 +894,19 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let [tabs_area, quit_area] = Layout::horizontal([
+        let total = self.total_label();
+        let [tabs_area, total_area, quit_area] = Layout::horizontal([
             Constraint::Min(0),
+            Constraint::Length(total.as_ref().map_or(0, |t| t.chars().count() as u16)),
             Constraint::Length(QUIT_LABEL.len() as u16),
         ])
         .areas(inner);
+        if let Some(total) = total {
+            frame.render_widget(
+                Paragraph::new(Span::styled(total, theme::muted())),
+                total_area,
+            );
+        }
 
         let mut spans = Vec::new();
         let tabs = Tab::ALL
@@ -695,6 +937,46 @@ impl App {
         );
     }
 
+    /// O consumo geral, ao lado do "Sair": os tokens de todos os chats deste
+    /// terra (entrada e saída, sem os de cache, como no consumo do chat).
+    fn total_label(&self) -> Option<String> {
+        let tokens = self.closed_tokens
+            + self.chat.tokens_used()
+            + self.chats.iter().map(|c| c.chat.tokens_used()).sum::<u64>();
+        (self.settings.usage.total_visible && tokens > 0).then(|| {
+            format!(
+                "Consumo geral: {} Tokens  ",
+                super::chat::compact_count(tokens)
+            )
+        })
+    }
+
+    /// A barra de chats, embaixo da barra de abas e no mesmo tema: o chat
+    /// do terra e os abertos pelo orquestrador.
+    fn draw_chats(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(theme::border())
+            .padding(Padding::horizontal(1));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let titles =
+            std::iter::once(MAIN_CHAT_TITLE).chain(self.chats.iter().map(|c| c.title.as_str()));
+        let mut spans = Vec::new();
+        for (i, title) in titles.enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(TAB_GAP));
+            }
+            let style = if i == self.active_chat && self.focus == Focus::Tabs {
+                theme::tab_active()
+            } else {
+                theme::tab_inactive()
+            };
+            spans.push(Span::styled(format!(" {title} "), style));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), inner);
+    }
+
     fn draw_content(&self, frame: &mut Frame, area: Rect) {
         if self.tab == Tab::Chat && self.uses_provider() {
             match &self.term {
@@ -704,11 +986,19 @@ impl App {
             return;
         }
         if self.tab == Tab::Chat {
-            let [history, panel] =
-                Layout::vertical([Constraint::Fill(1), Constraint::Length(self.chat.height())])
-                    .areas(area);
-            self.chat.draw_history(frame, history);
-            self.chat.draw(frame, panel);
+            let bar = if self.chats.is_empty() { 0 } else { 3 };
+            let chat = self.current_chat();
+            let [chats, history, panel] = Layout::vertical([
+                Constraint::Length(bar),
+                Constraint::Fill(1),
+                Constraint::Length(chat.height()),
+            ])
+            .areas(area);
+            if bar > 0 {
+                self.draw_chats(frame, chats);
+            }
+            chat.draw_history(frame, history);
+            chat.draw(frame, panel);
             return;
         }
         if self.tab == Tab::Config {
@@ -794,6 +1084,21 @@ fn layout(area: Rect) -> [Rect; 3] {
 /// A área de conteúdo numa tela `screen`.
 fn content_area(screen: Rect) -> Rect {
     layout(screen)[1]
+}
+
+/// As extensões de um chat delegado (`id` é a delegação): o MCP do terra
+/// fica no endereço da delegação, para os pedidos de permissão do chat irem
+/// para quem delegou.
+fn delegated(
+    mut extensions: crate::extension::Contribution,
+    id: u64,
+) -> crate::extension::Contribution {
+    for server in &mut extensions.mcp_servers {
+        if server.name == mcp::SERVER_NAME {
+            server.url = Some(mcp::delegated_url(std::process::id(), id));
+        }
+    }
+    extensions
 }
 
 fn is_ctrl(key: &KeyEvent, c: char) -> bool {
@@ -915,9 +1220,13 @@ mod tests {
             tab: Tab::Config,
             ..App::default()
         };
-        // O MCP é a última configuração da seção Agente.
+        // O MCP vem antes dos servidores conectados e das skills, a última
+        // configuração.
         for _ in 0..20 {
             key(&mut app, KeyCode::Down);
+        }
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Up);
         }
         key(&mut app, KeyCode::Enter);
         assert!(app.mcp.enabled);
@@ -1304,6 +1613,56 @@ mod tests {
         // "Sair" (x = 52..58) é vermelho, sem fundo até receber foco.
         let red = theme::quit().fg.unwrap();
         assert!((52..58).all(|x| buffer[(x, 1)].fg == red));
+    }
+
+    #[test]
+    fn chats_opened_by_the_orchestrator_show_up_below_the_nav_bar() {
+        use crossterm::event::KeyModifiers;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::default();
+        app.open_chat(&mcp::ChatRequest {
+            id: 4,
+            from: Some("a".into()),
+            title: None,
+            message: "oi".into(),
+        });
+        let delegated = &app.chats[0].chat;
+        assert_eq!(delegated.delegation(), Some(4));
+        assert_eq!(app.chat_stats()[1].id, Some(4));
+        assert_eq!(app.chat_stats()[0].id, None, "o Principal não é delegado");
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert!(row(4).starts_with("│  Principal   De a "), "{}", row(4));
+        assert_eq!(buffer[(3, 4)].bg, theme::tab_active().bg.unwrap());
+
+        let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+        app.handle_key(alt(KeyCode::Right));
+        assert_eq!(app.active_chat, 1);
+        app.handle_key(alt(KeyCode::Left));
+        assert_eq!(app.active_chat, 0);
+        app.handle_key(alt(KeyCode::Char('w')));
+        assert_eq!(app.chats.len(), 1, "o chat do terra não fecha");
+        app.handle_key(alt(KeyCode::Right));
+        app.handle_key(alt(KeyCode::Char('w')));
+        assert!(app.chats.is_empty());
+        assert_eq!(app.active_chat, 0);
+    }
+
+    #[test]
+    fn alt_n_opens_a_new_chat_in_the_same_terra() {
+        use crossterm::event::KeyModifiers;
+
+        let mut app = App::default();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT));
+        assert_eq!(app.chats.len(), 1);
+        assert_eq!(app.active_chat, 1);
+        assert_eq!(app.chats[0].title, "Chat 2");
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT));
+        assert_eq!(app.active_chat, 2);
+        assert_eq!(app.chats[1].title, "Chat 3");
     }
 
     #[test]

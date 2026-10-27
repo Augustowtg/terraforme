@@ -4,6 +4,119 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.14] - 2026-10-27
+
+### Adicionado
+
+- Chat: os blocos de código cercados por ``` saem realçados, do mesmo jeito que os blocos `md` saem estilizados: palavras-chave, tipos, funções, strings, números e comentários ganham cor conforme a linguagem do canto da caixa (`rust`, `py`, `ts`/`js`, `go`, `c`/`java`..., `sh`, `sql`, `json`, `toml`/`yaml`). Sem linguagem conhecida, o bloco fica como antes.
+
+## [0.8.13] - 2026-10-27
+
+### Adicionado
+
+- Uma skill escolhida na lista da `/` vira um badge no input, como o arquivo do `@` (`/docs`), para escrever o pedido depois dela; o Backspace apaga o badge inteiro.
+
+### Corrigido
+
+- As skills e os servidores MCP do usuário não ficavam ativos no chat: o `claude` rodava com `--disable-slash-commands` e `--strict-mcp-config`, que só deixavam os MCP das extensões. Agora o chat usa o ambiente do Claude Code, como o `claude` interativo.
+
+## [0.8.12] - 2026-10-27
+
+### Adicionado
+
+- Orquestrador: o agente principal delega e recebe de volta. A ferramenta `chat` do MCP do terra passa a retornar o `chat_id` da delegação, e duas ferramentas novas fecham o ciclo:
+  - `wait`: o principal espera o chat delegado; volta com a resposta final dele (`done`, em `reply`), com os pedidos de permissão pendentes dos chats que ele delegou (`permission`) ou, sem novidade no tempo pedido, com `running`.
+  - `decide`: o principal aprova ou nega cada pedido (ao negar, a mensagem vai para o agente delegado). Só quem delegou decide.
+- Os chats delegados pedem permissão ao principal: o agente deles usa a ferramenta `permission` do MCP do terra como `--permission-prompt-tool`, e o pedido fica esperando a decisão (até 10 min; sem decisão, é negado). No Yolo, nada é pedido.
+- A primeira mensagem do chat delegado diz que a última resposta volta para quem delegou, e a ferramenta `spaces` mostra o `id` da delegação e a última resposta (`reply`) dos chats delegados.
+
+### Alterado
+
+- O MCP do terra atende as ferramentas que esperam (`wait` e `permission`) cada uma numa thread, sem travar as outras requisições.
+
+## [0.8.11] - 2026-10-27
+
+### Adicionado
+
+- Orquestrador: os chats abertos por um agente (a ferramenta `chat` do MCP do terra) começam em **Accept Edits**, para o agente delegado editar sem parar a cada arquivo. A seção MCP das Configurações ganha **Modo dos chats** para escolher outro modo (Do provedor, Agente, Yolo, Manual, Accept Edits ou Plan Mode); fica no `~/.terraforme/config.json` (`"mcp": {"spawn_mode": "accept_edits"}`).
+
+## [0.8.10] - 2026-10-27
+
+### Adicionado
+
+- Chat: todos os comandos da `/` do Claude passam a rodar pelo terra. Os que só existem no modo interativo do Claude (ex.: `/hooks`, `/permissions`, `/plugin`, `/resume`, `/memory`, `/agents`...) abrem a interface original do Claude, fora da tela do terra, na mesma sessão do chat (`--resume`) e com o comando (e os argumentos) já rodando; ao sair, o terra volta, avisa no histórico e recarrega os comandos e as skills.
+- Adapters: o contrato ganha `command_route()`, que diz se um comando vai para o agente, abre a interface original ou não roda, e a `Interactive` ganha a sessão e o comando.
+
+### Removido
+
+- Os comandos de pagamento e plano do Claude (`/upgrade`, `/rate-limit-options`, `/passes`, `/stickers`, `/extra-usage`, `/usage-credits`) saem da lista da `/`; escritos à mão, o terra avisa que não os roda.
+
+## [0.8.9] - 2026-10-27
+
+### Adicionado
+
+- Configurações: a seção Skills, embaixo da seção MCP, mostra em Instaladas as skills do Claude: as do usuário (`~/.claude/skills`, ou a pasta da conta escolhida), as do projeto (`.claude/skills` do workspace) e as dos plugins instalados para o usuário ou para o workspace (ex.: `postman:api-mocking`). `←`/`→` passam de uma para outra, com a origem e a descrição de cada uma.
+- Adapters: o contrato do provedor ganha `skills()`, e o do Claude lê as skills de um módulo próprio (`claude/skills.rs`), no mesmo molde do dos servidores MCP.
+
+## [0.8.8] - 2026-10-27
+
+### Corrigido
+
+- Consumo: a aba e a barra de consumo paravam no erro **HTTP 429** do Claude. Quando uma consulta falhava, a janela já zerada continuava na tela e o terra consultava de novo a cada atualização da tela, sem parar. Agora a zerada só dispara uma nova consulta uma vez e, com erro, a próxima tentativa fica para o minuto seguinte.
+- A aba e a barra de consumo passam a dividir a mesma consulta: uma resposta vale por 50 s para as duas, e só uma consulta por conta fica em andamento por vez.
+- Depois de um 429, o terra para de consultar por 1 min, e a espera dobra a cada 429 seguido, até 15 min. Nesse meio-tempo, a aba avisa quando tenta de novo.
+
+## [0.8.7] - 2026-10-27
+
+### Adicionado
+
+- Configurações: a seção MCP mostra, em Conectados, os servidores MCP conectados ao Claude (do usuário e os locais, do `.claude.json`, e os do projeto, do `.mcp.json`) e os que o terraforme acrescenta (ex.: o `ai-memory` da extensão e o `terra`). `←`/`→` passam de um para outro, com a origem e o comando ou o endereço de cada um.
+
+## [0.8.6] - 2026-10-27
+
+### Adicionado
+
+- Chat: as respostas do agente aparecem com o markdown estilizado (títulos, listas, citações, **negrito**, *itálico* e `código`, sem os marcadores). Os blocos cercados por ``` viram uma caixa de borda arredondada, igual à do input, com a linguagem (`md`, `rust`...) no canto superior esquerdo; num bloco `md`, o conteúdo também sai estilizado. A borda não entra no texto copiado.
+
+## [0.8.5] - 2026-10-27
+
+### Adicionado
+
+- Orquestrador: cada terra manda ao MCP os chats abertos (o Principal e os da barra de chats) com o consumo de cada um, e a ferramenta `spaces` passa a mostrá-los: `tokens` (entrada e saída), `cache_tokens` (criação e leitura do cache) e `busy` (se o agente ainda está respondendo). Assim um agente consegue medir quanto um chat aberto pelo orquestrador gastou.
+
+## [0.8.4] - 2026-10-27
+
+### Corrigido
+
+- A barra de consumo (o limite da sessão de 5 horas) volta a aparecer nos chats abertos com `Alt+N` ou pelo orquestrador: eles recebem o consumo da sessão ao abrir e a cada atualização, e as mudanças da Config passam a valer para todos os chats, não só para o do terra.
+
+## [0.8.3] - 2026-10-27
+
+### Adicionado
+
+- Aba Chat: `Alt+N` abre um chat novo e vazio no mesmo terra, com as configurações e extensões do workspace, e já passa para ele. Ele aparece na barra de chats (**Chat 2**, **Chat 3**...) e fecha com `Alt+W`, como os abertos pelo orquestrador.
+
+## [0.8.2] - 2026-10-27
+
+### Adicionado
+
+- Consumo geral ao lado esquerdo do "Sair": a soma dos tokens de todos os chats deste terra (o do terra, os abertos pelo orquestrador e os já fechados). Conta como o consumo embaixo do input: entrada e saída, sem os tokens de cache.
+- Config: em Consumo, a opção "Consumo geral" (Visível/Oculto) mostra ou esconde esse consumo. Por padrão fica visível.
+
+## [0.8.1] - 2026-10-27
+
+### Corrigido
+
+- Orquestrador: um MCP de outra versão aberto na porta 30303 (o terra foi atualizado com ele rodando) é fechado e aberto de novo com a versão atual. Antes, o MCP antigo continuava respondendo e o `/mcp` do Claude dava "endpoint not found".
+
+## [0.8.0] - 2026-10-27
+
+### Adicionado
+
+- Orquestrador: o agente do chat recebe o MCP do terra e ganha a ferramenta **`chat`**, que abre um chat novo num terra aberto (por padrão, no próprio; ou num outro, pelo `pid` ou pelo nome do workspace) e manda a primeira mensagem, dizendo de qual workspace ela veio. Assim o chat A fala com um chat B.
+- Aba Chat: os chats abertos pelo orquestrador aparecem numa barra de chats embaixo da barra de abas, no mesmo tema (**Principal**, depois cada chat novo). `Alt+←/→` troca de chat e `Alt+W` fecha o chat aberto pelo orquestrador.
+- Extensões: um servidor MCP pode ser HTTP (com `url`), além de stdio.
+
 ## [0.7.3] - 2026-10-27
 
 ### Alterado

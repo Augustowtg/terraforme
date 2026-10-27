@@ -421,6 +421,7 @@ fn input_with_commands() -> InputBox {
             .map(|(name, description)| CommandInfo {
                 name: name.to_string(),
                 description: description.to_string(),
+                skill: false,
             })
             .collect(),
     ));
@@ -459,6 +460,30 @@ fn tab_completes_router_commands_to_take_arguments() {
     type_text(&mut input, "all");
     assert_eq!(input.text(), "/context all");
     assert_eq!(press(&mut input, KeyCode::Enter), Outcome::Submit);
+}
+
+#[test]
+fn chosen_skill_becomes_a_badge_like_a_mention() {
+    let mut input = input_with_commands();
+    input.set_commands(Some(vec![CommandInfo {
+        name: "docs".into(),
+        description: "Escreve docs".into(),
+        skill: true,
+    }]));
+    for key in [KeyCode::Enter, KeyCode::Tab] {
+        type_text(&mut input, "/do");
+        assert_eq!(press(&mut input, key), Outcome::Handled);
+        assert!(!input.picker_open());
+        type_text(&mut input, "do README");
+        assert_eq!(input.text(), "/docs do README");
+        // O Backspace apaga o badge inteiro.
+        input.clear();
+        type_text(&mut input, "/do");
+        press(&mut input, KeyCode::Enter);
+        press(&mut input, KeyCode::Backspace);
+        press(&mut input, KeyCode::Backspace);
+        assert_eq!(input.text(), "");
+    }
 }
 
 #[test]
@@ -510,10 +535,12 @@ fn commands_list_shows_loading_then_items_above_input() {
         CommandInfo {
             name: "clear".into(),
             description: "Start a new session".into(),
+            skill: false,
         },
         CommandInfo {
             name: "context".into(),
             description: "Summarize".into(),
+            skill: false,
         },
     ]));
     let screen = draw(&input);

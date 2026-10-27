@@ -6,12 +6,29 @@
 //! provedor novo entra sem mudar a interface: basta implementar o trait e
 //! registrá-lo em [`super::adapters::all`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::Receiver;
 
 use super::{AgentEvent, PermissionMode};
-use crate::extension::Contribution;
+use crate::extension::{Contribution, McpServer};
+
+/// Um servidor MCP configurado no provedor e onde (ex.: `usuário`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderMcp {
+    pub server: McpServer,
+    pub scope: &'static str,
+}
+
+/// Uma skill instalada no provedor, onde (ex.: `usuário`) e o arquivo dela.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSkill {
+    /// Como se chama na `/` (ex.: `docs`, `postman:api-mocking`).
+    pub name: String,
+    pub description: String,
+    pub scope: &'static str,
+    pub path: PathBuf,
+}
 
 /// Uma mensagem para o agente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +47,10 @@ pub struct Request<'a> {
     pub effort: Option<&'a str>,
     /// O que as extensões ativas no workspace acrescentam ao agente.
     pub extensions: &'a Contribution,
+    /// A ferramenta MCP (servidor e ferramenta, ex.: `terra` e `permission`)
+    /// que decide os pedidos de permissão do agente, no lugar de negá-los
+    /// (ex.: num chat delegado, quem delegou decide).
+    pub permission_tool: Option<(&'a str, &'a str)>,
 }
 
 /// Uma conta do provedor que pode ser escolhida na Config.
@@ -57,6 +78,9 @@ pub struct CommandInfo {
     /// Sem a `/` (ex.: `model`).
     pub name: String,
     pub description: String,
+    /// É uma skill (ou um comando do usuário ou de plugin), não um comando
+    /// embutido: escolhida na `/`, vira um badge no input, como o `@`.
+    pub skill: bool,
 }
 
 /// Um modelo que o agente informa, com o que ele aceita.
@@ -156,6 +180,22 @@ pub struct Interactive<'a> {
     pub mode: Option<PermissionMode>,
     /// O que as extensões ativas no workspace acrescentam ao agente.
     pub extensions: Option<&'a Contribution>,
+    /// Sessão a continuar (a do chat), para a interface abrir nela.
+    pub session_id: Option<&'a str>,
+    /// Comando a rodar ao abrir (ex.: `/hooks`).
+    pub command: Option<&'a str>,
+}
+
+/// Onde um comando da `/` roda quando o terra não tem interface para ele.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandRoute {
+    /// Vai para o agente, que responde no chat.
+    Agent,
+    /// Só existe na interface original do provedor: ela abre, fora da tela
+    /// do terra, na sessão do chat e com o comando.
+    Original,
+    /// O terra não roda (ex.: pagamento e plano).
+    Blocked,
 }
 
 /// Um provedor de agente para o chat.
@@ -182,6 +222,23 @@ pub trait ChatAdapter {
     /// quando o provedor não tem contas.
     fn accounts(&self) -> Vec<AccountOption> {
         Vec::new()
+    }
+
+    /// Os servidores MCP configurados no provedor para `cwd` e a conta
+    /// `account`, para a Config mostrar. Vazio quando ele não tem MCP.
+    fn mcp_servers(&self, _cwd: &Path, _account: Option<&str>) -> Vec<ProviderMcp> {
+        Vec::new()
+    }
+
+    /// As skills instaladas no provedor para `cwd` e a conta `account`,
+    /// para a Config mostrar. Vazio quando ele não tem skills.
+    fn skills(&self, _cwd: &Path, _account: Option<&str>) -> Vec<ProviderSkill> {
+        Vec::new()
+    }
+
+    /// Onde roda o comando `name` (sem a `/`) que o terra não implementa.
+    fn command_route(&self, _name: &str) -> CommandRoute {
+        CommandRoute::Agent
     }
 
     /// Modelos que podem ser escolhidos na Config, além do padrão.

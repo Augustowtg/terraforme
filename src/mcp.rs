@@ -9,6 +9,13 @@
 //! workspace e se há uma sessão ativa ([`Link`]); o MCP lista os terra
 //! abertos ([`Instance`]) para a aba MCP e para os agentes (a ferramenta
 //! `spaces`).
+//!
+//! Um agente também pode delegar uma tarefa a um chat novo num terra (a
+//! ferramenta `chat`): o MCP guarda o pedido ([`ChatRequest`]) e o entrega ao
+//! terra na próxima batida, e o terra abre o chat numa aba embaixo da barra
+//! de abas. O agente que delegou espera a resposta (a ferramenta `wait`), e
+//! os pedidos de permissão do chat delegado chegam a ele para aprovar ou
+//! negar (as ferramentas `wait` e `decide`).
 
 pub mod server;
 
@@ -54,6 +61,49 @@ pub struct Instance {
     /// Há uma conversa com o agente (no chat do terra ou na interface
     /// original do provedor).
     pub session: bool,
+    /// Os chats abertos neste terra, com o consumo de cada um.
+    pub chats: Vec<ChatStats>,
+}
+
+/// Um chat aberto num terra, como ele aparece no MCP.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatStats {
+    pub title: String,
+    /// Tokens de entrada e saída, sem os de cache.
+    pub tokens: u64,
+    /// Tokens de cache (criação e leitura).
+    pub cache_tokens: u64,
+    /// O agente está respondendo.
+    pub busy: bool,
+    /// A delegação ([`ChatRequest::id`]) quando o chat foi aberto por um
+    /// agente.
+    pub id: Option<u64>,
+    /// A última resposta do agente do chat, para voltar a quem delegou.
+    pub reply: Option<String>,
+}
+
+impl ChatStats {
+    fn to_json(&self) -> Value {
+        json!({
+            "title": self.title,
+            "tokens": self.tokens,
+            "cache_tokens": self.cache_tokens,
+            "busy": self.busy,
+            "id": self.id,
+            "reply": self.reply,
+        })
+    }
+
+    fn from_json(json: &Value) -> Option<Self> {
+        Some(Self {
+            title: json["title"].as_str()?.to_string(),
+            tokens: json["tokens"].as_u64().unwrap_or(0),
+            cache_tokens: json["cache_tokens"].as_u64().unwrap_or(0),
+            busy: json["busy"].as_bool().unwrap_or(false),
+            id: json["id"].as_u64(),
+            reply: json["reply"].as_str().map(str::to_string),
+        })
+    }
 }
 
 impl Instance {
@@ -63,6 +113,7 @@ impl Instance {
             "name": self.name,
             "dir": self.dir.to_string_lossy(),
             "session": self.session,
+            "chats": self.chats.iter().map(ChatStats::to_json).collect::<Vec<_>>(),
         })
     }
 
@@ -72,7 +123,82 @@ impl Instance {
             name: json["name"].as_str()?.to_string(),
             dir: PathBuf::from(json["dir"].as_str()?),
             session: json["session"].as_bool().unwrap_or(false),
+            chats: json["chats"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(ChatStats::from_json)
+                .collect(),
         })
+    }
+}
+
+/// O endereço do MCP para o agente do terra `pid`: assim o MCP sabe de qual
+/// terra veio o pedido.
+pub fn agent_url(pid: u32) -> String {
+    format!("{}?from={pid}", url())
+}
+
+/// O endereço do MCP para o agente de um chat delegado (`chat` é o
+/// [`ChatRequest::id`]): assim o MCP sabe de qual delegação vêm os pedidos
+/// de permissão dele.
+pub fn delegated_url(pid: u32, chat: u64) -> String {
+    format!("{}&chat={chat}", agent_url(pid))
+}
+
+/// O nome do MCP do terra para os agentes.
+pub const SERVER_NAME: &str = "terra";
+/// A ferramenta que um chat delegado usa para pedir permissão a quem delegou.
+pub const PERMISSION_TOOL: &str = "permission";
+
+/// Um pedido de um agente para abrir um chat novo num terra.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatRequest {
+    /// A delegação, dada pelo MCP: com ela, quem delegou espera a resposta
+    /// (a ferramenta `wait`) e aprova os pedidos de permissão do chat.
+    pub id: u64,
+    /// O nome do workspace de onde veio o pedido, quando se sabe.
+    pub from: Option<String>,
+    /// O título da aba do chat.
+    pub title: Option<String>,
+    /// A primeira mensagem do chat.
+    pub message: String,
+}
+
+impl ChatRequest {
+    fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "from": self.from,
+            "title": self.title,
+            "message": self.message,
+        })
+    }
+
+    fn from_json(json: &Value) -> Option<Self> {
+        let text = |key: &str| {
+            json[key]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+        };
+        Some(Self {
+            id: json["id"].as_u64().unwrap_or(0),
+            from: text("from"),
+            title: text("title"),
+            message: text("message")?,
+        })
+    }
+
+    /// O prompt da primeira mensagem: diz ao agente de onde ela veio e que
+    /// a resposta final volta para quem delegou.
+    pub fn prompt(&self) -> String {
+        let from = self.from.as_deref().unwrap_or("principal");
+        format!(
+            "[Tarefa delegada pelo agente do workspace {from}. A sua última resposta volta para ele: termine com o resultado.]\n\n{}",
+            self.message
+        )
     }
 }
 
@@ -81,11 +207,27 @@ pub fn is_online() -> bool {
     call("ping", json!({})).is_ok()
 }
 
+/// A versão do terra que abriu o MCP da porta, se houver um respondendo.
+fn running_version() -> Option<String> {
+    let result = call("initialize", json!({})).ok()?;
+    Some(result["serverInfo"]["version"].as_str()?.to_string())
+}
+
 /// Abre o MCP num processo novo (`terra mcp`), a não ser que já haja um na
-/// porta. Retorna `true` se abriu.
+/// porta da mesma versão. Um MCP de outra versão (o terra foi atualizado com
+/// ele aberto) é fechado e aberto de novo. Retorna `true` se abriu.
 pub fn ensure_running() -> Result<bool> {
-    if is_online() {
-        return Ok(false);
+    match running_version() {
+        Some(version) if version == env!("CARGO_PKG_VERSION") => return Ok(false),
+        Some(_) => {
+            shutdown()?;
+            let deadline = std::time::Instant::now() + TIMEOUT;
+            while is_online() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        None if is_online() => return Ok(false),
+        None => {}
     }
     let exe = std::env::current_exe().context("não foi possível achar o executável do terra")?;
     let mut command = Command::new(exe);
@@ -186,6 +328,8 @@ struct Shared {
     /// Os terra abertos na última vez que o MCP respondeu; `None` quando ele
     /// não respondeu (offline).
     instances: Mutex<Option<Vec<Instance>>>,
+    /// Os chats pedidos pelos agentes, ainda não abertos.
+    chats: Mutex<Vec<ChatRequest>>,
     stop: AtomicBool,
 }
 
@@ -200,6 +344,7 @@ impl Link {
         let shared = Arc::new(Shared {
             me: Mutex::new(me),
             instances: Mutex::new(None),
+            chats: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
         });
         let thread_shared = Arc::clone(&shared);
@@ -214,9 +359,25 @@ impl Link {
         }
     }
 
+    /// Avisa, na próxima batida, os chats abertos e o consumo deles.
+    pub fn set_chats(&self, chats: Vec<ChatStats>) {
+        if let Ok(mut me) = self.shared.me.lock() {
+            me.chats = chats;
+        }
+    }
+
     /// Os terra abertos; `None` com o MCP offline.
     pub fn instances(&self) -> Option<Vec<Instance>> {
         self.shared.instances.lock().ok()?.clone()
+    }
+
+    /// Os chats que os agentes pediram para abrir neste terra.
+    pub fn take_chats(&self) -> Vec<ChatRequest> {
+        self.shared
+            .chats
+            .lock()
+            .map(|mut chats| std::mem::take(&mut *chats))
+            .unwrap_or_default()
     }
 
     pub fn is_online(&self) -> bool {
@@ -242,7 +403,17 @@ fn heartbeat(shared: &Shared) {
         let me = shared.me.lock().map(|me| me.to_json()).ok();
         let seen = me
             .map_or(Ok(Value::Null), |me| call("terra/announce", me))
-            .and_then(|_| instances())
+            .map(|answer| {
+                let chats = answer["chats"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(ChatRequest::from_json);
+                if let Ok(mut pending) = shared.chats.lock() {
+                    pending.extend(chats);
+                }
+            })
+            .and_then(|()| instances())
             .ok();
         if shared.stop.load(Ordering::Relaxed) {
             break;
@@ -269,8 +440,32 @@ mod tests {
             name: "terra".into(),
             dir: PathBuf::from("/home/eu/terra"),
             session: true,
+            chats: vec![ChatStats {
+                title: "Chat 2".into(),
+                tokens: 10,
+                cache_tokens: 100,
+                busy: false,
+                id: Some(3),
+                reply: Some("feito".into()),
+            }],
         };
         assert_eq!(Instance::from_json(&instance.to_json()), Some(instance));
         assert_eq!(Instance::from_json(&json!({"pid": 1})), None);
+    }
+
+    #[test]
+    fn chat_request_round_trips_and_needs_a_message() {
+        let request = ChatRequest {
+            id: 7,
+            from: Some("a".into()),
+            title: None,
+            message: "oi".into(),
+        };
+        assert_eq!(
+            ChatRequest::from_json(&request.to_json()),
+            Some(request.clone())
+        );
+        assert!(request.prompt().contains("workspace a") && request.prompt().ends_with("oi"));
+        assert_eq!(ChatRequest::from_json(&json!({"message": "  "})), None);
     }
 }

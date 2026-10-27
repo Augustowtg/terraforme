@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use unicode_width::UnicodeWidthChar;
 
 use super::commands;
-use super::mention::{self, Picker};
+use super::mention::{self, Mention, Picker};
 use crate::agent::CommandInfo;
 use crate::files::{FileEntry, FileIndex};
 use crate::theme::{self, Variant};
@@ -76,8 +76,9 @@ pub struct InputBox {
     cursor_visible: bool,
     /// Ticks desde a última troca do cursor piscante.
     blink_ticks: u32,
-    /// Caminhos das menções; no texto, cada uma é um [`mention::token`].
-    mentions: Vec<String>,
+    /// As menções (arquivos e skills); no texto, cada uma é um
+    /// [`mention::token`].
+    mentions: Vec<Mention>,
     /// Lista de arquivos aberta pelo `@`.
     picker: Option<Picker>,
     /// Arquivos do diretório, observados a partir do primeiro `@`.
@@ -97,7 +98,7 @@ pub struct InputBox {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Draft {
     buffer: String,
-    mentions: Vec<String>,
+    mentions: Vec<Mention>,
 }
 
 impl Default for InputBox {
@@ -129,12 +130,12 @@ impl InputBox {
         self.mode
     }
 
-    /// O texto para enviar: cada menção vira `@caminho`.
+    /// O texto para enviar: cada menção vira `@caminho` (ou `/skill`).
     pub fn text(&self) -> String {
         self.buffer
             .chars()
             .map(|c| match self.mention(c) {
-                Some(path) => mention::prompt_text(path),
+                Some(mention) => mention::prompt_text(mention),
                 None => c.to_string(),
             })
             .collect()
@@ -180,15 +181,15 @@ impl InputBox {
         self.files = Some(files);
     }
 
-    /// O caminho da menção, se `c` for o token de uma.
-    fn mention(&self, c: char) -> Option<&String> {
+    /// A menção, se `c` for o token de uma.
+    fn mention(&self, c: char) -> Option<&Mention> {
         mention::token_index(c).and_then(|i| self.mentions.get(i))
     }
 
     /// Colunas que `c` ocupa na tela (um badge ocupa o caminho inteiro).
     fn width_of(&self, c: char) -> usize {
         match self.mention(c) {
-            Some(path) => mention::badge_width(path),
+            Some(mention) => mention::badge_width(mention),
             None => c.width().unwrap_or(0),
         }
     }
@@ -429,7 +430,7 @@ impl InputBox {
                 let complete = key.code == KeyCode::Tab
                     && chosen
                         .as_ref()
-                        .is_some_and(|c| !commands::has_interface(&c.name));
+                        .is_some_and(|c| !c.skill && !commands::has_interface(&c.name));
                 if complete {
                     return Some(self.complete_command(chosen));
                 }
@@ -457,7 +458,9 @@ impl InputBox {
         )
     }
 
-    /// Tira a `/consulta` do texto e devolve o comando. Sem item, só fecha.
+    /// Tira a `/consulta` do texto e devolve o comando; uma skill vira um
+    /// badge (e um espaço), como o `@`, para escrever o pedido depois dela.
+    /// Sem item, só fecha.
     fn accept_command(&mut self, command: Option<CommandInfo>) -> Outcome {
         let Some(picker) = self.command_picker.take() else {
             return Outcome::Handled;
@@ -466,6 +469,14 @@ impl InputBox {
             return Outcome::Handled;
         };
         let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
+        if command.skill {
+            let token = mention::token(self.mentions.len());
+            self.mentions.push(Mention::Skill(command.name));
+            self.buffer.replace_range(bytes, &format!("{token} "));
+            self.cursor = picker.start + 2;
+            self.anchor = None;
+            return Outcome::Handled;
+        }
         self.buffer.replace_range(bytes, "");
         self.cursor = picker.start;
         self.anchor = None;
@@ -570,7 +581,7 @@ impl InputBox {
         };
         let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
         let token = mention::token(self.mentions.len());
-        self.mentions.push(entry.path.clone());
+        self.mentions.push(Mention::File(entry.path.clone()));
         self.buffer.replace_range(bytes, &format!("{token} "));
         self.cursor = picker.start + 2;
         self.anchor = None;
@@ -803,9 +814,9 @@ impl InputBox {
             .skip(row.start)
         {
             let selected = selection.contains(&i);
-            if let Some(path) = self.mention(c) {
+            if let Some(mention) = self.mention(c) {
                 push_run(&mut spans, &mut run, run_selected);
-                spans.push(mention::badge_span(path, selected));
+                spans.push(mention::badge_span(mention, selected));
                 continue;
             }
             if selected != run_selected {

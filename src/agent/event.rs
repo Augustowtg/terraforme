@@ -43,6 +43,8 @@ pub enum AgentEvent {
         is_error: bool,
         message: Option<String>,
         tokens: u64,
+        /// Os tokens de cache (criação e leitura), fora de `tokens`.
+        cache_tokens: u64,
         /// Ferramentas negadas por falta de permissão.
         denied: usize,
     },

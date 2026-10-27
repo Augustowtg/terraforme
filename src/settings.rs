@@ -14,7 +14,7 @@
 //!     "effort": "high",
 //!     "interface": "terraforme",
 //!     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 },
-//!     "usage": { "display": "hidden" }
+//!     "usage": { "display": "hidden", "total_display": "visible" }
 //!   },
 //!   "extensions": { "enabled": ["rtk", "ai-memory"] }
 //! }
@@ -24,7 +24,8 @@
 //! sem a chave, nenhuma.
 //!
 //! O MCP ([`McpSettings`]) é um só para a máquina, então fica no
-//! `~/.terraforme/config.json` ([`global_file`]): `{"mcp": {"enabled": true}}`.
+//! `~/.terraforme/config.json` ([`global_file`]):
+//! `{"mcp": {"enabled": true, "spawn_mode": "accept_edits"}}`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -194,6 +195,8 @@ impl Default for ContextSettings {
 pub struct UsageSettings {
     /// A barra de consumo aparece no chat.
     pub visible: bool,
+    /// O consumo geral (a soma dos chats do terra) aparece ao lado do "Sair".
+    pub total_visible: bool,
 }
 
 impl UsageSettings {
@@ -202,18 +205,25 @@ impl UsageSettings {
             visible: json["display"]
                 .as_str()
                 .map_or(Self::default().visible, |d| d != "hidden"),
+            total_visible: json["total_display"]
+                .as_str()
+                .map_or(Self::default().total_visible, |d| d != "hidden"),
         }
     }
 
     fn to_json(self) -> Value {
-        json!({ "display": if self.visible { "visible" } else { "hidden" } })
+        let display = |visible: bool| if visible { "visible" } else { "hidden" };
+        json!({ "display": display(self.visible), "total_display": display(self.total_visible) })
     }
 }
 
-/// Oculta.
+/// A barra oculta e o consumo geral visível.
 impl Default for UsageSettings {
     fn default() -> Self {
-        Self { visible: false }
+        Self {
+            visible: false,
+            total_visible: true,
+        }
     }
 }
 
@@ -315,26 +325,49 @@ impl ExtensionSettings {
 
 /// O MCP do terra (seção MCP da Config): o servidor orquestrador, um só para
 /// a máquina.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McpSettings {
     /// Ao iniciar, o terra abre o MCP (se ninguém abriu) e se registra nele.
     /// Desativado por padrão.
     pub enabled: bool,
+    /// O modo com que começam os chats abertos pelo orquestrador (a
+    /// ferramenta `chat`). Accept Edits por padrão.
+    pub spawn_mode: StartMode,
 }
 
 impl McpSettings {
-    /// Lê o MCP do `config.json` global; sem o arquivo ou a chave, desativado.
+    pub const DEFAULT_SPAWN_MODE: StartMode = StartMode::Fixed(PermissionMode::AcceptEdits);
+
+    /// Lê o MCP do `config.json` global; sem o arquivo ou a chave, desativado
+    /// e com os chats abertos em Accept Edits.
     pub fn load_file(path: &Path) -> Self {
+        let json = read_file(path);
         Self {
-            enabled: read_file(path)["mcp"]["enabled"] == true,
+            enabled: json["mcp"]["enabled"] == true,
+            spawn_mode: json["mcp"]["spawn_mode"]
+                .as_str()
+                .and_then(StartMode::from_key)
+                .unwrap_or(Self::DEFAULT_SPAWN_MODE),
         }
     }
 
     /// Grava o MCP no `config.json` global, mantendo as outras chaves.
     pub fn save_file(&self, path: &Path) -> Result<()> {
         update_file(path, |json| {
-            json["mcp"] = json!({ "enabled": self.enabled });
+            json["mcp"] = json!({
+                "enabled": self.enabled,
+                "spawn_mode": self.spawn_mode.key(),
+            });
         })
+    }
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            spawn_mode: Self::DEFAULT_SPAWN_MODE,
+        }
     }
 }
 
@@ -424,7 +457,10 @@ mod tests {
                 limit: Some(300_000),
                 compact_at: 90,
             },
-            usage: UsageSettings { visible: true },
+            usage: UsageSettings {
+                visible: true,
+                total_visible: false,
+            },
         };
         settings.save_file(&path).unwrap();
         assert_eq!(AgentSettings::load_file(&path), Some(settings.clone()));
@@ -436,7 +472,10 @@ mod tests {
             json["agent"]["context"],
             json!({"display": "hidden", "auto_compact": true, "limit": 300_000, "compact_at": 90})
         );
-        assert_eq!(json["agent"]["usage"], json!({"display": "visible"}));
+        assert_eq!(
+            json["agent"]["usage"],
+            json!({"display": "visible", "total_display": "hidden"})
+        );
 
         // Chaves de fora do agente ficam no arquivo.
         fs::write(&path, r#"{"outra": 1, "agent": {"model": "opus"}}"#).unwrap();
@@ -507,10 +546,23 @@ mod tests {
             "desativado por padrão"
         );
         fs::write(&path, r#"{"outra": 1}"#).unwrap();
-        McpSettings { enabled: true }.save_file(&path).unwrap();
-        assert!(McpSettings::load_file(&path).enabled);
+        assert_eq!(
+            McpSettings::load_file(&path).spawn_mode,
+            StartMode::Fixed(PermissionMode::AcceptEdits),
+            "os chats do orquestrador começam em Accept Edits"
+        );
+        fs::write(&path, r#"{"outra": 1}"#).unwrap();
+        let mcp = McpSettings {
+            enabled: true,
+            spawn_mode: StartMode::Fixed(PermissionMode::Yolo),
+        };
+        mcp.save_file(&path).unwrap();
+        assert_eq!(McpSettings::load_file(&path), mcp);
         let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(json, json!({"outra": 1, "mcp": {"enabled": true}}));
+        assert_eq!(
+            json,
+            json!({"outra": 1, "mcp": {"enabled": true, "spawn_mode": "yolo"}})
+        );
     }
 
     #[test]

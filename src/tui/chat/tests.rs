@@ -59,6 +59,7 @@ impl ChatAdapter for FakeAdapter {
             .map(|name| agent::CommandInfo {
                 name: name.to_string(),
                 description: format!("faz {name}"),
+                skill: false,
             })
             .collect();
         let model = |id: &str, efforts: &[&str]| agent::ModelInfo {
@@ -80,6 +81,21 @@ impl ChatAdapter for FakeAdapter {
 
     fn login(&self, _account: Option<&str>) -> Option<Command> {
         Some(Command::new("fake-login"))
+    }
+
+    fn command_route(&self, name: &str) -> agent::CommandRoute {
+        match name {
+            "hooks" => agent::CommandRoute::Original,
+            "upgrade" => agent::CommandRoute::Blocked,
+            _ => agent::CommandRoute::Agent,
+        }
+    }
+
+    fn interactive(&self, _cwd: &std::path::Path, options: Interactive<'_>) -> Option<Command> {
+        let mut cmd = Command::new("fake-original");
+        cmd.args(options.session_id);
+        cmd.args(options.command);
+        Some(cmd)
     }
 
     fn start(&self, request: Request<'_>) -> Result<Box<dyn Session>, String> {
@@ -116,6 +132,7 @@ fn done(tokens: u64) -> AgentEvent {
         is_error: false,
         message: None,
         tokens,
+        cache_tokens: 0,
         denied: 0,
     }
 }
@@ -364,6 +381,46 @@ fn slash_commands_typed_with_arguments_go_to_the_agent() {
 }
 
 #[test]
+fn interactive_only_commands_open_the_original_in_the_session() {
+    let reply = vec![init(PermissionMode::Agente), done(1)];
+    let (mut chat, sent) = fake_chat(true, reply);
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+
+    type_text(&mut chat, "/hooks PreToolUse");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow().len(), 1, "não vai para o agente");
+    let (original, command) = chat.take_original().expect("abre a original");
+    assert_eq!(original.get_program(), "fake-original");
+    let args: Vec<_> = original.get_args().collect();
+    assert_eq!(
+        args,
+        [chat.session_id.as_deref().unwrap(), "/hooks PreToolUse"]
+    );
+    assert_eq!(command, "/hooks PreToolUse");
+    chat.finish_original(&command, Ok(()));
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info(
+            "/hooks PreToolUse rodou na interface original.".into()
+        ))
+    );
+
+    // Pagamento e plano não rodam.
+    type_text(&mut chat, "/upgrade ");
+    press(&mut chat, KeyCode::Enter);
+    assert!(chat.take_original().is_none());
+    assert_eq!(sent.borrow().len(), 1);
+    assert!(matches!(
+        chat.history.entries().last(),
+        Some(Entry::Info(text)) if text.contains("pagamento e plano")
+    ));
+}
+
+#[test]
 fn login_is_a_terra_command_that_runs_the_provider_login() {
     let (mut chat, _) = fake_chat(true, Vec::new());
     chat.tick();
@@ -398,6 +455,7 @@ fn auth_error_suggests_login() {
                 .into(),
         ),
         tokens: 0,
+        cache_tokens: 0,
         denied: 0,
     }];
     let (mut chat, _) = fake_chat(true, reply);
@@ -563,6 +621,7 @@ fn agent_events_update_history_status_and_consumption() {
         is_error: false,
         message: None,
         tokens: 1_500,
+        cache_tokens: 0,
         denied: 1,
     });
     assert_eq!(chat.agent_status, AgentStatus::Ocioso);
@@ -1061,7 +1120,10 @@ fn session(percent: f64) -> UsageWindow {
 fn usage_bar_sits_beside_the_context_bar() {
     let mut chat = Chat {
         context_settings: visible(),
-        usage_settings: UsageSettings { visible: true },
+        usage_settings: UsageSettings {
+            visible: true,
+            ..Default::default()
+        },
         ..Chat::default()
     };
     chat.set_session_usage(Some(session(42.0)));

@@ -134,6 +134,7 @@ fn parse_mcp(text: &str) -> Result<Vec<McpServer>, String> {
                     .flatten()
                     .filter_map(|a| a.as_str().map(str::to_string))
                     .collect(),
+                url: None,
             })
         })
         .collect())
@@ -244,6 +245,7 @@ claude mcp add --transport stdio ai-memory -- \
                     "--server-url".into(),
                     "http://127.0.0.1:49374/mcp".into()
                 ],
+                url: None,
             }]
         );
         assert!(parse_mcp("claude mcp add").is_err());

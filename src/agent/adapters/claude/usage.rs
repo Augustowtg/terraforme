@@ -7,12 +7,15 @@
 //! A chamada é feita pelo `curl`, com os headers pelo stdin para o token não
 //! aparecer na linha de comando (`ps`).
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -37,12 +40,89 @@ const WINDOWS: [(&str, &str); 4] = [
 pub fn load(config_dir: PathBuf) -> Receiver<Result<Usage, String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(fetch(&config_dir));
+        let _ = tx.send(fetch_cached(&config_dir));
     });
     rx
 }
 
-fn fetch(config_dir: &Path) -> Result<Usage, String> {
+/// Quanto uma resposta vale para as outras chamadas (a aba e a barra de
+/// consumo pedem juntas).
+const FRESH: Duration = Duration::from_secs(50);
+/// Espera depois de um HTTP 429; dobra a cada 429 seguido, até [`MAX_BACKOFF`].
+const BACKOFF: Duration = Duration::from_secs(60);
+const MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
+
+#[derive(Default)]
+struct Cached {
+    /// A última resposta boa e quando chegou.
+    usage: Option<(Instant, Usage)>,
+    /// Com 429: até quando não chamar, e quantos 429 seguidos.
+    blocked_until: Option<Instant>,
+    strikes: u32,
+}
+
+static CACHE: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
+
+/// Uma chamada por vez e por conta: quem pede logo depois recebe a mesma
+/// resposta, e depois de um 429 ninguém chama até passar a espera.
+fn fetch_cached(config_dir: &Path) -> Result<Usage, String> {
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = guard
+        .get_or_insert_with(HashMap::new)
+        .entry(config_dir.to_path_buf())
+        .or_default();
+    let now = Instant::now();
+    if let Some((at, usage)) = &entry.usage
+        && now.duration_since(*at) < FRESH
+    {
+        return Ok(usage.clone());
+    }
+    if let Some(until) = entry.blocked_until
+        && until > now
+    {
+        return Err(rate_limited(until - now));
+    }
+    match fetch(config_dir) {
+        Ok(usage) => {
+            entry.usage = Some((Instant::now(), usage.clone()));
+            entry.blocked_until = None;
+            entry.strikes = 0;
+            Ok(usage)
+        }
+        Err(Fetch::RateLimited) => {
+            let wait = BACKOFF
+                .saturating_mul(1 << entry.strikes.min(4))
+                .min(MAX_BACKOFF);
+            entry.strikes += 1;
+            entry.blocked_until = Some(Instant::now() + wait);
+            Err(rate_limited(wait))
+        }
+        Err(Fetch::Other(error)) => Err(error),
+    }
+}
+
+fn rate_limited(wait: Duration) -> String {
+    let secs = wait.as_secs().max(1);
+    let wait = if secs >= 60 {
+        format!("{} min", secs.div_ceil(60))
+    } else {
+        format!("{secs} s")
+    };
+    format!("o Claude limitou as consultas de consumo (HTTP 429): nova tentativa em {wait}")
+}
+
+enum Fetch {
+    RateLimited,
+    Other(String),
+}
+
+impl From<String> for Fetch {
+    fn from(error: String) -> Self {
+        Fetch::Other(error)
+    }
+}
+
+fn fetch(config_dir: &Path) -> Result<Usage, Fetch> {
     let credentials = read_credentials(config_dir)?;
     let mut child = Command::new("curl")
         .args([
@@ -72,16 +152,20 @@ fn fetch(config_dir: &Path) -> Result<Usage, String> {
         .map_err(|err| format!("o curl falhou: {err}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("sem conexão com o Claude: {}", stderr.trim()));
+        return Err(Fetch::Other(format!(
+            "sem conexão com o Claude: {}",
+            stderr.trim()
+        )));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let (body, status) = stdout.rsplit_once('\n').unwrap_or(("", &stdout));
     match status.trim() {
-        "200" => parse(body, credentials.plan),
-        "401" | "403" => {
-            Err("o login do Claude expirou ou foi revogado: use /login no chat".to_string())
-        }
-        status => Err(format!("o Claude respondeu HTTP {status}")),
+        "200" => Ok(parse(body, credentials.plan)?),
+        "429" => Err(Fetch::RateLimited),
+        "401" | "403" => Err(Fetch::Other(
+            "o login do Claude expirou ou foi revogado: use /login no chat".to_string(),
+        )),
+        status => Err(Fetch::Other(format!("o Claude respondeu HTTP {status}"))),
     }
 }
 

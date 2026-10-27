@@ -5,7 +5,8 @@
 //! Entram todos os comandos que o `claude` informa (os embutidos, as skills
 //! e os plugins) e os do modo interativo que o `-p` não informa
 //! ([`interactive::COMMANDS`], ex.: `/help`, `/status`), para a lista da `/`
-//! mostrar todos os comandos do Claude.
+//! mostrar todos os comandos do Claude, menos os de pagamento e plano
+//! ([`interactive::BILLING`]).
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -85,8 +86,10 @@ fn parse(response: &Value) -> Catalog {
         .map(|c| CommandInfo {
             name: text(&c["name"]),
             description: text(&c["description"]),
+            skill: c["builtin"] != true,
         })
         .filter(|c| !c.name.is_empty() && !c.name.starts_with("__"))
+        .filter(|c| !interactive::BILLING.contains(&c.name.as_str()))
         .collect();
     // Os do modo interativo, quando o `claude` não informou (o dele vence).
     for (name, description) in interactive::COMMANDS {
@@ -94,6 +97,7 @@ fn parse(response: &Value) -> Catalog {
             commands.push(CommandInfo {
                 name: name.to_string(),
                 description: description.to_string(),
+                skill: false,
             });
         }
     }
@@ -155,6 +159,8 @@ mod tests {
         // Os do `claude` primeiro (embutidos e skills; os internos `__` não),
         // depois os do modo interativo.
         assert_eq!(names[..2], ["model", "graphify"]);
+        assert!(!catalog.commands[0].skill);
+        assert!(catalog.commands[1].skill);
         assert!(!names.contains(&"__remote-workflow"));
         for name in ["help", "status", "resume", "login", "logout", "permissions"] {
             assert!(names.contains(&name), "/{name}");
