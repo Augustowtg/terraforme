@@ -33,7 +33,7 @@ use crate::settings::ExtensionSettings;
 use crate::theme::{self, Variant};
 
 pub const HELP: &str =
-    "↑/↓ escolher · r atualizar · ativar na Config · Tab trocar aba · Esc ir para Sair";
+    "↑/↓ escolher · r atualizar · ativar nas Configurações · Tab trocar aba · Esc ir para Sair";
 /// Depois disso, o relatório mostrado é recarregado.
 const STALE: Duration = Duration::from_secs(60);
 /// Largura da lista das extensões.

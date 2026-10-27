@@ -160,7 +160,7 @@ impl McpView {
             .count();
         let mut lines = vec![
             Line::from(vec![
-                Span::styled(" MCP", theme::section_title()),
+                Span::styled(" Orquestrador", theme::section_title()),
                 Span::styled(format!(" · {}", mcp::url()), theme::path()),
             ]),
             Line::styled(
@@ -320,7 +320,7 @@ mod tests {
                 .trim_end()
                 .to_string()
         };
-        assert_eq!(row(1), "  MCP · http://127.0.0.1:30303/mcp");
+        assert_eq!(row(1), "  Orquestrador · http://127.0.0.1:30303/mcp");
         assert_eq!(row(2), "    2 terra cli abertos · 1 com sessão ativa");
         assert_eq!(row(4), "  Spaces");
         assert_eq!(row(5), "   ● terra  sessão ativa      /w/terra");

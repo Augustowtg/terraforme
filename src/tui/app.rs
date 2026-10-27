@@ -71,8 +71,8 @@ impl Tab {
             Tab::Chat => "Chat",
             Tab::Consumo => "Consumo",
             Tab::Extensoes => "Extensões",
-            Tab::Config => "Config",
-            Tab::Mcp => "MCP",
+            Tab::Config => "Configurações",
+            Tab::Mcp => "Orquestrador",
         }
     }
 
@@ -756,7 +756,7 @@ impl App {
                 theme::muted(),
             ),
             Line::styled(
-                "  Para usar o chat do terra, troque a Interface na aba Config.",
+                "  Para usar o chat do terra, troque a Interface na aba Configurações.",
                 theme::muted(),
             ),
         ];
@@ -1280,25 +1280,28 @@ mod tests {
     fn nav_bar_highlights_active_tab_and_right_aligns_quit() {
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut terminal = Terminal::new(TestBackend::new(50, 8)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
         let mut app = App::default();
         press(&mut app, KeyCode::Tab);
         terminal.draw(|frame| app.draw(frame)).unwrap();
 
         let buffer = terminal.backend().buffer();
-        let row = |y: u16| (0..50).map(|x| buffer[(x, y)].symbol()).collect::<String>();
-        assert_eq!(row(0), format!("╭{}╮", "─".repeat(48)));
-        assert_eq!(row(1), "│  Chat   Consumo   Extensões   Config     Sair  │");
-        assert_eq!(row(2), format!("╰{}╯", "─".repeat(48)));
+        let row = |y: u16| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(0), format!("╭{}╮", "─".repeat(58)));
+        assert_eq!(
+            row(1),
+            "│  Chat   Consumo   Extensões   Configurações        Sair  │"
+        );
+        assert_eq!(row(2), format!("╰{}╯", "─".repeat(58)));
 
         // O pill " Consumo " (x = 9..18) usa o estilo da aba ativa; "Chat" não.
         let active_bg = theme::tab_active().bg;
         assert!((9..18).all(|x| buffer[(x, 1)].bg == active_bg.unwrap()));
         assert_ne!(buffer[(3, 1)].bg, active_bg.unwrap());
 
-        // "Sair" (x = 42..48) é vermelho, sem fundo até receber foco.
+        // "Sair" (x = 52..58) é vermelho, sem fundo até receber foco.
         let red = theme::quit().fg.unwrap();
-        assert!((42..48).all(|x| buffer[(x, 1)].fg == red));
+        assert!((52..58).all(|x| buffer[(x, 1)].fg == red));
     }
 
     #[test]
