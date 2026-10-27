@@ -32,8 +32,8 @@ pub enum AgentEvent {
     ToolUse { name: String, detail: String },
     /// Resultado de uma ferramenta (primeira linha).
     ToolResult { is_error: bool, summary: String },
-    /// Tamanho do contexto da sessão na última chamada ao modelo (entrada,
-    /// cache e saída) e, quando o provedor informa, o limite do modelo.
+    /// Tamanho do contexto da sessão na última chamada ao modelo (entrada e
+    /// saída, sem o cache) e, quando o provedor informa, o limite do modelo.
     Context { tokens: u64, window: Option<u64> },
     /// O agente compactou a conversa: o contexto volta a ser pequeno. Com o
     /// tamanho dele depois da compactação, quando o provedor informa.

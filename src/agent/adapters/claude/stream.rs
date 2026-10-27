@@ -117,16 +117,13 @@ impl StreamParser {
     }
 }
 
-/// Tamanho do contexto numa chamada: entrada (com o cache) e saída. `None`
-/// quando a chamada não trouxe o uso.
+/// Tamanho do contexto numa chamada: só entrada e saída, sem os tokens de
+/// cache. `None` quando a chamada não trouxe o uso.
 fn context_tokens(usage: &Value) -> Option<u64> {
-    const KEYS: [&str; 4] = [
-        "input_tokens",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-        "output_tokens",
-    ];
-    let tokens: u64 = KEYS.iter().filter_map(|key| usage[key].as_u64()).sum();
+    let tokens: u64 = ["input_tokens", "output_tokens"]
+        .iter()
+        .filter_map(|key| usage[key].as_u64())
+        .sum();
     (tokens > 0).then_some(tokens)
 }
 
@@ -266,7 +263,7 @@ mod tests {
                 AgentEvent::TextDelta("o".into()),
                 AgentEvent::TextDelta("i".into()),
                 AgentEvent::Context {
-                    tokens: 21,
+                    tokens: 6,
                     window: None
                 },
                 AgentEvent::Done {
@@ -333,14 +330,14 @@ mod tests {
         assert_eq!(
             events[1],
             AgentEvent::Context {
-                tokens: 1006,
+                tokens: 6,
                 window: None
             }
         );
         assert_eq!(
             events[2],
             AgentEvent::Context {
-                tokens: 1183,
+                tokens: 83,
                 window: Some(1_000_000)
             }
         );
