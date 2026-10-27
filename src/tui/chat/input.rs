@@ -13,7 +13,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use unicode_width::UnicodeWidthChar;
 
+use super::commands;
 use super::mention::{self, Picker};
+use crate::agent::CommandInfo;
 use crate::files::{FileEntry, FileIndex};
 use crate::theme::{self, Variant};
 
@@ -33,13 +35,15 @@ pub enum InputMode {
 }
 
 /// O que a caixa fez com uma tecla.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// Não é com ela (ex.: Tab ou Esc no modo NORMAL).
     Ignored,
     Handled,
     /// `Enter`: enviar o texto.
     Submit,
+    /// Um comando escolhido na lista da `/` (sem a `/`), para o chat executar.
+    Command(String),
 }
 
 /// Onde a caixa foi desenhada no último frame; o mouse usa isso para achar o
@@ -78,6 +82,10 @@ pub struct InputBox {
     picker: Option<Picker>,
     /// Arquivos do diretório, observados a partir do primeiro `@`.
     files: Option<FileIndex>,
+    /// Lista de comandos aberta pela `/` no começo do texto.
+    command_picker: Option<Picker>,
+    /// Comandos do agente; `None` enquanto carregam.
+    commands: Option<Vec<CommandInfo>>,
 }
 
 impl Default for InputBox {
@@ -96,6 +104,8 @@ impl Default for InputBox {
             mentions: Vec::new(),
             picker: None,
             files: None,
+            command_picker: None,
+            commands: None,
         }
     }
 }
@@ -123,11 +133,22 @@ impl InputBox {
         self.anchor = None;
         self.mentions.clear();
         self.picker = None;
+        self.command_picker = None;
+    }
+
+    /// Os comandos do agente para a lista da `/` (`None`: ainda carregando).
+    pub fn set_commands(&mut self, commands: Option<Vec<CommandInfo>>) {
+        self.commands = commands;
     }
 
     /// A lista de arquivos do `@` está aberta.
     pub fn picker_open(&self) -> bool {
-        self.picker.is_some()
+        self.picker.is_some() || self.command_picker.is_some()
+    }
+
+    /// A lista aberta é a de comandos (da `/`).
+    pub fn command_picker_open(&self) -> bool {
+        self.command_picker.is_some()
     }
 
     #[cfg(test)]
@@ -171,6 +192,10 @@ impl InputBox {
     }
 
     fn handle_insert(&mut self, key: KeyEvent) -> Outcome {
+        if let Some(outcome) = self.handle_command_picker(key) {
+            self.show_cursor();
+            return outcome;
+        }
         if let Some(outcome) = self.handle_picker(key) {
             self.show_cursor();
             return outcome;
@@ -205,9 +230,14 @@ impl InputBox {
                 // (ex.: um e-mail).
                 let opens =
                     c == '@' && !self.char_before_cursor().is_some_and(char::is_alphanumeric);
+                // `/` abre a lista de comandos, só no começo do texto.
+                let command = c == '/' && self.cursor == 0;
                 self.insert_char(c);
                 if opens {
                     self.open_picker(self.cursor - 1);
+                }
+                if command {
+                    self.command_picker = Some(Picker::new(0));
                 }
             }
             KeyCode::Backspace => {
@@ -267,6 +297,61 @@ impl InputBox {
         Some(Outcome::Handled)
     }
 
+    /// Teclas da lista de comandos, como as da lista de arquivos; Tab/Enter
+    /// tiram a `/consulta` do texto e devolvem o comando para o chat.
+    fn handle_command_picker(&mut self, key: KeyEvent) -> Option<Outcome> {
+        let mut picker = self.command_picker?;
+        let found = self.found_commands();
+        let total = found.as_ref().map_or(0, Vec::len);
+        let ctrl = key.modifiers == KeyModifiers::CONTROL;
+        match key.code {
+            KeyCode::Up => picker.up(total),
+            KeyCode::Down => picker.down(total),
+            KeyCode::Char('p') if ctrl => picker.up(total),
+            KeyCode::Char('n') if ctrl => picker.down(total),
+            KeyCode::Tab | KeyCode::Enter
+                if key.modifiers.is_empty() || key.code == KeyCode::Tab =>
+            {
+                let chosen = found.and_then(|f| f.into_iter().nth(picker.selected));
+                return Some(self.accept_command(chosen));
+            }
+            KeyCode::Esc => self.command_picker = None,
+            _ => return None,
+        }
+        if let Some(open) = &mut self.command_picker {
+            open.selected = picker.selected;
+        }
+        Some(Outcome::Handled)
+    }
+
+    /// Comandos que combinam com a consulta (`None`: ainda carregando).
+    fn found_commands(&self) -> Option<Vec<CommandInfo>> {
+        let picker = self.command_picker?;
+        let commands = self.commands.as_ref()?;
+        let query = self.query_of(picker);
+        Some(
+            commands::matches(commands, &query)
+                .into_iter()
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Tira a `/consulta` do texto e devolve o comando. Sem item, só fecha.
+    fn accept_command(&mut self, command: Option<CommandInfo>) -> Outcome {
+        let Some(picker) = self.command_picker.take() else {
+            return Outcome::Handled;
+        };
+        let Some(command) = command else {
+            return Outcome::Handled;
+        };
+        let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
+        self.buffer.replace_range(bytes, "");
+        self.cursor = picker.start;
+        self.anchor = None;
+        Outcome::Command(command.name)
+    }
+
     /// Abre a lista com o `@` na posição `start`. Os arquivos começam a ser
     /// observados no primeiro `@`.
     fn open_picker(&mut self, start: usize) {
@@ -278,36 +363,53 @@ impl InputBox {
 
     /// Fecha a lista se o `@` sumiu, o cursor saiu da consulta ou ela ganhou
     /// um espaço. Uma edição volta a seleção para o primeiro item.
+    /// Vale para as duas listas (`@` e `/`).
     fn refresh_picker(&mut self, edited: bool) {
-        let Some(picker) = &mut self.picker else {
-            return;
-        };
+        for (slot, trigger) in [(self.picker, '@'), (self.command_picker, '/')] {
+            let Some(mut picker) = slot else {
+                continue;
+            };
+            let refreshed = if self.picker_valid(picker, trigger) {
+                if edited {
+                    picker.selected = 0;
+                }
+                Some(picker)
+            } else {
+                None
+            };
+            match trigger {
+                '@' => self.picker = refreshed,
+                _ => self.command_picker = refreshed,
+            }
+        }
+    }
+
+    /// O `trigger` (`@` ou `/`) ainda está lá, o cursor está depois dele e a
+    /// consulta não tem espaço.
+    fn picker_valid(&self, picker: Picker, trigger: char) -> bool {
         let start = picker.start;
-        let still_valid = self.cursor > start
-            && self.buffer.chars().nth(start) == Some('@')
+        self.cursor > start
+            && self.buffer.chars().nth(start) == Some(trigger)
             && !self
                 .buffer
                 .chars()
                 .skip(start + 1)
                 .take(self.cursor - start - 1)
-                .any(char::is_whitespace);
-        if !still_valid {
-            self.picker = None;
-        } else if edited {
-            picker.selected = 0;
-        }
+                .any(char::is_whitespace)
     }
 
     /// O que vem depois do `@` até o cursor.
     fn query(&self) -> Option<String> {
-        let picker = self.picker?;
-        Some(
-            self.buffer
-                .chars()
-                .skip(picker.start + 1)
-                .take(self.cursor.saturating_sub(picker.start + 1))
-                .collect(),
-        )
+        self.picker.map(|picker| self.query_of(picker))
+    }
+
+    /// O que vem depois do caractere que abriu a lista até o cursor.
+    fn query_of(&self, picker: Picker) -> String {
+        self.buffer
+            .chars()
+            .skip(picker.start + 1)
+            .take(self.cursor.saturating_sub(picker.start + 1))
+            .collect()
     }
 
     /// Arquivos e pastas que combinam com a consulta, já com a lista atual.
@@ -512,6 +614,15 @@ impl InputBox {
                 text_area.x + cursor_col as u16,
                 text_area.y + (cursor_row - scroll) as u16,
             ));
+        }
+
+        if let Some(picker) = self.command_picker {
+            let found = self.found_commands();
+            let refs: Option<Vec<&CommandInfo>> = found.as_ref().map(|f| f.iter().collect());
+            let selected = picker
+                .selected
+                .min(found.as_ref().map_or(0, |f| f.len().saturating_sub(1)));
+            commands::draw(frame, area, refs.as_deref(), selected);
         }
 
         if let Some(picker) = self.picker {

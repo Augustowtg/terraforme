@@ -398,6 +398,97 @@ fn picker_is_drawn_above_the_input() {
     assert!(row(14).starts_with("╰"));
 }
 
+/// Caixa escrevendo, com os comandos do agente já carregados.
+fn input_with_commands() -> InputBox {
+    let mut input = InputBox::default();
+    input.set_commands(Some(
+        [("clear", "Start a new session"), ("compact", "Summarize")]
+            .iter()
+            .map(|(name, description)| CommandInfo {
+                name: name.to_string(),
+                description: description.to_string(),
+            })
+            .collect(),
+    ));
+    press(&mut input, KeyCode::Char('i'));
+    input
+}
+
+#[test]
+fn slash_at_start_opens_commands_and_enter_returns_command() {
+    let mut input = input_with_commands();
+    type_text(&mut input, "/");
+    assert!(input.picker_open());
+    type_text(&mut input, "cle");
+    assert_eq!(
+        press(&mut input, KeyCode::Enter),
+        Outcome::Command("clear".into())
+    );
+    assert!(!input.picker_open());
+    assert_eq!(input.text(), "", "a /consulta sai do texto");
+}
+
+#[test]
+fn slash_in_the_middle_does_not_open_commands() {
+    let mut input = input_with_commands();
+    type_text(&mut input, "a/b");
+    assert!(!input.picker_open());
+    assert_eq!(press(&mut input, KeyCode::Enter), Outcome::Submit);
+}
+
+#[test]
+fn commands_list_navigates_and_esc_keeps_the_text() {
+    let mut input = input_with_commands();
+    type_text(&mut input, "/");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(
+        press(&mut input, KeyCode::Tab),
+        Outcome::Command("compact".into())
+    );
+    type_text(&mut input, "/co");
+    press(&mut input, KeyCode::Esc);
+    assert!(!input.picker_open());
+    assert_eq!(input.mode(), InputMode::Insert);
+    assert_eq!(input.text(), "/co");
+}
+
+#[test]
+fn commands_list_shows_loading_then_items_above_input() {
+    let mut input = InputBox::default();
+    press(&mut input, KeyCode::Char('i'));
+    type_text(&mut input, "/");
+    let draw = |input: &InputBox| {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 15, 60, HEIGHT);
+                input.draw(frame, area, Line::default(), Line::default());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..15)
+            .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(draw(&input).contains("Carregando os comandos do agente..."));
+
+    input.set_commands(Some(vec![
+        CommandInfo {
+            name: "clear".into(),
+            description: "Start a new session".into(),
+        },
+        CommandInfo {
+            name: "compact".into(),
+            description: "Summarize".into(),
+        },
+    ]));
+    let screen = draw(&input);
+    assert!(screen.contains("Comandos (2)"), "{screen}");
+    assert!(screen.contains("▌ /clear"));
+    assert!(screen.contains("/compact          Summarize · sem interface no terra"));
+}
+
 #[test]
 fn lock_indicators_show_only_when_active() {
     let green = theme::variant(Variant::Success).fg.unwrap();

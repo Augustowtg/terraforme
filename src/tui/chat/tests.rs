@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use crossterm::event::KeyModifiers;
 use ratatui::{Terminal, backend::TestBackend};
@@ -46,6 +47,26 @@ impl ChatAdapter for FakeAdapter {
 
     fn model_label(&self, id: &str) -> String {
         format!("modelo {id}")
+    }
+
+    fn load_catalog(
+        &self,
+        _account: Option<&str>,
+    ) -> Option<mpsc::Receiver<Result<Catalog, String>>> {
+        let (tx, rx) = mpsc::channel();
+        let commands = ["clear", "compact"]
+            .iter()
+            .map(|name| agent::CommandInfo {
+                name: name.to_string(),
+                description: format!("faz {name}"),
+            })
+            .collect();
+        tx.send(Ok(Catalog {
+            commands,
+            ..Catalog::default()
+        }))
+        .unwrap();
+        Some(rx)
     }
 
     fn start(&self, request: Request<'_>) -> Result<Box<dyn Session>, String> {
@@ -247,6 +268,47 @@ fn switching_account_starts_a_new_conversation() {
     };
     chat.apply_settings(&model, Some(&work));
     assert_eq!(chat.session_id.as_deref(), Some("s2"));
+}
+
+#[test]
+fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
+    let reply = vec![init(PermissionMode::Agente), done(1)];
+    let (mut chat, _) = fake_chat(true, reply);
+    chat.tick(); // chega o catálogo
+    assert_eq!(chat.catalog.as_ref().map(|c| c.commands.len()), Some(2));
+
+    // Uma conversa, e depois /clear.
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(chat.session_id.as_deref(), Some("s1"));
+    type_text(&mut chat, "/clear");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(chat.session_id, None);
+    assert_eq!(
+        chat.history.entries(),
+        [Entry::Info("Nova conversa.".into())]
+    );
+
+    // Um comando do agente que ainda não tem interface no terra.
+    type_text(&mut chat, "/compact");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info(
+            "/compact ainda não tem interface no terra.".into()
+        ))
+    );
+}
+
+#[test]
+fn without_adapter_the_commands_list_is_empty_not_loading() {
+    let (mut chat, _) = fake_chat(false, Vec::new());
+    assert!(chat.catalog_loading.is_none());
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/");
+    assert!(chat.input.picker_open());
 }
 
 #[test]
