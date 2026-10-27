@@ -194,19 +194,22 @@ O MCP do terra é um servidor [MCP](https://modelcontextprotocol.io) (JSON-RPC p
 
 Ativado, ao iniciar o `terra cli` verifica se já há um MCP na porta 30303: se houver, usa ele; se não, abre um num processo novo (`terra mcp`, que continua rodando depois que o terra fecha). Cada terra se registra nele e avisa, a cada 2 segundos, o workspace e se há uma sessão ativa com o agente; um terra que para de avisar por 6 segundos sai da lista.
 
-Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP ●`) e aparece a aba **Orquestrador**, ao lado das Configurações, com os spaces (os workspaces salvos e os abertos em algum terra):
+Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP ●`) e aparece a aba **Orquestrador**, ao lado das Configurações. Em **Sessões**, ela mostra os spaces (os workspaces salvos e os abertos em algum terra) e, embaixo de cada um, os terra abertos nele, agrupados pelo workspace, com o pid de cada um:
 
 ```
  Orquestrador · http://127.0.0.1:30303/mcp
-   2 terra cli abertos · 1 com sessão ativa
+   3 terra cli abertos · 1 com sessão ativa
 
- Spaces
+ Sessões
  ▌ ● terraforme-cli  sessão ativa      /home/eu/terraforme-cli
+       ● pid 4210     sessão ativa
+       ● pid 4388     terra cli aberto
    ● site            terra cli aberto  /home/eu/site
+       ● pid 5120     terra cli aberto
    ○ notas           fechado           /home/eu/notas
 ```
 
-A bola verde é um terra com uma conversa com o agente (no chat do terra ou na interface original do provedor), a amarela é só o terra cli aberto e a vazia, nenhum terra aberto. Com mais de um terra no mesmo space, aparece quantos (ex.: `terra cli aberto (2)`). `↑`/`↓` escolhem o space; a lista se atualiza a cada segundo.
+A bola verde é um terra com uma conversa com o agente (no chat do terra ou na interface original do provedor), a amarela é só o terra cli aberto e a vazia, nenhum terra aberto. O space mostra o melhor estado entre os terra dele, e os terra com sessão ativa vêm primeiro. `↑`/`↓` escolhem o space; a lista se atualiza a cada segundo.
 
 Desativar o MCP nas Configurações fecha ele (para todos os terra) e esconde a aba. Para os agentes, o MCP tem a ferramenta `spaces`, a mesma lista.
 
@@ -312,7 +315,7 @@ src/
     ├── app.rs            # tela principal: abas, Sair e confirmação
     ├── workspace.rs      # navegador de workspaces
     ├── config.rs         # aba Configurações: seções Agente, MCP e Extensões
-    ├── mcp.rs            # aba Orquestrador: os spaces e os terra abertos
+    ├── mcp.rs            # aba Orquestrador: as sessões, por workspace
     ├── extensions.rs     # aba Extensões: relatório de cada extensão
     ├── widgets.rs → widgets/badge.rs, widgets/popup.rs
     └── chat.rs           # aba Chat: liga o adapter, histórico, input e badges

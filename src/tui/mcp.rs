@@ -1,14 +1,17 @@
-//! Aba MCP: o orquestrador. Aparece com o MCP online e mostra os spaces (os
-//! workspaces salvos e os abertos em algum terra) e, em cada um, se há uma
-//! sessão ativa, só o terra cli aberto ou nada.
+//! Aba Orquestrador. Aparece com o MCP online e mostra, em Sessões, os
+//! spaces (os workspaces salvos e os abertos em algum terra) e, embaixo de
+//! cada um, os terra abertos nele, com sessão ativa ou só o terra cli aberto.
 //!
 //! ```text
-//!  MCP · http://127.0.0.1:30303/mcp
-//!    2 terra cli abertos · 1 com sessão ativa
+//!  Orquestrador · http://127.0.0.1:30303/mcp
+//!    3 terra cli abertos · 1 com sessão ativa
 //!
-//!  Spaces
+//!  Sessões
 //!  ▌ ● terraforme-cli  sessão ativa      /home/eu/terraforme-cli
+//!        ● pid 4210     sessão ativa
+//!        ● pid 4388     terra cli aberto
 //!    ● site            terra cli aberto  /home/eu/site
+//!        ● pid 5120     terra cli aberto
 //!    ○ notas           fechado           /home/eu/notas
 //! ```
 //!
@@ -37,7 +40,7 @@ pub const STALE: Duration = Duration::from_secs(1);
 const NAME_MAX: usize = 28;
 /// Largura da coluna do estado.
 const STATUS_WIDTH: usize = 18;
-/// As linhas antes da lista (título, resumo, linha vazia e o título Spaces)
+/// As linhas antes da lista (título, resumo, linha vazia e o título Sessões)
 /// e o recuo de cima.
 const HEADER: u16 = 5;
 
@@ -70,19 +73,29 @@ impl SpaceStatus {
     }
 }
 
+impl From<&Instance> for SpaceStatus {
+    fn from(instance: &Instance) -> Self {
+        if instance.session {
+            SpaceStatus::Session
+        } else {
+            SpaceStatus::Open
+        }
+    }
+}
+
 /// Um space da lista.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Space {
     pub name: String,
     pub dir: PathBuf,
     pub status: SpaceStatus,
-    /// Quantos terra estão abertos nele.
-    pub open: usize,
+    /// Os terra abertos nele, os com sessão ativa primeiro.
+    pub instances: Vec<Instance>,
 }
 
 /// Junta os workspaces salvos com os terra abertos: um space por pasta, com
-/// as sessões ativas primeiro, depois os abertos e os fechados, cada grupo
-/// por nome.
+/// os terra dele agrupados, as sessões ativas primeiro, depois os abertos e
+/// os fechados, cada grupo por nome.
 pub fn spaces(saved: &[db::Workspace], instances: &[Instance]) -> Vec<Space> {
     let mut spaces: Vec<Space> = saved
         .iter()
@@ -90,27 +103,28 @@ pub fn spaces(saved: &[db::Workspace], instances: &[Instance]) -> Vec<Space> {
             name: w.name.clone(),
             dir: w.path.clone(),
             status: SpaceStatus::Closed,
-            open: 0,
+            instances: Vec::new(),
         })
         .collect();
     for instance in instances {
-        let status = if instance.session {
-            SpaceStatus::Session
-        } else {
-            SpaceStatus::Open
-        };
+        let status = SpaceStatus::from(instance);
         match spaces.iter_mut().find(|s| s.dir == instance.dir) {
             Some(space) => {
                 space.status = space.status.min(status);
-                space.open += 1;
+                space.instances.push(instance.clone());
             }
             None => spaces.push(Space {
                 name: instance.name.clone(),
                 dir: instance.dir.clone(),
                 status,
-                open: 1,
+                instances: vec![instance.clone()],
             }),
         }
+    }
+    for space in &mut spaces {
+        space
+            .instances
+            .sort_by_key(|i| (SpaceStatus::from(i), i.pid));
     }
     spaces.sort_by(|a, b| {
         a.status
@@ -152,7 +166,7 @@ impl McpView {
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
-        let open: usize = self.spaces.iter().map(|s| s.open).sum();
+        let open: usize = self.spaces.iter().map(|s| s.instances.len()).sum();
         let sessions = self
             .spaces
             .iter()
@@ -175,7 +189,7 @@ impl McpView {
                 theme::muted(),
             ),
             Line::default(),
-            Line::styled(" Spaces", theme::section_title()),
+            Line::styled(" Sessões", theme::section_title()),
         ];
         if self.spaces.is_empty() {
             lines.push(Line::styled(
@@ -190,12 +204,23 @@ impl McpView {
             .max()
             .unwrap_or(0)
             .min(NAME_MAX);
-        // A lista rola para o space escolhido ficar na tela.
-        let rows = usize::from(area.height.saturating_sub(HEADER)).max(1);
-        let offset = self.selected.saturating_sub(rows - 1);
-        for (i, space) in self.spaces.iter().enumerate().skip(offset).take(rows) {
-            lines.push(space_line(space, name_width, i == self.selected));
+        // Cada space, com os terra dele embaixo.
+        let mut list = Vec::new();
+        let mut selected = 0..0;
+        for (i, space) in self.spaces.iter().enumerate() {
+            let start = list.len();
+            list.push(space_line(space, name_width, i == self.selected));
+            for instance in &space.instances {
+                list.push(instance_line(instance, name_width));
+            }
+            if i == self.selected {
+                selected = start..list.len();
+            }
         }
+        // A lista rola para o space escolhido (e os terra dele) ficar na tela.
+        let rows = usize::from(area.height.saturating_sub(HEADER)).max(1);
+        let offset = selected.end.saturating_sub(rows).min(selected.start);
+        lines.extend(list.into_iter().skip(offset).take(rows));
         frame.render_widget(
             Paragraph::new(lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
             area,
@@ -206,10 +231,7 @@ impl McpView {
 fn space_line(space: &Space, name_width: usize, selected: bool) -> Line<'static> {
     let name: String = truncate(&space.name, name_width);
     let pad = name_width - name.width();
-    let mut status = space.status.label().to_string();
-    if space.open > 1 {
-        status = format!("{status} ({})", space.open);
-    }
+    let status = space.status.label();
     let text = format!(" {name}{}  {status:<STATUS_WIDTH$}", " ".repeat(pad));
     let dir = space.dir.display().to_string();
     if selected {
@@ -233,6 +255,22 @@ fn space_line(space: &Space, name_width: usize, selected: bool) -> Line<'static>
             Span::styled(dir, theme::path()),
         ])
     }
+}
+
+/// Um terra aberto, embaixo do space dele.
+fn instance_line(instance: &Instance, name_width: usize) -> Line<'static> {
+    let status = SpaceStatus::from(instance);
+    // Recuado sob o nome do space; com espaço, o estado alinha com o dele.
+    let pid = format!("pid {}", instance.pid);
+    let width = name_width.saturating_sub(3).max(pid.width());
+    Line::from(vec![
+        Span::raw("      "),
+        status.dot(),
+        Span::styled(
+            format!(" {pid:<width$}  {}", status.label()),
+            theme::muted(),
+        ),
+    ])
 }
 
 /// `text` com no máximo `width` colunas, com `…` quando corta.
@@ -286,29 +324,36 @@ mod tests {
         );
         let rows: Vec<_> = list
             .iter()
-            .map(|s| (s.name.as_str(), s.status, s.open))
+            .map(|s| {
+                let pids: Vec<_> = s.instances.iter().map(|i| i.pid).collect();
+                (s.name.as_str(), s.status, pids)
+            })
             .collect();
         assert_eq!(
             rows,
             [
-                ("terra", SpaceStatus::Session, 2),
-                ("novo", SpaceStatus::Open, 1),
-                ("Site", SpaceStatus::Open, 1),
-                ("notas", SpaceStatus::Closed, 0),
+                ("terra", SpaceStatus::Session, vec![3, 2]),
+                ("novo", SpaceStatus::Open, vec![4]),
+                ("Site", SpaceStatus::Open, vec![1]),
+                ("notas", SpaceStatus::Closed, vec![]),
             ]
         );
     }
 
     #[test]
-    fn draws_the_spaces_with_their_status() {
+    fn draws_the_sessions_grouped_by_workspace() {
         let mut view = McpView::default();
         view.refresh(
             &[saved("notas")],
-            &[open(1, "terra", true), open(2, "site", false)],
+            &[
+                open(1, "terra", false),
+                open(2, "site", false),
+                open(3, "terra", true),
+            ],
         );
         assert!(view.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         assert!(!view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        let mut terminal = Terminal::new(TestBackend::new(70, 10)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(70, 12)).unwrap();
         terminal
             .draw(|frame| view.draw(frame, frame.area()))
             .unwrap();
@@ -321,11 +366,14 @@ mod tests {
                 .to_string()
         };
         assert_eq!(row(1), "  Orquestrador · http://127.0.0.1:30303/mcp");
-        assert_eq!(row(2), "    2 terra cli abertos · 1 com sessão ativa");
-        assert_eq!(row(4), "  Spaces");
+        assert_eq!(row(2), "    3 terra cli abertos · 1 com sessão ativa");
+        assert_eq!(row(4), "  Sessões");
         assert_eq!(row(5), "   ● terra  sessão ativa      /w/terra");
-        assert_eq!(row(6), " ▌ ● site   terra cli aberto  /w/site");
-        assert_eq!(row(7), "   ○ notas  fechado           /w/notas");
+        assert_eq!(row(6), "       ● pid 3  sessão ativa");
+        assert_eq!(row(7), "       ● pid 1  terra cli aberto");
+        assert_eq!(row(8), " ▌ ● site   terra cli aberto  /w/site");
+        assert_eq!(row(9), "       ● pid 2  terra cli aberto");
+        assert_eq!(row(10), "   ○ notas  fechado           /w/notas");
     }
 
     #[test]
