@@ -105,10 +105,39 @@ impl Db {
                 name       TEXT    NOT NULL UNIQUE,
                 path       TEXT    NOT NULL UNIQUE {PATH_COLLATE},
                 created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );"
         ))
         .context("não foi possível criar as tabelas")?;
         Ok(Self { conn })
+    }
+
+    /// Valor de uma configuração (ex.: `agent.model`), se já foi salva.
+    pub fn setting(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Salva uma configuração; `None` apaga (volta ao padrão).
+    pub fn set_setting(&self, key: &str, value: Option<&str>) -> Result<()> {
+        match value {
+            Some(value) => self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?,
+            None => self
+                .conn
+                .execute("DELETE FROM settings WHERE key = ?1", [key])?,
+        };
+        Ok(())
     }
 
     /// Registra o uso de um path em `recents` (upsert de `last_used_at`).
@@ -274,6 +303,18 @@ mod tests {
         db.conn
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn settings_are_saved_replaced_and_cleared() {
+        let db = db();
+        assert_eq!(db.setting("agent.model").unwrap(), None);
+        db.set_setting("agent.model", Some("opus")).unwrap();
+        db.set_setting("agent.model", Some("haiku")).unwrap();
+        assert_eq!(db.setting("agent.model").unwrap().as_deref(), Some("haiku"));
+        assert_eq!(count(&db, "settings"), 1);
+        db.set_setting("agent.model", None).unwrap();
+        assert_eq!(db.setting("agent.model").unwrap(), None);
     }
 
     #[test]

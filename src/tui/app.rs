@@ -9,7 +9,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use super::chat::Chat;
+use super::config::{self, ConfigView};
+use crate::db::Db;
 use crate::platform::keyboard;
+use crate::settings::AgentSettings;
 use crate::theme;
 
 const QUIT_LABEL: &str = " Sair ";
@@ -63,14 +66,41 @@ pub struct App {
     tab: Tab,
     focus: Focus,
     chat: Chat,
+    config: ConfigView,
+    settings: AgentSettings,
+    /// Onde as configurações são salvas (`None` nos testes).
+    db: Option<Db>,
 }
 
 impl App {
-    /// Tela principal com o chat ligado ao Claude CLI.
-    pub fn new() -> Self {
+    /// Tela principal com o chat ligado ao provedor disponível e as
+    /// configurações salvas em `db`.
+    pub fn new(db: Db) -> Self {
+        let settings = AgentSettings::load(&db);
         Self {
-            chat: Chat::connect(),
+            chat: Chat::connect(&settings),
+            settings,
+            db: Some(db),
             ..Self::default()
+        }
+    }
+
+    /// Na aba Config, as setas mudam as configurações; cada mudança é salva
+    /// e vale na hora para o chat. Retorna `true` se a tecla foi usada.
+    fn handle_config_key(&mut self, key: KeyEvent) -> bool {
+        let models = self.chat.adapter().map(|a| a.models()).unwrap_or_default();
+        let previous = self.settings.clone();
+        match self.config.handle_key(key, &mut self.settings, &models) {
+            config::Outcome::Ignored => false,
+            config::Outcome::Moved => true,
+            config::Outcome::Changed => {
+                if let Some(db) = &self.db {
+                    // Sem conseguir salvar, a mudança vale só nesta execução.
+                    let _ = self.settings.save(db);
+                }
+                self.chat.apply_settings(&self.settings, Some(&previous));
+                true
+            }
         }
     }
 
@@ -78,6 +108,9 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         // Na aba Chat, o painel do agente tem prioridade (modo INSERT, Shift+Tab).
         if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.chat.handle_key(key) {
+            return false;
+        }
+        if self.tab == Tab::Config && self.focus == Focus::Tabs && self.handle_config_key(key) {
             return false;
         }
         match (self.focus, key.code) {
@@ -125,6 +158,7 @@ impl App {
         self.draw_content(frame, content);
         let help = match self.focus {
             Focus::Tabs if self.tab == Tab::Chat => self.chat.help(),
+            Focus::Tabs if self.tab == Tab::Config => config::HELP.into(),
             Focus::Tabs => HELP.into(),
             Focus::Quit => HELP_QUIT.into(),
             Focus::Confirm(_) => HELP_CONFIRM.into(),
@@ -187,7 +221,12 @@ impl App {
             self.chat.draw(frame, panel);
             return;
         }
-        // TODO: substituir pelos conteúdos reais de Consumo e Config.
+        if self.tab == Tab::Config {
+            self.config
+                .draw(frame, area, &self.settings, self.chat.adapter());
+            return;
+        }
+        // TODO: substituir pelo conteúdo real de Consumo.
         let lines = vec![
             Line::styled(self.tab.title(), theme::section_title()),
             Line::styled("Em construção", theme::muted()),
@@ -303,6 +342,25 @@ mod tests {
     fn tab_in_insert_mode_does_not_switch_tabs() {
         let mut app = App::default();
         key(&mut app, KeyCode::Char('i'));
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Chat);
+    }
+
+    #[test]
+    fn config_tab_changes_settings_and_tab_still_switches() {
+        use crate::agent::PermissionMode;
+        use crate::settings::StartMode;
+
+        let mut app = App::default();
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
+        assert!(!key(&mut app, KeyCode::Right));
+        assert_eq!(
+            app.settings.start_mode,
+            StartMode::Fixed(PermissionMode::Agente)
+        );
+        assert!(!key(&mut app, KeyCode::Esc));
+        assert_eq!(app.focus, Focus::Quit, "Esc continua indo para Sair");
+        key(&mut app, KeyCode::Esc);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Chat);
     }
 
