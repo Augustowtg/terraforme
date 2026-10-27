@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.2] - 2026-10-27
+
+### Adicionado
+
+- **Limite de tokens** na seção Contexto da aba Config, entre Auto compactação e Compactar em: **Do modelo** (o padrão, mostrado com o limite informado pelo agente, ex.: `Do modelo · 200K`) ou um limite fixo (50K, 100K, 150K, 200K, 250K, 300K, 400K, 500K, 750K ou 1M). O limite escolhido substitui o do modelo na barra de contexto e no ponto de compactar (ex.: 75% de 100K = 75K). Salvo em `agent.context.limit` no `config.json` (`null` é o do modelo); editando o arquivo, qualquer número de tokens vale.
+
 ## [0.5.1] - 2026-10-27
 
 ### Adicionado

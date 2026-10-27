@@ -29,16 +29,18 @@ enum Field {
     Interface,
     ContextDisplay,
     AutoCompact,
+    Limit,
     CompactAt,
 }
 
-const FIELDS: [Field; 7] = [
+const FIELDS: [Field; 8] = [
     Field::Account,
     Field::StartMode,
     Field::Model,
     Field::Interface,
     Field::ContextDisplay,
     Field::AutoCompact,
+    Field::Limit,
     Field::CompactAt,
 ];
 /// Onde começa a seção Contexto em [`FIELDS`].
@@ -144,6 +146,7 @@ fn field_label(field: Field) -> &'static str {
         Field::Interface => "Interface",
         Field::ContextDisplay => "Display",
         Field::AutoCompact => "Auto compactação",
+        Field::Limit => "Limite de tokens",
         Field::CompactAt => "Compactar em",
     }
 }
@@ -178,6 +181,10 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
             "Não"
         }
         .to_string(),
+        Field::Limit => match settings.context.limit {
+            None => format!("Do modelo · {}", compact_count(choices.context_window)),
+            Some(limit) => compact_count(limit),
+        },
         Field::CompactAt => {
             let context = settings.context;
             let tokens = context.compact_tokens(choices.context_window);
@@ -228,6 +235,16 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
         }
         Field::ContextDisplay => settings.context.visible = !settings.context.visible,
         Field::AutoCompact => settings.context.auto_compact = !settings.context.auto_compact,
+        Field::Limit => {
+            // Do modelo (None) e depois os limites fixos. Um valor do arquivo
+            // fora da lista volta para o do modelo.
+            let options: Vec<Option<u64>> = std::iter::once(None)
+                .chain(ContextSettings::LIMITS.map(Some))
+                .collect();
+            let limit = &mut settings.context.limit;
+            let i = options.iter().position(|l| l == limit).unwrap_or(0);
+            *limit = options[cycle(i, options.len(), step)];
+        }
         Field::CompactAt => {
             let all = ContextSettings::COMPACT_AT;
             let at = &mut settings.context.compact_at;
@@ -414,12 +431,27 @@ mod tests {
         press(&mut view, &mut settings, KeyCode::Down);
         press(&mut view, &mut settings, KeyCode::Right);
         assert!(settings.context.auto_compact, "Não → Sim");
+
+        press(&mut view, &mut settings, KeyCode::Down);
+        assert_eq!(
+            value_label(Field::Limit, &settings, &choices()),
+            "Do modelo · 200K"
+        );
+        press(&mut view, &mut settings, KeyCode::Left);
+        assert_eq!(settings.context.limit, Some(1_000_000), "dá a volta");
+        press(&mut view, &mut settings, KeyCode::Right);
+        press(&mut view, &mut settings, KeyCode::Right);
+        assert_eq!(settings.context.limit, Some(50_000));
+        press(&mut view, &mut settings, KeyCode::Right);
+        assert_eq!(value_label(Field::Limit, &settings, &choices()), "100K");
+
         press(&mut view, &mut settings, KeyCode::Down);
         press(&mut view, &mut settings, KeyCode::Right);
         assert_eq!(settings.context.compact_at, 80);
+        // O ponto de compactar é do limite escolhido, não do modelo.
         assert_eq!(
             value_label(Field::CompactAt, &settings, &choices()),
-            "80% · 160K tokens"
+            "80% · 80K tokens"
         );
         press(&mut view, &mut settings, KeyCode::Down);
         assert_eq!(view.focus, FIELDS.len() - 1, "a última fica");
@@ -440,7 +472,7 @@ mod tests {
             interface: Interface::Provider,
             context: ContextSettings::default(),
         };
-        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
         terminal
             .draw(|frame| view.draw(frame, frame.area(), &settings, None, &choices()))
             .unwrap();
@@ -465,6 +497,7 @@ mod tests {
         assert_eq!(row(8), "  Contexto");
         assert_eq!(row(9), "   Display             Visível");
         assert_eq!(row(10), "   Auto compactação    Não");
-        assert_eq!(row(11), "   Compactar em        75% · 150K tokens");
+        assert_eq!(row(11), "   Limite de tokens    Do modelo · 200K");
+        assert_eq!(row(12), "   Compactar em        75% · 150K tokens");
     }
 }

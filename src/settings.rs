@@ -13,7 +13,7 @@
 //!     "account": ".claude-trabalho",
 //!     "effort": "high",
 //!     "interface": "terraforme",
-//!     "context": { "display": "visible", "auto_compact": false, "compact_at": 75 }
+//!     "context": { "display": "visible", "auto_compact": false, "limit": null, "compact_at": 75 }
 //!   }
 //! }
 //! ```
@@ -107,7 +107,9 @@ pub struct ContextSettings {
     pub visible: bool,
     /// Compactar a conversa sozinho quando o contexto chega em `compact_at`.
     pub auto_compact: bool,
-    /// Ponto de compactar, em % do limite do modelo: a barra fica cheia e
+    /// Limite de tokens do contexto; `None` é o do modelo.
+    pub limit: Option<u64>,
+    /// Ponto de compactar, em % do limite: a barra fica cheia e
     /// mostra "Compacte a conversa" ao chegar nele.
     pub compact_at: u8,
 }
@@ -116,9 +118,20 @@ impl ContextSettings {
     /// Pontos de compactar que a Config oferece (% do limite).
     pub const COMPACT_AT: [u8; 10] = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
 
-    /// Tokens em que a conversa deve ser compactada, num limite `window`.
+    /// Limites de tokens que a Config oferece, além do do modelo.
+    pub const LIMITS: [u64; 10] = [
+        50_000, 100_000, 150_000, 200_000, 250_000, 300_000, 400_000, 500_000, 750_000, 1_000_000,
+    ];
+
+    /// O limite de tokens: o escolhido ou, sem ele, o do modelo (`window`).
+    pub fn limit(self, window: u64) -> u64 {
+        self.limit.unwrap_or(window)
+    }
+
+    /// Tokens em que a conversa deve ser compactada, com o limite do modelo
+    /// em `window`.
     pub fn compact_tokens(self, window: u64) -> u64 {
-        window * u64::from(self.compact_at) / 100
+        self.limit(window) * u64::from(self.compact_at) / 100
     }
 
     fn load(json: &Value) -> Self {
@@ -130,6 +143,8 @@ impl ContextSettings {
             auto_compact: json["auto_compact"]
                 .as_bool()
                 .unwrap_or(default.auto_compact),
+            // Qualquer valor positivo vale, mesmo fora das opções da Config.
+            limit: json["limit"].as_u64().filter(|l| *l > 0),
             compact_at: json["compact_at"]
                 .as_u64()
                 .and_then(|p| u8::try_from(p).ok())
@@ -142,6 +157,7 @@ impl ContextSettings {
         json!({
             "display": if self.visible { "visible" } else { "hidden" },
             "auto_compact": self.auto_compact,
+            "limit": self.limit,
             "compact_at": self.compact_at,
         })
     }
@@ -153,6 +169,7 @@ impl Default for ContextSettings {
         Self {
             visible: true,
             auto_compact: false,
+            limit: None,
             compact_at: 75,
         }
     }
@@ -287,6 +304,7 @@ mod tests {
             context: ContextSettings {
                 visible: false,
                 auto_compact: true,
+                limit: Some(300_000),
                 compact_at: 90,
             },
         };
@@ -298,7 +316,7 @@ mod tests {
         assert_eq!(json["agent"]["interface"], "provider");
         assert_eq!(
             json["agent"]["context"],
-            json!({"display": "hidden", "auto_compact": true, "compact_at": 90})
+            json!({"display": "hidden", "auto_compact": true, "limit": 300_000, "compact_at": 90})
         );
 
         // Chaves de fora do agente ficam no arquivo.
@@ -337,7 +355,22 @@ mod tests {
         assert!(context.visible);
         assert!(!context.auto_compact);
         assert_eq!(context.compact_at, 75);
+        assert_eq!(context.limit, None, "o limite do modelo");
         assert_eq!(context.compact_tokens(200_000), 150_000);
+    }
+
+    #[test]
+    fn custom_limit_replaces_the_model_window() {
+        let context = ContextSettings {
+            limit: Some(100_000),
+            ..ContextSettings::default()
+        };
+        assert_eq!(context.limit(1_000_000), 100_000);
+        assert_eq!(context.compact_tokens(1_000_000), 75_000);
+        let load = |text: &str| ContextSettings::load(&serde_json::from_str(text).unwrap());
+        assert_eq!(load(r#"{"limit": 123456}"#).limit, Some(123_456));
+        assert_eq!(load(r#"{"limit": 0}"#).limit, None);
+        assert_eq!(load(r#"{"limit": null}"#).limit, None);
     }
 
     #[test]
