@@ -253,6 +253,7 @@ mod tests {
                 effort: None,
                 extensions: &crate::extension::Contribution::default(),
                 permission_tool: None,
+                allowed_tools: &[],
             })
             .err()
             .unwrap();

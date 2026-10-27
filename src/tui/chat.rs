@@ -32,7 +32,7 @@ use self::history::{Entry, History};
 use self::input::{InputBox, InputMode, Outcome};
 use self::mode::{AgentStatus, mode_variant};
 use self::model_menu::{ModelMenu, Target, effort_label};
-use self::permission::Prompts;
+use self::permission::{Kind, Prompts};
 use super::usage;
 use super::widgets::badge;
 use crate::agent::{
@@ -109,6 +109,9 @@ pub struct Chat {
     run: Option<Box<dyn Session>>,
     /// Pedidos de permissão do agente esperando o usuário.
     prompts: Prompts,
+    /// Ferramentas bloqueadas pelo modo que o usuário permitiu: vão
+    /// liberadas na próxima mensagem (ver [`Chat::resume_allowed`]).
+    allowed: Vec<String>,
     /// Modo pedido ao agente na resposta em andamento.
     requested_mode: Option<PermissionMode>,
     /// Modo em que o agente disse estar (no `init`) na última resposta.
@@ -167,6 +170,7 @@ impl Default for Chat {
             delegation: None,
             run: None,
             prompts: Prompts::default(),
+            allowed: Vec::new(),
             requested_mode: None,
             agent_mode: None,
             history: History::default(),
@@ -723,6 +727,8 @@ impl Chat {
     /// `/clear`: começa uma conversa nova, com o histórico limpo.
     fn clear_conversation(&mut self) {
         self.run = None;
+        self.prompts.clear();
+        self.allowed.clear();
         self.session_id = None;
         self.agent_mode = None;
         self.model = None;
@@ -853,7 +859,9 @@ impl Chat {
                         .any(|s| s.name == mcp::SERVER_NAME)
                 })
                 .map(|_| (mcp::SERVER_NAME, mcp::PERMISSION_TOOL)),
+            allowed_tools: &self.allowed,
         });
+        self.allowed.clear();
         let ok = started.is_ok();
         match started {
             Ok(run) => {
@@ -875,8 +883,17 @@ impl Chat {
     /// Manda a resposta do usuário a um pedido de permissão e a registra no
     /// histórico.
     fn answer(&mut self, request: permission::Request, allow: bool) {
-        if let Some(run) = &mut self.run {
-            run.respond(&request.id, allow);
+        match &request.kind {
+            Kind::Ask { id } => {
+                if let Some(run) = &mut self.run {
+                    run.respond(id, allow);
+                }
+            }
+            Kind::Blocked { allow: rule, .. } => {
+                if allow {
+                    self.allowed.push(rule.clone());
+                }
+            }
         }
         let verdict = if allow { "Permitido" } else { "Negado" };
         let detail = if request.detail.is_empty() {
@@ -886,17 +903,40 @@ impl Chat {
         };
         self.history
             .push(Entry::Info(format!("{verdict}: {}{detail}.", request.name)));
-        self.agent_activity = Some(match self.prompts.current() {
-            Some(next) => format!("Aguardando permissão para {}...", next.name),
-            None => "Pensando...".to_string(),
-        });
+        if self.run.is_some() {
+            self.agent_activity = Some(match self.prompts.current() {
+                Some(next) if matches!(next.kind, Kind::Ask { .. }) => {
+                    format!("Aguardando permissão para {}...", next.name)
+                }
+                _ => "Pensando...".to_string(),
+            });
+        }
         self.history.follow();
+        self.resume_allowed();
+    }
+
+    /// Com a resposta terminada e os pedidos respondidos, manda o agente
+    /// fazer o que o modo bloqueou e o usuário permitiu, com essas
+    /// ferramentas liberadas.
+    fn resume_allowed(&mut self) {
+        if self.run.is_some() || self.prompts.is_open() || self.allowed.is_empty() {
+            return;
+        }
+        let prompt = format!(
+            "O usuário permitiu no terra o que o modo de permissão tinha bloqueado, e agora está liberado: {}. Faça isso agora e continue a tarefa.",
+            self.allowed.join(", ")
+        );
+        self.start(
+            &prompt,
+            Entry::Info("Fazendo o que foi permitido...".to_string()),
+        );
     }
 
     /// Interrompe a resposta em andamento (soltar a sessão a encerra).
     fn cancel(&mut self) {
         self.run = None;
         self.prompts.clear();
+        self.allowed.clear();
         self.auto_compact_armed = false;
         self.history.push(Entry::Info("Interrompido.".to_string()));
         self.agent_status = AgentStatus::Ocioso;
@@ -927,7 +967,23 @@ impl Chat {
             }
             AgentEvent::PermissionRequest { id, name, detail } => {
                 self.agent_activity = Some(format!("Aguardando permissão para {name}..."));
-                self.prompts.push(permission::Request { id, name, detail });
+                self.prompts.push(permission::Request {
+                    name,
+                    detail,
+                    kind: Kind::Ask { id },
+                });
+            }
+            AgentEvent::Blocked {
+                name,
+                detail,
+                reason,
+                allow,
+            } => {
+                self.prompts.push(permission::Request {
+                    name,
+                    detail,
+                    kind: Kind::Blocked { reason, allow },
+                });
             }
             AgentEvent::ToolResult { is_error, summary } => {
                 self.agent_activity = Some("Pensando...".to_string());
@@ -973,6 +1029,7 @@ impl Chat {
                 if !is_error && armed {
                     self.auto_compact();
                 }
+                self.resume_allowed();
             }
             AgentEvent::Failed(message) => {
                 self.history.push(Entry::Error(message.clone()));
@@ -1022,7 +1079,7 @@ impl Chat {
 
     fn finish(&mut self, is_error: bool) {
         self.run = None;
-        self.prompts.clear();
+        self.prompts.clear_asks();
         self.auto_compact_armed = false;
         self.agent_activity = None;
         self.agent_status = if is_error {

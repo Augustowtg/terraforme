@@ -724,6 +724,55 @@ fn permission_requests_ask_the_user_and_answer_the_session() {
 }
 
 #[test]
+fn blocked_tools_allowed_by_the_user_go_in_a_new_message() {
+    let blocked = |command: &str| AgentEvent::Blocked {
+        name: "Bash".into(),
+        detail: command.into(),
+        reason: "perigoso".into(),
+        allow: format!("Bash({command})"),
+    };
+    let reply = vec![
+        init(PermissionMode::Agente),
+        blocked("git push --force"),
+        blocked("rm -rf build"),
+        done(1),
+    ];
+    let (mut chat, sent) = fake_chat(true, reply);
+    chat.submit("publica");
+    chat.tick();
+    // A resposta acabou, mas os bloqueados continuam esperando o usuário.
+    assert!(chat.run.is_none());
+    assert!(chat.prompts.is_open());
+    let screen = format!("{:?}", {
+        let mut terminal = Terminal::new(TestBackend::new(80, HEIGHT + 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let panel = Rect {
+                    y: area.height - HEIGHT,
+                    height: HEIGHT,
+                    ..area
+                };
+                chat.draw(frame, panel);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    });
+    assert!(screen.contains("Bloqueado pelo modo Agente"));
+    assert!(screen.contains("Motivo: perigoso"));
+
+    press(&mut chat, KeyCode::Char('s'));
+    assert_eq!(sent.borrow().len(), 1, "espera responder todos os pedidos");
+    press(&mut chat, KeyCode::Char('n'));
+    let sent = sent.borrow();
+    assert_eq!(sent.len(), 2, "manda o permitido numa mensagem nova");
+    assert!(sent[1].0.contains("Bash(git push --force)"));
+    assert!(!sent[1].0.contains("rm -rf build"));
+    assert_eq!(sent[1].2.as_deref(), Some("s1"), "na mesma sessão");
+    assert!(chat.allowed.is_empty());
+}
+
+#[test]
 fn interrupting_drops_pending_permission_requests() {
     let reply = vec![AgentEvent::PermissionRequest {
         id: "r1".into(),
