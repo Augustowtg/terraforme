@@ -323,16 +323,22 @@ fn login_is_a_terra_command_that_runs_the_provider_login() {
     press(&mut chat, KeyCode::Char('i'));
     type_text(&mut chat, "/log");
     press(&mut chat, KeyCode::Enter);
-    let login = chat.take_login().expect("/login pede o login do provedor");
+    let (login, account) = chat.take_login().expect("/login pede o login do provedor");
     assert_eq!(login.get_program(), "fake-login");
+    assert_eq!(account, "Default");
     assert!(chat.take_login().is_none(), "só uma vez");
 
-    chat.finish_login(Err(std::io::Error::other("sem claude")));
+    chat.finish_login(Err("Login failed: status 400".into()));
     assert_eq!(
         chat.history.entries().last(),
         Some(&Entry::Error(
-            "Não foi possível iniciar o login: sem claude".into()
+            "O login na conta Default não terminou: Login failed: status 400".into()
         ))
+    );
+    chat.finish_login(Ok(()));
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info("Login feito na conta Default.".into()))
     );
 }
 

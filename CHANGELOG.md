@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.8] - 2026-10-27
+
+### Corrigido
+
+- **`/login`** (mesma interface da 0.4.7, no terminal fora da tela do terra):
+  - o **código colado não aparecia** (o prompt do `claude auth login` não mostra o que se digita) e parecia que o terminal não aceitava o código. Agora o terra pede o código com eco: o que é colado aparece, `Enter` envia, código inválido pede de novo e `Enter` vazio cancela;
+  - o **link não abria inteiro** e a autorização ficava inválida. Agora o link sai como hiperlink do terminal (OSC 8), que abre o link completo mesmo quebrado em várias linhas, e já vai para a área de transferência;
+  - no fim, o histórico diz se deu certo ou o motivo (ex.: `Login failed: ...`).
+- A volta do login não pergunta mais a posição do cursor ao terminal (podia falhar com `The cursor position could not be read`).
+
 ## [0.4.7] - 2026-10-27
 
 ### Adicionado

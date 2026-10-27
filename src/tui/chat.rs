@@ -17,7 +17,7 @@ mod model_menu;
 mod tests;
 
 use std::borrow::Cow;
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -356,26 +356,25 @@ impl Chat {
         }
     }
 
-    /// O comando de login pedido pelo `/login`, para a tela principal rodar.
-    pub fn take_login(&mut self) -> Option<Command> {
-        self.pending_login.take()
+    /// O comando de login pedido pelo `/login` e o nome da conta, para a
+    /// tela principal rodar.
+    pub fn take_login(&mut self) -> Option<(Command, String)> {
+        let login = self.pending_login.take()?;
+        Some((login, self.account_label()))
     }
 
     /// Volta do login: avisa no histórico e recarrega os comandos e modelos
     /// (que dependem do login).
-    pub fn finish_login(&mut self, result: std::io::Result<ExitStatus>) {
+    pub fn finish_login(&mut self, result: Result<(), String>) {
         let label = self.account_label();
         match result {
-            Ok(status) if status.success() => {
+            Ok(()) => {
                 self.history
                     .push(Entry::Info(format!("Login feito na conta {label}.")));
                 self.load_catalog();
             }
-            Ok(_) => self.history.push(Entry::Error(format!(
-                "O login na conta {label} não terminou."
-            ))),
-            Err(err) => self.history.push(Entry::Error(format!(
-                "Não foi possível iniciar o login: {err}"
+            Err(reason) => self.history.push(Entry::Error(format!(
+                "O login na conta {label} não terminou: {reason}"
             ))),
         }
         self.history.follow();
