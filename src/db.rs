@@ -1,0 +1,403 @@
+//! Persistência em SQLite (`~/.terraforme/terra.sqlite`).
+//!
+//! Todas as funções que recebem um path esperam que ele já tenha passado por
+//! [`canonical_path`]; a comparação de duplicados é feita sobre esse valor.
+
+use std::fmt;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+
+/// No Windows a comparação de paths não diferencia maiúsculas/minúsculas.
+#[cfg(windows)]
+const PATH_COLLATE: &str = "COLLATE NOCASE";
+#[cfg(not(windows))]
+const PATH_COLLATE: &str = "";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recent {
+    pub path: PathBuf,
+    pub last_used_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// Workspace criado com o nome informado.
+    Saved(String),
+    /// O path já estava salvo com este nome; nada foi alterado.
+    AlreadySaved(String),
+}
+
+#[derive(Debug)]
+pub enum SaveError {
+    EmptyName,
+    NameTaken { name: String, path: PathBuf },
+    Db(rusqlite::Error),
+}
+
+impl fmt::Display for SaveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SaveError::EmptyName => write!(f, "o nome do workspace não pode ser vazio"),
+            SaveError::NameTaken { name, path } => write!(
+                f,
+                "o nome \"{name}\" já está em uso pelo workspace {}",
+                path.display()
+            ),
+            SaveError::Db(err) => write!(f, "erro no banco de dados: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for SaveError {}
+
+impl From<rusqlite::Error> for SaveError {
+    fn from(err: rusqlite::Error) -> Self {
+        SaveError::Db(err)
+    }
+}
+
+pub struct Db {
+    conn: Connection,
+}
+
+impl Db {
+    /// Abre (criando se preciso) `~/.terraforme/terra.sqlite`.
+    pub fn open_default() -> Result<Self> {
+        let dir = dirs::home_dir()
+            .context("não foi possível encontrar o diretório home do usuário")?
+            .join(".terraforme");
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("não foi possível criar {}", dir.display()))?;
+        Self::open(&dir.join("terra.sqlite"))
+    }
+
+    pub fn open(file: &Path) -> Result<Self> {
+        let conn = Connection::open(file)
+            .with_context(|| format!("não foi possível abrir {}", file.display()))?;
+        Self::init(conn)
+    }
+
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self> {
+        Self::init(Connection::open_in_memory()?)
+    }
+
+    fn init(conn: Connection) -> Result<Self> {
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS recents (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                path         TEXT    NOT NULL UNIQUE {PATH_COLLATE},
+                last_used_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT    NOT NULL UNIQUE,
+                path       TEXT    NOT NULL UNIQUE {PATH_COLLATE},
+                created_at INTEGER NOT NULL
+            );"
+        ))
+        .context("não foi possível criar as tabelas")?;
+        Ok(Self { conn })
+    }
+
+    /// Registra o uso de um path em `recents` (upsert de `last_used_at`).
+    pub fn touch_recent(&self, path: &Path) -> Result<()> {
+        self.touch_recent_at(path, now_millis())
+    }
+
+    pub fn touch_recent_at(&self, path: &Path, timestamp: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO recents (path, last_used_at) VALUES (?1, ?2)
+             ON CONFLICT(path) DO UPDATE SET last_used_at = excluded.last_used_at",
+            params![path_str(path), timestamp],
+        )?;
+        Ok(())
+    }
+
+    /// Recentes do mais novo para o mais antigo.
+    pub fn recents(&self, offset: usize, limit: usize) -> Result<Vec<Recent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, last_used_at FROM recents
+             ORDER BY last_used_at DESC, id DESC
+             LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], |row| {
+            Ok(Recent {
+                path: PathBuf::from(row.get::<_, String>(0)?),
+                last_used_at: row.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Workspaces salvos em ordem alfabética (sem diferenciar maiúsculas).
+    pub fn workspaces(&self, offset: usize, limit: usize) -> Result<Vec<Workspace>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, path FROM workspaces
+             ORDER BY name COLLATE NOCASE ASC, name ASC
+             LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], |row| {
+            Ok(Workspace {
+                name: row.get(0)?,
+                path: PathBuf::from(row.get::<_, String>(1)?),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Salva `path` como workspace.
+    ///
+    /// - Path já salvo: não duplica, retorna [`SaveOutcome::AlreadySaved`].
+    /// - Sem `name`: usa o basename (ou `root`) e sufixa `-2`, `-3`... se o
+    ///   nome já existir.
+    /// - Com `name`: se o nome já existir, falha com [`SaveError::NameTaken`].
+    pub fn save_workspace(
+        &self,
+        path: &Path,
+        name: Option<&str>,
+    ) -> Result<SaveOutcome, SaveError> {
+        let name = name.map(str::trim);
+        if name == Some("") {
+            return Err(SaveError::EmptyName);
+        }
+
+        let path_s = path_str(path);
+        if let Some(existing) = self.workspace_name_by_path(&path_s)? {
+            return Ok(SaveOutcome::AlreadySaved(existing));
+        }
+
+        let name = match name {
+            Some(name) => {
+                if let Some(other) = self.workspace_path_by_name(name)? {
+                    return Err(SaveError::NameTaken {
+                        name: name.to_string(),
+                        path: PathBuf::from(other),
+                    });
+                }
+                name.to_string()
+            }
+            None => self.free_name(&default_name(path))?,
+        };
+
+        self.conn.execute(
+            "INSERT INTO workspaces (name, path, created_at) VALUES (?1, ?2, ?3)",
+            params![name, path_s, now_millis()],
+        )?;
+        Ok(SaveOutcome::Saved(name))
+    }
+
+    /// Primeiro nome livre entre `base`, `base-2`, `base-3`...
+    fn free_name(&self, base: &str) -> rusqlite::Result<String> {
+        if self.workspace_path_by_name(base)?.is_none() {
+            return Ok(base.to_string());
+        }
+        let mut n = 2;
+        loop {
+            let candidate = format!("{base}-{n}");
+            if self.workspace_path_by_name(&candidate)?.is_none() {
+                return Ok(candidate);
+            }
+            n += 1;
+        }
+    }
+
+    fn workspace_name_by_path(&self, path: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT name FROM workspaces WHERE path = ?1",
+                [path],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    fn workspace_path_by_name(&self, name: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT path FROM workspaces WHERE name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+}
+
+/// Caminho absoluto, sem `..`, sem barra final e, no Windows, sem o prefixo
+/// `\\?\` e com separadores `\`.
+pub fn canonical_path(path: &Path) -> io::Result<PathBuf> {
+    let path = dunce::canonicalize(path)?;
+    #[cfg(windows)]
+    let path = PathBuf::from(path.to_string_lossy().replace('/', "\\"));
+    Ok(path)
+}
+
+/// Nome padrão de um workspace: basename do path, ou `root` na raiz do disco.
+pub fn default_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "root".to_string())
+}
+
+fn path_str(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db() -> Db {
+        Db::open_in_memory().unwrap()
+    }
+
+    fn count(db: &Db, table: &str) -> i64 {
+        db.conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn recents_upsert_updates_without_duplicating() {
+        let db = db();
+        let a = Path::new("/home/user/a");
+        let b = Path::new("/home/user/b");
+
+        db.touch_recent_at(a, 100).unwrap();
+        db.touch_recent_at(b, 200).unwrap();
+        db.touch_recent_at(a, 300).unwrap();
+
+        assert_eq!(count(&db, "recents"), 2);
+        let recents = db.recents(0, 5).unwrap();
+        assert_eq!(
+            recents[0],
+            Recent {
+                path: a.into(),
+                last_used_at: 300
+            }
+        );
+        assert_eq!(recents[1].path, b);
+    }
+
+    #[test]
+    fn recents_paginate_newest_first() {
+        let db = db();
+        for i in 0..7 {
+            db.touch_recent_at(&PathBuf::from(format!("/p/{i}")), i)
+                .unwrap();
+        }
+        let first: Vec<_> = db
+            .recents(0, 5)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        let rest: Vec<_> = db
+            .recents(5, 5)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        assert_eq!(first[0], PathBuf::from("/p/6"));
+        assert_eq!(first.len(), 5);
+        assert_eq!(rest, vec![PathBuf::from("/p/1"), PathBuf::from("/p/0")]);
+    }
+
+    #[test]
+    fn duplicate_path_is_not_saved_twice() {
+        let db = db();
+        let path = Path::new("/home/user/projeto");
+
+        assert_eq!(
+            db.save_workspace(path, None).unwrap(),
+            SaveOutcome::Saved("projeto".into())
+        );
+        assert_eq!(
+            db.save_workspace(path, Some("outro")).unwrap(),
+            SaveOutcome::AlreadySaved("projeto".into())
+        );
+        assert_eq!(count(&db, "workspaces"), 1);
+    }
+
+    #[test]
+    fn duplicate_default_name_gets_numeric_suffix() {
+        let db = db();
+        let saved: Vec<_> = ["/a/projeto", "/b/projeto", "/c/projeto"]
+            .iter()
+            .map(|p| db.save_workspace(Path::new(p), None).unwrap())
+            .collect();
+        assert_eq!(
+            saved,
+            vec![
+                SaveOutcome::Saved("projeto".into()),
+                SaveOutcome::Saved("projeto-2".into()),
+                SaveOutcome::Saved("projeto-3".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_explicit_name_fails() {
+        let db = db();
+        db.save_workspace(Path::new("/a/x"), Some("api")).unwrap();
+        let err = db
+            .save_workspace(Path::new("/b/y"), Some("  api "))
+            .unwrap_err();
+        assert!(matches!(err, SaveError::NameTaken { ref name, .. } if name == "api"));
+        assert_eq!(count(&db, "workspaces"), 1);
+    }
+
+    #[test]
+    fn explicit_name_is_trimmed_and_not_empty() {
+        let db = db();
+        assert!(matches!(
+            db.save_workspace(Path::new("/a"), Some("   ")),
+            Err(SaveError::EmptyName)
+        ));
+        assert_eq!(
+            db.save_workspace(Path::new("/a"), Some("  meu app "))
+                .unwrap(),
+            SaveOutcome::Saved("meu app".into())
+        );
+    }
+
+    #[test]
+    fn root_path_defaults_to_root_name() {
+        assert_eq!(default_name(Path::new("/")), "root");
+        assert_eq!(default_name(Path::new("/home/user/projeto")), "projeto");
+    }
+
+    #[test]
+    fn workspaces_are_sorted_case_insensitively() {
+        let db = db();
+        for (name, path) in [("beta", "/1"), ("Alpha", "/2"), ("charlie", "/3")] {
+            db.save_workspace(Path::new(path), Some(name)).unwrap();
+        }
+        let names: Vec<_> = db
+            .workspaces(0, 5)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.name)
+            .collect();
+        assert_eq!(names, ["Alpha", "beta", "charlie"]);
+    }
+}
