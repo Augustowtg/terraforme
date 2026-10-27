@@ -4,6 +4,18 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.8] - 2026-10-27
+
+### Alterado
+
+- Os comandos da `/` que **não têm interface no terra** passam a usar o **padrão do router** (o provedor): escolhidos, eles vão para o agente na sessão atual, e a resposta dele aparece no chat. Por exemplo, o `/context` mostra o uso do contexto e o `/cost` mostra os limites do Claude, e as skills também rodam. Os que só existem no modo interativo do Claude Code (ex.: `/status`, `/help`) respondem que não estão disponíveis. Antes, o terra só avisava que o comando não tinha interface.
+- Na lista da `/`, esses comandos continuam esmaecidos, agora com "padrão do router" no lugar de "sem interface no terra".
+- Com o agente respondendo, um desses comandos pede para esperar o fim da resposta.
+
+### Corrigido
+
+- O **`/compact`** não funcionava: o `claude` rodava com `--disable-slash-commands` e respondia "/compact isn't available in this environment". As mensagens que começam com `/` agora rodam com os comandos ligados. As outras continuam sem eles, para o contexto fixo não crescer.
+
 ## [0.5.7] - 2026-10-27
 
 ### Adicionado

@@ -232,7 +232,9 @@ fn find_claude() -> Option<PathBuf> {
 /// Sem MCP, skills e hooks: são o ambiente do Claude Code do usuário (ex.:
 /// servidores MCP e plugins instalados) e entram no contexto de toda chamada.
 /// Num "oi" isso caía de ~26k para ~13k tokens; as ferramentas embutidas do
-/// Claude Code continuam disponíveis.
+/// Claude Code continuam disponíveis. Com `command` (a mensagem é um comando
+/// com `/`, ex.: `/compact`), os comandos ficam ligados: sem eles, o `claude`
+/// responde que o comando "isn't available in this environment".
 ///
 /// Com `auto_allow`, os pedidos de permissão do agente chegam pelo stdin/stdout
 /// (`--permission-prompt-tool stdio`) e são aprovados por [`control_response`].
@@ -242,6 +244,7 @@ fn cli_args<'a>(
     auto_allow: bool,
     model: Option<&'a str>,
     effort: Option<&'a str>,
+    command: bool,
 ) -> Vec<&'a str> {
     let mut args = vec![
         "-p",
@@ -254,10 +257,12 @@ fn cli_args<'a>(
         "--permission-mode",
         mode,
         "--strict-mcp-config",
-        "--disable-slash-commands",
         "--settings",
         r#"{"disableAllHooks":true}"#,
     ];
+    if !command {
+        args.push("--disable-slash-commands");
+    }
     if auto_allow {
         args.extend(["--permission-prompt-tool", "stdio"]);
     }
@@ -372,6 +377,7 @@ impl Run {
             auto_allow,
             request.model,
             request.effort,
+            request.prompt.starts_with('/'),
         ));
         // A conta escolhida: o `claude` lê credenciais e settings dessa pasta.
         if let Some(dir) = config_dir {
@@ -496,7 +502,7 @@ mod tests {
 
     #[test]
     fn cli_args_skip_user_environment_and_resume_session() {
-        let args = cli_args("plan", None, false, None, None);
+        let args = cli_args("plan", None, false, None, None, false);
         for flag in [
             "--strict-mcp-config",
             "--disable-slash-commands",
@@ -510,7 +516,14 @@ mod tests {
         assert!(!args.contains(&"--effort"));
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
 
-        let args = cli_args("manual", Some("s1"), true, Some("haiku"), Some("max"));
+        let args = cli_args(
+            "manual",
+            Some("s1"),
+            true,
+            Some("haiku"),
+            Some("max"),
+            false,
+        );
         assert!(args.windows(2).any(|w| w == ["--model", "haiku"]));
         assert!(args.windows(2).any(|w| w == ["--effort", "max"]));
         assert!(args.ends_with(&["--resume", "s1"]));
@@ -518,6 +531,11 @@ mod tests {
             args.windows(2)
                 .any(|w| w == ["--permission-prompt-tool", "stdio"])
         );
+
+        // Um comando com `/` (ex.: `/compact`) precisa dos comandos ligados.
+        let args = cli_args("plan", Some("s1"), false, None, None, true);
+        assert!(!args.contains(&"--disable-slash-commands"));
+        assert!(args.ends_with(&["--resume", "s1"]));
     }
 
     #[test]
