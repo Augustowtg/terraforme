@@ -4,6 +4,14 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.0] - 2026-10-27
+
+### Adicionado
+
+- **Barra de contexto** no painel do chat, na mesma linha dos badges de Modo e Consumo, no canto inferior direito (embaixo do status do agente). Ela mostra o tamanho do contexto da sessão com o número dentro da barra (ex.: `45K / 200K (22%)`) e muda de cor conforme ele se aproxima do limite do modelo: **verde**, **laranja** a partir da metade e **vermelho** a partir de 75%. No limite, passa a mostrar **Compacte a conversa**. É só um indicativo: aparece depois da primeira resposta da sessão e some no `/clear` ou ao trocar de conta.
+- O limite de contexto vem do próprio agente (o `contextWindow` do modelo, no fim de cada resposta); até ele chegar, vale 200K.
+- **`/compact`** passa a ter interface no terra: pede ao agente para resumir a conversa na mesma sessão, liberando o contexto. Ao terminar, o chat avisa "Conversa compactada." e a barra volta a crescer a partir da próxima resposta.
+
 ## [0.4.20] - 2026-10-27
 
 ### Corrigido

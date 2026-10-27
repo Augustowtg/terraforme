@@ -58,7 +58,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Tab` | Troca de aba (Chat, Consumo, Config) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
-| `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Tab`/`Enter` executam; cada comando é uma interface do terra (hoje, `/clear`: conversa nova; `/model`: modelo e esforço; `/login`: login na conta; `/usage`: aba Consumo). A lista tem todos os comandos do Claude: os embutidos, os do modo interativo (ex.: `/help`, `/status`, `/resume`) e as skills e plugins, e os que ainda não têm aparecem esmaecidos |
+| `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Tab`/`Enter` executam; cada comando é uma interface do terra (hoje, `/clear`: conversa nova; `/compact`: o agente resume a conversa e libera o contexto; `/model`: modelo e esforço; `/login`: login na conta; `/usage`: aba Consumo). A lista tem todos os comandos do Claude: os embutidos, os do modo interativo (ex.: `/help`, `/status`, `/resume`) e as skills e plugins, e os que ainda não têm aparecem esmaecidos |
 | `/login` | Entra de novo na conta escolhida na Config (token expirado ou revogado). O terra sai da tela e roda o `claude auth login` da conta, com o e-mail dela: o link aparece inteiro e clicável (e já copiado), e o código colado aparece ao digitar; `Enter` envia e `Enter` vazio cancela. No fim, o terra volta |
 | `/usage` | Abre a aba **Consumo** (limites de uso, crédito extra e o gráfico por dia) |
 | `/model` | Escolhe o modelo e o esforço desta conversa (`↑`/`↓` modelo, `←`/`→` esforço, `Enter` escolhe). O item Default abre o menu do modelo padrão, que fica salvo |
@@ -70,7 +70,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Shift+Enter` (escrevendo) | Pula uma linha. No GNOME Terminal e em outros que não diferenciam o `Shift+Enter`, use `\` + `Enter`, `Alt+Enter` ou `Ctrl+J` |
 | `Esc` no modo INSERT | Volta ao modo NORMAL |
 | Mouse no input (aba Chat) | Clique posiciona o cursor; arrastar seleciona o texto (digitar substitui a seleção) |
-| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token |
+| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 200K (22%)`): verde, laranja a partir da metade do limite e vermelho a partir de 75%; no limite, ela mostra **Compacte a conversa** |
 | `r` (aba Consumo) | Atualiza o consumo na hora (ele também se atualiza sozinho a cada minuto com a aba aberta) |
 | `c` ou clique nos botões (aba Consumo) | Alterna o gráfico Consumo por dia entre **Sem cache** (padrão) e **Com cache** |
 | Clique num dia (aba Consumo) | Mostra o consumo daquele dia por hora; **‹ Dias** ou `Esc` volta |

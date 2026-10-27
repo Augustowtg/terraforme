@@ -14,7 +14,7 @@ use crate::theme::{self, Variant};
 use crate::tui::widgets::popup;
 
 /// Comandos que já têm interface no terra.
-const INTERFACES: &[&str] = &["clear", "model", "login", "usage"];
+const INTERFACES: &[&str] = &["clear", "compact", "model", "login", "usage"];
 /// Comandos do terra que o agente não informa (o `/login` do Claude Code só
 /// existe no modo interativo dele): nome e descrição.
 const TERRA_COMMANDS: &[(&str, &str)] = &[(
@@ -185,8 +185,9 @@ mod tests {
             ("clear", "Start a new session"),
             ("model", "Set the AI model"),
         ]);
-        // Sem consulta, todos; os com interface (/clear e /model) primeiro.
-        assert_eq!(found(&list, ""), ["clear", "model", "compact", "context"]);
+        // Sem consulta, todos; os com interface (/clear, /compact e /model)
+        // primeiro.
+        assert_eq!(found(&list, ""), ["clear", "compact", "model", "context"]);
         assert_eq!(found(&list, "co"), ["compact", "context"]);
         // "session" só aparece na descrição do /clear.
         assert_eq!(found(&list, "session"), ["clear"]);
@@ -196,6 +197,7 @@ mod tests {
     #[test]
     fn knows_which_commands_have_an_interface() {
         assert!(has_interface("clear"));
-        assert!(!has_interface("compact"));
+        assert!(has_interface("compact"));
+        assert!(!has_interface("context"));
     }
 }

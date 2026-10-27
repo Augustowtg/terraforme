@@ -416,7 +416,7 @@ fn picker_is_drawn_above_the_input() {
 fn input_with_commands() -> InputBox {
     let mut input = InputBox::default();
     input.set_commands(Some(
-        [("clear", "Start a new session"), ("compact", "Summarize")]
+        [("clear", "Start a new session"), ("context", "Summarize")]
             .iter()
             .map(|(name, description)| CommandInfo {
                 name: name.to_string(),
@@ -457,7 +457,7 @@ fn commands_list_navigates_and_esc_keeps_the_text() {
     press(&mut input, KeyCode::Down);
     assert_eq!(
         press(&mut input, KeyCode::Tab),
-        Outcome::Command("compact".into())
+        Outcome::Command("context".into())
     );
     type_text(&mut input, "/co");
     press(&mut input, KeyCode::Esc);
@@ -493,14 +493,14 @@ fn commands_list_shows_loading_then_items_above_input() {
             description: "Start a new session".into(),
         },
         CommandInfo {
-            name: "compact".into(),
+            name: "context".into(),
             description: "Summarize".into(),
         },
     ]));
     let screen = draw(&input);
     assert!(screen.contains("Comandos (2)"), "{screen}");
     assert!(screen.contains("▌ /clear"));
-    assert!(screen.contains("/compact          Summarize · sem interface no terra"));
+    assert!(screen.contains("/context          Summarize · sem interface no terra"));
 }
 
 #[test]
