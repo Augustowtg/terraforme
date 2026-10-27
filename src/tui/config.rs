@@ -4,6 +4,8 @@
 //! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor; a
 //! tela principal salva e aplica a mudança.
 
+use std::path::Path;
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -81,6 +83,7 @@ impl ConfigView {
         settings: &AgentSettings,
         adapter: Option<&dyn ChatAdapter>,
         choices: &Choices,
+        config_file: Option<&Path>,
     ) {
         let provider = match adapter {
             Some(a) if a.is_available() => Span::styled(
@@ -95,6 +98,12 @@ impl ConfigView {
             Line::styled(" Agente", theme::section_title()),
             info_row("Provedor", provider),
         ];
+        if let Some(file) = config_file {
+            lines.push(info_row(
+                "Salvo em",
+                Span::styled(home_relative(file), theme::path()),
+            ));
+        }
         for (i, field) in FIELDS.into_iter().enumerate() {
             let value = value_label(field, settings, choices);
             lines.push(field_row(field_label(field), value, i == self.focus));
@@ -103,6 +112,14 @@ impl ConfigView {
             Paragraph::new(lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
             area,
         );
+    }
+}
+
+/// O path com `~` no lugar da home (ex.: `~/.terraforme/workspace/x/config.json`).
+fn home_relative(path: &Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
     }
 }
 
@@ -331,7 +348,16 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(50, 7)).unwrap();
         terminal
-            .draw(|frame| view.draw(frame, frame.area(), &settings, None, &Choices::default()))
+            .draw(|frame| {
+                view.draw(
+                    frame,
+                    frame.area(),
+                    &settings,
+                    None,
+                    &Choices::default(),
+                    None,
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let row = |y: u16| {
@@ -348,5 +374,32 @@ mod tests {
         // Sem provedor, o id salvo aparece como está.
         assert_eq!(row(5), "   Modelo            haiku");
         assert_eq!(buffer[(3, 3)].bg, theme::focused().bg.unwrap());
+    }
+
+    #[test]
+    fn shows_where_the_workspace_config_is_saved() {
+        let view = ConfigView::default();
+        let file = dirs::home_dir()
+            .unwrap()
+            .join(".terraforme/workspace/terra/config.json");
+        let mut terminal = Terminal::new(TestBackend::new(70, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                view.draw(
+                    frame,
+                    frame.area(),
+                    &AgentSettings::default(),
+                    None,
+                    &Choices::default(),
+                    Some(&file),
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..70).map(|x| buffer[(x, 3)].symbol()).collect();
+        assert_eq!(
+            row.trim_end(),
+            "   Salvo em        ~/.terraforme/workspace/terra/config.json"
+        );
     }
 }

@@ -18,8 +18,11 @@ Mostra o consumo das LLMs usando os routes
 6. Atualiza ao abrir a aba, a cada minuto com ela aberta e com `r`
 
 ## Configurações 
-Configurações, as configurações globas da aplicação 
-Em construção 
+Configurações do agente (conta, modo inicial, modelo e esforço padrão), de cada workspace.
+1. Salvas em `~/.terraforme/workspace/[nome_da_workspace]/config.json`
+2. O nome é o do workspace salvo para o diretório ou, sem um, o nome da pasta
+3. Sem o arquivo, o workspace começa com as configurações globais
+4. A tela mostra onde salva (Salvo em)
 
 ## Sair
 Botão em vermelho, e quando apertar Esc ele redireciona para o botão de sair quando clicar enter ele mostra o box abaixo

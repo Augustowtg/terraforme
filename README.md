@@ -109,7 +109,20 @@ No Claude, os limites são os mesmos do `/usage` do Claude Code (sessão de 5 h 
 
 ### Aba Config
 
-A seção **Agente** reúne as configurações do agente do chat. `↑`/`↓` escolhem e `←`/`→` ou `Enter` trocam o valor; a mudança é salva e vale na hora.
+A seção **Agente** reúne as configurações do agente do chat, que são de cada workspace. `↑`/`↓` escolhem e `←`/`→` ou `Enter` trocam o valor; a mudança é salva e vale na hora.
+
+As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.json`. O nome é o do workspace salvo para o diretório (`terra workspace --save`) ou, sem um, o nome da pasta. Um workspace sem o arquivo começa com as configurações globais (as de antes da 0.4.12); a Config mostra o arquivo em **Salvo em**.
+
+```json
+{
+  "agent": {
+    "start_mode": "accept_edits",
+    "model": "sonnet",
+    "account": ".claude-trabalho",
+    "effort": "high"
+  }
+}
+```
 
 | Configuração | Valores |
 | --- | --- |
@@ -174,7 +187,9 @@ Tudo fica em `~/.terraforme/terra.sqlite`, criado na primeira execução.
 
 - `recents`: `id`, `path` (único), `last_used_at` (epoch em ms)
 - `workspaces`: `id`, `name` (único), `path` (único), `created_at` (epoch em ms)
-- `settings`: `key` (único) e `value`, com as configurações da aba Config (ex.: `agent.model`)
+- `settings`: `key` (único) e `value`, com as configurações globais de antes da 0.4.12 (ex.: `agent.model`); hoje só são lidas, como ponto de partida de um workspace sem `config.json`
+
+As configurações de cada workspace ficam em `~/.terraforme/workspace/<nome>/config.json` (veja a aba Config).
 
 Os paths são canonicalizados antes de serem salvos: ficam absolutos, sem `..` e sem barra no final. No Windows, a comparação de paths não diferencia maiúsculas de minúsculas.
 

@@ -74,9 +74,7 @@ pub struct Db {
 impl Db {
     /// Abre (criando se preciso) `~/.terraforme/terra.sqlite`.
     pub fn open_default() -> Result<Self> {
-        let dir = dirs::home_dir()
-            .context("não foi possível encontrar o diretório home do usuário")?
-            .join(".terraforme");
+        let dir = data_dir()?;
         fs::create_dir_all(&dir)
             .with_context(|| format!("não foi possível criar {}", dir.display()))?;
         Self::open(&dir.join("terra.sqlite"))
@@ -126,6 +124,7 @@ impl Db {
     }
 
     /// Salva uma configuração; `None` apaga (volta ao padrão).
+    #[cfg(test)]
     pub fn set_setting(&self, key: &str, value: Option<&str>) -> Result<()> {
         match value {
             Some(value) => self.conn.execute(
@@ -242,6 +241,11 @@ impl Db {
         }
     }
 
+    /// O nome do workspace salvo em `path`, se houver.
+    pub fn workspace_name(&self, path: &Path) -> Result<Option<String>> {
+        Ok(self.workspace_name_by_path(&path_str(path))?)
+    }
+
     fn workspace_name_by_path(&self, path: &str) -> rusqlite::Result<Option<String>> {
         self.conn
             .query_row(
@@ -261,6 +265,13 @@ impl Db {
             )
             .optional()
     }
+}
+
+/// A pasta de dados do terra: `~/.terraforme`.
+pub fn data_dir() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .context("não foi possível encontrar o diretório home do usuário")?
+        .join(".terraforme"))
 }
 
 /// Caminho absoluto, sem `..`, sem barra final e, no Windows, sem o prefixo
