@@ -6,6 +6,8 @@
 #   ui_summaries "" "Resumo 2" ...                (opcional; "" é sem resumo)
 #   ui_confirm "Pergunta?" || exit 0
 #   ui_step <função> [args...]                     (roda o próximo passo)
+#   ui_ask "Pergunta?"                             (passo com SIM/NÃO; NÃO segue)
+#   ui_skip                                        (pula o próximo passo)
 #   ui_note "mensagem"                             (mostrada no resumo final)
 #   ui_finish "mensagem final"
 
@@ -29,6 +31,7 @@ BANNER=(
 
 UI_STEPS=()
 UI_SUMMARIES=()
+UI_SKIPPED=()
 UI_CURRENT=0
 UI_FAILED=0
 UI_NOTES=()
@@ -106,7 +109,9 @@ ui_render() {
   ui_progress_bar
   echo
   for i in "${!UI_STEPS[@]}"; do
-    if [ "$i" -lt "$UI_CURRENT" ]; then
+    if [ "$i" -lt "$UI_CURRENT" ] && [ "${UI_SKIPPED[$i]:-0}" -eq 1 ]; then
+      echo "  ${C_DIM}– ${UI_STEPS[$i]} (pulado)${C_RESET}"
+    elif [ "$i" -lt "$UI_CURRENT" ]; then
       echo "  ${C_GREEN}✔${C_RESET} ${UI_STEPS[$i]}"
     elif [ "$i" -eq "$UI_CURRENT" ] && [ "$UI_FAILED" -eq 1 ]; then
       echo "  ${C_RED}✘ ${UI_STEPS[$i]}${C_RESET}$(ui_summary "$i")"
@@ -132,11 +137,11 @@ ui_buttons() {
 }
 
 # Pergunta SIM/NÃO selecionado pelas setas ←/→ e confirmado com Enter.
-# Retorna 0 para SIM. Sem terminal interativo, exige o argumento -y.
-ui_confirm() {
+# Retorna 0 para SIM. Com -y, responde SIM sem perguntar; sem terminal
+# interativo, exige o -y.
+ui_choose() {
   local question="$1" selected=0 key rest
   if [ "${UI_ASSUME_YES:-0}" -eq 1 ]; then
-    UI_CURRENT=$((UI_CURRENT + 1))
     return 0
   fi
   if [ "$UI_INTERACTIVE" -ne 1 ]; then
@@ -164,7 +169,12 @@ ui_confirm() {
     esac
   done
   printf '\033[?25h\n'
-  if [ "$selected" -eq 0 ]; then
+  return "$selected"
+}
+
+# A confirmação da instalação: NÃO cancela tudo.
+ui_confirm() {
+  if ui_choose "$1"; then
     UI_CURRENT=$((UI_CURRENT + 1))
     return 0
   fi
@@ -172,6 +182,21 @@ ui_confirm() {
   echo
   echo "  ${C_YELLOW}Instalação cancelada.${C_RESET}"
   return 1
+}
+
+# Um passo que é uma pergunta: o passo conta como feito com SIM ou NÃO, e
+# o retorno diz a resposta (0 para SIM) para o script pular os seguintes.
+ui_ask() {
+  local rc=0
+  ui_choose "$1" || rc=1
+  UI_CURRENT=$((UI_CURRENT + 1))
+  return "$rc"
+}
+
+# Marca o próximo passo como pulado.
+ui_skip() {
+  UI_SKIPPED[$UI_CURRENT]=1
+  UI_CURRENT=$((UI_CURRENT + 1))
 }
 
 # Roda o próximo passo com a saída no log. Se falhar, o set -e encerra o

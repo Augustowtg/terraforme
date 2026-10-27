@@ -91,11 +91,44 @@ setup_shells() {
   esac
 }
 
+# As extensões do agente (aba Extensões). O terra passa os hooks e o MCP
+# delas ao agente; o RTK só precisa do binário, e o ai-memory, do servidor
+# que o `ai-memory setup` instala como serviço do usuário.
+install_rtk() {
+  if command -v rtk >/dev/null 2>&1; then
+    ui_note "RTK já instalado: $(rtk --version)"
+    return
+  fi
+  cargo install --locked --git https://github.com/rtk-ai/rtk rtk
+  ui_note "RTK instalado em ~/.cargo/bin/rtk"
+}
+
+install_ai_memory() {
+  local bin
+  bin="$(command -v ai-memory || true)"
+  if [ -z "$bin" ]; then
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "erro: 'curl' não encontrado; é preciso para baixar o ai-memory." >&2
+      return 1
+    fi
+    curl -fsSL https://github.com/akitaonrails/ai-memory/releases/latest/download/install.sh | sh
+    bin="$HOME/.local/bin/ai-memory"
+    ui_note "ai-memory instalado em $bin"
+  else
+    ui_note "ai-memory já instalado: $("$bin" --version)"
+  fi
+  "$bin" setup --yes
+  ui_note "ai-memory configurado: servidor como serviço do usuário e agentes ligados"
+}
+
 ui_init "$SCRIPT_DIR" \
   "Confirmar instalação" \
   "Compilar em modo release" \
   "Instalar o binário em $BIN_DIR" \
-  "Adicionar a função 'terra' aos shells"
+  "Adicionar a função 'terra' aos shells" \
+  "Instalar as extensões?" \
+  "Instalar o RTK" \
+  "Instalar e configurar o ai-memory"
 
 # Os arquivos que o setup_shells altera, para o resumo do passo.
 shell_files() {
@@ -113,10 +146,20 @@ ui_summaries \
   "" \
   "cargo build --release; pode levar alguns minutos" \
   "copia target/release/terra" \
-  "$(shell_files)"
+  "$(shell_files)" \
+  "" \
+  "cargo install --git https://github.com/rtk-ai/rtk rtk" \
+  "install.sh do GitHub e ai-memory setup"
 
 ui_confirm "Instalar o terraforme CLI?" || exit 0
 ui_step build
 ui_step install_bin
 ui_step setup_shells
+if ui_ask "Instalar as extensões (RTK e ai-memory)?"; then
+  ui_step install_rtk
+  ui_step install_ai_memory
+else
+  ui_skip
+  ui_skip
+fi
 ui_finish "Pronto! Abra um novo terminal (ou rode 'source ~/.bashrc') e use: terra workspace"
