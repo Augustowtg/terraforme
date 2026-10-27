@@ -4,6 +4,15 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.20] - 2026-10-27
+
+### Corrigido
+
+- O `terra cli` **sempre abre**, mesmo com problemas:
+  - um **panic no adapter do provedor** (em qualquer chamada, ao detectar o provedor ou numa resposta) não derruba mais a tela: vira o valor padrão (ex.: sem contas) ou um erro no chat, e o provedor que não pôde ser criado fica **Desconectado** com o motivo;
+  - um panic numa **thread de fundo** do provedor (catálogo, consumo, leitura da resposta) não restaura mais o terminal no meio da tela: vira um erro no chat e encerra a resposta em andamento;
+  - sem conseguir abrir o `terra.sqlite`, ler o diretório atual ou achar o home, o terra abre do mesmo jeito (banco em memória, configurações numa pasta temporária) e mostra o problema no chat. Antes, ele saía com `erro:`.
+
 ## [0.4.19] - 2026-10-27
 
 ### Alterado

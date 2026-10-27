@@ -8,6 +8,7 @@
 mod adapter;
 pub mod adapters;
 mod event;
+pub mod guard;
 mod mode;
 
 pub use adapter::{

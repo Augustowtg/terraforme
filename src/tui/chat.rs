@@ -713,6 +713,23 @@ impl Chat {
 
     /// Avança o spinner, o cursor piscante e os avisos, e lê o que o agente
     /// mandou; chamado a cada tick do loop.
+    /// Um panic numa thread de fundo do provedor: vira um erro no histórico
+    /// e encerra a resposta em andamento, que não vai mais terminar.
+    pub fn provider_failed(&mut self, reason: &str) {
+        let name = self.adapter.as_ref().map_or("O provedor", |a| a.name());
+        let message = format!("{name} falhou: {reason}");
+        if self.run.is_some() {
+            self.apply(AgentEvent::Failed(message));
+        } else {
+            self.history.push(Entry::Error(message));
+        }
+    }
+
+    /// Um aviso de fora do chat (ex.: o terra abriu sem o banco).
+    pub fn warn(&mut self, message: String) {
+        self.history.push(Entry::Error(message));
+    }
+
     pub fn tick(&mut self) {
         self.poll_catalog();
         let events = self

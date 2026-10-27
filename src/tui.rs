@@ -39,9 +39,14 @@ const TICK: Duration = Duration::from_millis(100);
 
 /// Tela principal com a barra de abas; sai pelo botão "Sair" (`Esc`, `Enter` e
 /// confirmação) ou direto com `Ctrl+C`.
-pub fn run_app(db: Db, dir: PathBuf, config: PathBuf) -> Result<()> {
+pub fn run_app(db: Db, dir: PathBuf, config: PathBuf, warnings: Vec<String>) -> Result<()> {
     let mut app = app::App::new(db, dir, config);
+    for warning in warnings {
+        app.warn(warning);
+    }
     with_terminal(|terminal| {
+        // Por cima do hook do ratatui: um panic do provedor não fecha a tela.
+        crate::agent::guard::install_hook();
         // Nos terminais com o protocolo de teclado do kitty, o Shift+Enter chega
         // diferente do Enter; nos outros, Alt+Enter e Ctrl+J pulam linha.
         let enhanced = supports_keyboard_enhancement().unwrap_or(false);
