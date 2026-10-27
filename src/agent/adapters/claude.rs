@@ -10,6 +10,7 @@
 mod accounts;
 mod catalog;
 mod daily;
+mod interactive;
 mod stream;
 mod usage;
 

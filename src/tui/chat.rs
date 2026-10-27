@@ -73,6 +73,8 @@ pub struct Chat {
     model_menu: Option<ModelMenu>,
     /// Comando do `/login`, para a tela principal rodar fora da tela.
     pending_login: Option<Command>,
+    /// O `/usage` pediu a aba Consumo, para a tela principal abrir.
+    open_usage: bool,
     /// Novo modelo padrão escolhido no `/model`, para a tela principal salvar.
     default_choice: Option<(String, Option<String>)>,
     /// Conta escolhida na Config (`None` é a Default do provedor).
@@ -114,6 +116,7 @@ impl Default for Chat {
             session_effort: None,
             model_menu: None,
             pending_login: None,
+            open_usage: false,
             default_choice: None,
             account: None,
             session_id: None,
@@ -324,6 +327,8 @@ impl Chat {
         match name {
             "clear" => self.clear_conversation(),
             "login" => self.start_login(),
+            // O consumo é a aba Consumo do terra.
+            "usage" => self.open_usage = true,
             "model" => {
                 // O Default do menu é o modelo padrão salvo ou o do agente.
                 let default = self
@@ -354,6 +359,16 @@ impl Chat {
                 "Este provedor não tem login pelo terra.".to_string(),
             )),
         }
+    }
+
+    #[cfg(test)]
+    pub fn open_usage_for_test(&mut self) {
+        self.open_usage = true;
+    }
+
+    /// O `/usage` pediu a aba Consumo desde a última chamada.
+    pub fn take_open_usage(&mut self) -> bool {
+        std::mem::take(&mut self.open_usage)
     }
 
     /// O comando de login pedido pelo `/login` e o nome da conta, para a
