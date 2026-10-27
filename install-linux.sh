@@ -97,6 +97,24 @@ ui_init "$SCRIPT_DIR" \
   "Instalar o binário em $BIN_DIR" \
   "Adicionar a função 'terra' aos shells"
 
+# Os arquivos que o setup_shells altera, para o resumo do passo.
+shell_files() {
+  local files="~/.bashrc"
+  if [ -f "$HOME/.zshrc" ] || command -v zsh >/dev/null 2>&1; then
+    files+=", ~/.zshrc"
+  fi
+  if [ -d "$HOME/.config/fish" ] || command -v fish >/dev/null 2>&1; then
+    files+=", ~/.config/fish/config.fish"
+  fi
+  echo "$files"
+}
+
+ui_summaries \
+  "" \
+  "cargo build --release; pode levar alguns minutos" \
+  "copia target/release/terra" \
+  "$(shell_files)"
+
 ui_confirm "Instalar o terraforme CLI?" || exit 0
 ui_step build
 ui_step install_bin

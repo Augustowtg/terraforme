@@ -3,6 +3,7 @@
 #
 # Uso:
 #   ui_init "$SCRIPT_DIR" "Passo 1" "Passo 2" ...   (o passo 1 é a confirmação)
+#   ui_summaries "" "Resumo 2" ...                (opcional; "" é sem resumo)
 #   ui_confirm "Pergunta?" || exit 0
 #   ui_step <função> [args...]                     (roda o próximo passo)
 #   ui_note "mensagem"                             (mostrada no resumo final)
@@ -27,6 +28,7 @@ BANNER=(
 )
 
 UI_STEPS=()
+UI_SUMMARIES=()
 UI_CURRENT=0
 UI_FAILED=0
 UI_NOTES=()
@@ -62,6 +64,20 @@ ui_on_exit() {
   fi
 }
 
+# O resumo de cada passo, na ordem do ui_init, mostrado ao lado da label
+# até o passo terminar. Passos sem resumo usam "".
+ui_summaries() {
+  UI_SUMMARIES=("$@")
+}
+
+# " — resumo" em cinza, ou nada quando o passo não tem resumo.
+ui_summary() {
+  local summary="${UI_SUMMARIES[$1]:-}"
+  if [ -n "$summary" ]; then
+    printf '  %s— %s%s' "$C_DIM" "$summary" "$C_RESET"
+  fi
+}
+
 ui_note() {
   UI_NOTES+=("$1")
 }
@@ -93,11 +109,11 @@ ui_render() {
     if [ "$i" -lt "$UI_CURRENT" ]; then
       echo "  ${C_GREEN}✔${C_RESET} ${UI_STEPS[$i]}"
     elif [ "$i" -eq "$UI_CURRENT" ] && [ "$UI_FAILED" -eq 1 ]; then
-      echo "  ${C_RED}✘ ${UI_STEPS[$i]}${C_RESET}"
+      echo "  ${C_RED}✘ ${UI_STEPS[$i]}${C_RESET}$(ui_summary "$i")"
     elif [ "$i" -eq "$UI_CURRENT" ]; then
-      echo "  ${C_YELLOW}●${C_RESET} ${C_BOLD}${UI_STEPS[$i]}${C_RESET}"
+      echo "  ${C_YELLOW}●${C_RESET} ${C_BOLD}${UI_STEPS[$i]}${C_RESET}$(ui_summary "$i")"
     else
-      echo "  ${C_DIM}○ ${UI_STEPS[$i]}${C_RESET}"
+      echo "  ${C_DIM}○ ${UI_STEPS[$i]}${C_RESET}$(ui_summary "$i")"
     fi
   done
   echo

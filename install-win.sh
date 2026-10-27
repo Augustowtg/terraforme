@@ -86,6 +86,12 @@ ui_init "$SCRIPT_DIR" \
   "Instalar o binário em $BIN_DIR" \
   "Adicionar a função 'terra' ao Git Bash"
 
+ui_summaries \
+  "" \
+  "cargo build --release; pode levar alguns minutos" \
+  "copia target/release/terra.exe e remove o antigo terraforme.exe" \
+  "~/.bashrc e ~/.bash_profile"
+
 ui_confirm "Instalar o terraforme CLI?" || exit 0
 ui_step build
 ui_step install_bin
