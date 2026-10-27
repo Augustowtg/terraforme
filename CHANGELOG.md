@@ -4,6 +4,20 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.1] - 2026-10-27
+
+### Adicionado
+
+- Seção **Contexto** na aba Config, dentro da seção Agente e separada dela por uma linha (que vai só até onde vai a seção, não a tela inteira), salva no `config.json` do workspace (`agent.context`):
+  - **Display**: **Visível** (padrão) ou **Oculto**, para mostrar ou esconder a barra de contexto;
+  - **Auto compactação**: **Não** (padrão) ou **Sim**; ligada, o terra manda o `/compact` sozinho quando uma resposta deixa o contexto no ponto de compactar (uma vez por resposta: se a compactação não reduzir o contexto, ele não tenta de novo em loop);
+  - **Compactar em**: o ponto de compactar, de 50% a 95% do limite do modelo (padrão **75%**), mostrado também em tokens (ex.: `75% · 150K tokens`).
+
+### Alterado
+
+- A barra de contexto vai até o **ponto de compactar** (e não até o limite do modelo): fica **laranja** na metade dele, **vermelha** a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele. O texto da barra mostra o contexto sobre o ponto (ex.: `45K / 150K (30%)`).
+- A coluna dos nomes da aba Config ficou 2 colunas mais larga, para caber "Auto compactação".
+
 ## [0.5.0] - 2026-10-27
 
 ### Adicionado

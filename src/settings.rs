@@ -12,7 +12,8 @@
 //!     "model": "sonnet",
 //!     "account": ".claude-trabalho",
 //!     "effort": "high",
-//!     "interface": "terraforme"
+//!     "interface": "terraforme",
+//!     "context": { "display": "visible", "auto_compact": false, "compact_at": 75 }
 //!   }
 //! }
 //! ```
@@ -99,6 +100,64 @@ impl Interface {
     }
 }
 
+/// Configurações do contexto da sessão (a barra embaixo do chat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextSettings {
+    /// A barra de contexto aparece no chat.
+    pub visible: bool,
+    /// Compactar a conversa sozinho quando o contexto chega em `compact_at`.
+    pub auto_compact: bool,
+    /// Ponto de compactar, em % do limite do modelo: a barra fica cheia e
+    /// mostra "Compacte a conversa" ao chegar nele.
+    pub compact_at: u8,
+}
+
+impl ContextSettings {
+    /// Pontos de compactar que a Config oferece (% do limite).
+    pub const COMPACT_AT: [u8; 10] = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
+
+    /// Tokens em que a conversa deve ser compactada, num limite `window`.
+    pub fn compact_tokens(self, window: u64) -> u64 {
+        window * u64::from(self.compact_at) / 100
+    }
+
+    fn load(json: &Value) -> Self {
+        let default = Self::default();
+        Self {
+            visible: json["display"]
+                .as_str()
+                .map_or(default.visible, |d| d != "hidden"),
+            auto_compact: json["auto_compact"]
+                .as_bool()
+                .unwrap_or(default.auto_compact),
+            compact_at: json["compact_at"]
+                .as_u64()
+                .and_then(|p| u8::try_from(p).ok())
+                .filter(|p| Self::COMPACT_AT.contains(p))
+                .unwrap_or(default.compact_at),
+        }
+    }
+
+    fn to_json(self) -> Value {
+        json!({
+            "display": if self.visible { "visible" } else { "hidden" },
+            "auto_compact": self.auto_compact,
+            "compact_at": self.compact_at,
+        })
+    }
+}
+
+/// Visível, sem compactar sozinho, com o ponto de compactar em 75%.
+impl Default for ContextSettings {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            auto_compact: false,
+            compact_at: 75,
+        }
+    }
+}
+
 /// Configurações da seção Agente. O padrão ([`Default`]) é o do router: tudo
 /// fica com o provedor.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -111,6 +170,7 @@ pub struct AgentSettings {
     /// Esforço padrão (escolhido no `/model`); `None` é o do provedor.
     pub effort: Option<String>,
     pub interface: Interface,
+    pub context: ContextSettings,
 }
 
 impl AgentSettings {
@@ -130,6 +190,7 @@ impl AgentSettings {
             interface: text("interface")
                 .and_then(|key| Interface::from_key(&key))
                 .unwrap_or_default(),
+            context: ContextSettings::load(&agent["context"]),
         })
     }
 
@@ -143,6 +204,7 @@ impl AgentSettings {
                 "account": self.account,
                 "effort": self.effort,
                 "interface": self.interface.key(),
+                "context": self.context.to_json(),
             });
         })
     }
@@ -222,6 +284,11 @@ mod tests {
             account: Some(".claude-trabalho".into()),
             effort: None,
             interface: Interface::Provider,
+            context: ContextSettings {
+                visible: false,
+                auto_compact: true,
+                compact_at: 90,
+            },
         };
         settings.save_file(&path).unwrap();
         assert_eq!(AgentSettings::load_file(&path), Some(settings.clone()));
@@ -229,6 +296,10 @@ mod tests {
         assert_eq!(json["agent"]["start_mode"], "accept_edits");
         assert_eq!(json["agent"]["effort"], Value::Null);
         assert_eq!(json["agent"]["interface"], "provider");
+        assert_eq!(
+            json["agent"]["context"],
+            json!({"display": "hidden", "auto_compact": true, "compact_at": 90})
+        );
 
         // Chaves de fora do agente ficam no arquivo.
         fs::write(&path, r#"{"outra": 1, "agent": {"model": "opus"}}"#).unwrap();
@@ -261,6 +332,15 @@ mod tests {
     }
 
     #[test]
+    fn context_defaults_to_visible_without_auto_compact_at_75() {
+        let context = ContextSettings::default();
+        assert!(context.visible);
+        assert!(!context.auto_compact);
+        assert_eq!(context.compact_at, 75);
+        assert_eq!(context.compact_tokens(200_000), 150_000);
+    }
+
+    #[test]
     fn config_file_stays_inside_workspace_folder() {
         let root = Path::new("/r");
         assert_eq!(
@@ -280,7 +360,7 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            r#"{"agent": {"start_mode": "???", "interface": "???"}}"#,
+            r#"{"agent": {"start_mode": "???", "interface": "???", "context": {"compact_at": 42}}}"#,
         )
         .unwrap();
         assert_eq!(
