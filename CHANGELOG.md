@@ -4,6 +4,20 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.7] - 2026-10-27
+
+### Adicionado
+
+- **`/login`** no chat, para entrar de novo na conta escolhida na Config quando o token expira ou é revogado (ex.: `Failed to authenticate: OAuth token revoked. Please log in again`):
+  - o terra sai da tela e roda o `claude auth login` na pasta da conta (`CLAUDE_CONFIG_DIR`), com o e-mail dela já preenchido; o login abre o navegador e, se pedir, o código é colado no terminal;
+  - no fim, a tela volta, o histórico diz se o login deu certo e os comandos, os modelos e o consumo são recarregados;
+  - o `/login` é um comando do terra: aparece na lista da `/` mesmo sem vir do agente (`ChatAdapter::login`).
+- Quando o agente falha por autenticação, o chat sugere: `Use /login para entrar de novo na conta ...`.
+
+### Alterado
+
+- Na aba Consumo, o aviso de login expirado ou revogado agora indica o `/login`.
+
 ## [0.4.6] - 2026-10-27
 
 ### Adicionado

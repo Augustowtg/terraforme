@@ -14,12 +14,31 @@ use crate::theme::{self, Variant};
 use crate::tui::widgets::popup;
 
 /// Comandos que já têm interface no terra.
-const INTERFACES: &[&str] = &["clear", "model"];
+const INTERFACES: &[&str] = &["clear", "model", "login"];
+/// Comandos do terra que o agente não informa (o `/login` do Claude Code só
+/// existe no modo interativo dele): nome e descrição.
+const TERRA_COMMANDS: &[(&str, &str)] = &[(
+    "login",
+    "Entra de novo na conta do agente (ex.: token expirado ou revogado)",
+)];
 /// Largura da coluna do nome (`/nome`).
 const NAME_WIDTH: usize = 18;
 
 pub fn has_interface(name: &str) -> bool {
     INTERFACES.contains(&name)
+}
+
+/// Os comandos do agente mais os do terra que ele não informou.
+pub fn with_terra(mut commands: Vec<CommandInfo>) -> Vec<CommandInfo> {
+    for (name, description) in TERRA_COMMANDS {
+        if !commands.iter().any(|c| c.name == *name) {
+            commands.push(CommandInfo {
+                name: name.to_string(),
+                description: description.to_string(),
+            });
+        }
+    }
+    commands
 }
 
 /// Comandos que combinam com `query`: começo do nome, parte do nome e parte
@@ -44,6 +63,19 @@ pub fn matches<'a>(commands: &'a [CommandInfo], query: &str) -> Vec<&'a CommandI
         .collect();
     found.sort_by(|a, b| (a.0, a.1, &a.2.name).cmp(&(b.0, b.1, &b.2.name)));
     found.into_iter().map(|(_, _, command)| command).collect()
+}
+
+#[cfg(test)]
+#[test]
+fn terra_commands_are_added_once() {
+    let login = |description: &str| CommandInfo {
+        name: "login".into(),
+        description: description.into(),
+    };
+    let added = with_terra(Vec::new());
+    assert_eq!(added.iter().filter(|c| c.name == "login").count(), 1);
+    // Se o agente um dia informar o /login, fica o dele.
+    assert_eq!(with_terra(vec![login("do agente")]), [login("do agente")]);
 }
 
 /// Desenha a lista acima de `input`. `None` em `found` é o catálogo ainda

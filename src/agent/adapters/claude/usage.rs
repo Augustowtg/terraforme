@@ -79,7 +79,7 @@ fn fetch(config_dir: &Path) -> Result<Usage, String> {
     match status.trim() {
         "200" => parse(body, credentials.plan),
         "401" | "403" => {
-            Err("o login do Claude expirou: envie uma mensagem no chat para renová-lo".to_string())
+            Err("o login do Claude expirou ou foi revogado: use /login no chat".to_string())
         }
         status => Err(format!("o Claude respondeu HTTP {status}")),
     }

@@ -7,6 +7,7 @@
 //! registrá-lo em [`super::adapters::all`].
 
 use std::path::Path;
+use std::process::Command;
 use std::sync::mpsc::Receiver;
 
 use super::{AgentEvent, PermissionMode};
@@ -145,6 +146,13 @@ pub trait ChatAdapter {
     /// Começa a carregar, em segundo plano, o consumo da conta `account`.
     /// `None` quando o provedor não informa consumo.
     fn load_usage(&self, _account: Option<&str>) -> Option<Receiver<Result<Usage, String>>> {
+        None
+    }
+
+    /// O comando que entra de novo na conta `account` (ex.: quando o token
+    /// foi revogado). Ele é interativo: o terra sai da tela enquanto ele roda.
+    /// `None` quando o provedor não tem login.
+    fn login(&self, _account: Option<&str>) -> Option<Command> {
         None
     }
 

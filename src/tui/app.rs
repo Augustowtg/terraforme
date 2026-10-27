@@ -2,6 +2,9 @@
 //! ativa logo abaixo. `Esc` leva o foco ao botão "Sair"; `Enter` nele abre a
 //! confirmação de saída.
 
+use std::io;
+use std::process::{Command, ExitStatus};
+
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
@@ -131,6 +134,18 @@ impl App {
             self.settings.effort = effort;
             self.save_settings(&previous);
         }
+    }
+
+    /// O comando do `/login`, para o loop rodar fora da tela.
+    pub fn take_login(&mut self) -> Option<Command> {
+        self.chat.take_login()
+    }
+
+    /// Volta do login: o chat avisa e o consumo é recarregado com o novo
+    /// login.
+    pub fn login_finished(&mut self, result: io::Result<ExitStatus>) {
+        self.chat.finish_login(result);
+        self.usage.invalidate();
     }
 
     /// Trata uma tecla. Retorna `true` quando a saída foi confirmada.

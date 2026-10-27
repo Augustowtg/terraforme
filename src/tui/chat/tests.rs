@@ -78,6 +78,10 @@ impl ChatAdapter for FakeAdapter {
         Some(rx)
     }
 
+    fn login(&self, _account: Option<&str>) -> Option<Command> {
+        Some(Command::new("fake-login"))
+    }
+
     fn start(&self, request: Request<'_>) -> Result<Box<dyn Session>, String> {
         self.sent.borrow_mut().push((
             request.prompt.to_string(),
@@ -308,6 +312,50 @@ fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
         chat.history.entries().last(),
         Some(&Entry::Info(
             "/compact ainda não tem interface no terra.".into()
+        ))
+    );
+}
+
+#[test]
+fn login_is_a_terra_command_that_runs_the_provider_login() {
+    let (mut chat, _) = fake_chat(true, Vec::new());
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/log");
+    press(&mut chat, KeyCode::Enter);
+    let login = chat.take_login().expect("/login pede o login do provedor");
+    assert_eq!(login.get_program(), "fake-login");
+    assert!(chat.take_login().is_none(), "só uma vez");
+
+    chat.finish_login(Err(std::io::Error::other("sem claude")));
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Error(
+            "Não foi possível iniciar o login: sem claude".into()
+        ))
+    );
+}
+
+#[test]
+fn auth_error_suggests_login() {
+    let reply = vec![AgentEvent::Done {
+        is_error: true,
+        message: Some(
+            "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."
+                .into(),
+        ),
+        tokens: 0,
+        denied: 0,
+    }];
+    let (mut chat, _) = fake_chat(true, reply);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info(
+            "Use /login para entrar de novo na conta Default.".into()
         ))
     );
 }

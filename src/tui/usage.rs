@@ -80,6 +80,13 @@ impl UsageView {
         }
     }
 
+    /// O consumo mostrado não vale mais (ex.: depois de um login): recarrega
+    /// na próxima vez que a aba estiver aberta.
+    pub fn invalidate(&mut self) {
+        self.fetched = None;
+        self.error = None;
+    }
+
     fn refresh(&mut self, adapter: Option<&dyn ChatAdapter>, account: Option<&str>) {
         let changed = self
             .fetched

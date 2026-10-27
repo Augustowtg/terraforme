@@ -17,6 +17,7 @@ mod model_menu;
 mod tests;
 
 use std::borrow::Cow;
+use std::process::{Command, ExitStatus};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -70,6 +71,8 @@ pub struct Chat {
     session_effort: Option<String>,
     /// Menu do `/model`, quando aberto.
     model_menu: Option<ModelMenu>,
+    /// Comando do `/login`, para a tela principal rodar fora da tela.
+    pending_login: Option<Command>,
     /// Novo modelo padrão escolhido no `/model`, para a tela principal salvar.
     default_choice: Option<(String, Option<String>)>,
     /// Conta escolhida na Config (`None` é a Default do provedor).
@@ -110,6 +113,7 @@ impl Default for Chat {
             session_model: None,
             session_effort: None,
             model_menu: None,
+            pending_login: None,
             default_choice: None,
             account: None,
             session_id: None,
@@ -306,7 +310,8 @@ impl Chat {
             Ok(Err(_)) | Err(TryRecvError::Disconnected) => Catalog::default(),
         };
         self.catalog_loading = None;
-        self.input.set_commands(Some(catalog.commands.clone()));
+        self.input
+            .set_commands(Some(commands::with_terra(catalog.commands.clone())));
         self.catalog = Some(catalog);
         if let Some(menu) = &mut self.model_menu {
             menu.sync(self.catalog.as_ref());
@@ -318,6 +323,7 @@ impl Chat {
     fn run_command(&mut self, name: &str) {
         match name {
             "clear" => self.clear_conversation(),
+            "login" => self.start_login(),
             "model" => {
                 // O Default do menu é o modelo padrão salvo ou o do agente.
                 let default = self
@@ -334,6 +340,59 @@ impl Chat {
             ))),
         }
         self.history.follow();
+    }
+
+    /// O `/login`: pede à tela principal para rodar o login do provedor na
+    /// conta escolhida (ele é interativo, fora da tela do terra).
+    fn start_login(&mut self) {
+        let login = self
+            .available_adapter()
+            .and_then(|adapter| adapter.login(self.account.as_deref()));
+        match login {
+            Some(command) => self.pending_login = Some(command),
+            None => self.history.push(Entry::Info(
+                "Este provedor não tem login pelo terra.".to_string(),
+            )),
+        }
+    }
+
+    /// O comando de login pedido pelo `/login`, para a tela principal rodar.
+    pub fn take_login(&mut self) -> Option<Command> {
+        self.pending_login.take()
+    }
+
+    /// Volta do login: avisa no histórico e recarrega os comandos e modelos
+    /// (que dependem do login).
+    pub fn finish_login(&mut self, result: std::io::Result<ExitStatus>) {
+        let label = self.account_label();
+        match result {
+            Ok(status) if status.success() => {
+                self.history
+                    .push(Entry::Info(format!("Login feito na conta {label}.")));
+                self.load_catalog();
+            }
+            Ok(_) => self.history.push(Entry::Error(format!(
+                "O login na conta {label} não terminou."
+            ))),
+            Err(err) => self.history.push(Entry::Error(format!(
+                "Não foi possível iniciar o login: {err}"
+            ))),
+        }
+        self.history.follow();
+    }
+
+    /// Um erro de autenticação do agente: sugere o `/login`.
+    fn hint_login(&mut self, message: &str) {
+        let lower = message.to_lowercase();
+        let auth = ["authenticate", "oauth", "log in again"]
+            .iter()
+            .any(|word| lower.contains(word));
+        if auth {
+            let label = self.account_label();
+            self.history.push(Entry::Info(format!(
+                "Use /login para entrar de novo na conta {label}."
+            )));
+        }
     }
 
     /// Aplica a escolha do menu do `/model`.
@@ -568,12 +627,14 @@ impl Chat {
                     )));
                 }
                 if let Some(message) = message {
-                    self.history.push(Entry::Error(message));
+                    self.history.push(Entry::Error(message.clone()));
+                    self.hint_login(&message);
                 }
                 self.finish(is_error);
             }
             AgentEvent::Failed(message) => {
-                self.history.push(Entry::Error(message));
+                self.history.push(Entry::Error(message.clone()));
+                self.hint_login(&message);
                 self.finish(true);
             }
         }
