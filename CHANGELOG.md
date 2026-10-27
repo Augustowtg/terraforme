@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.18] - 2026-10-27
+
+### Adicionado
+
+- O instalador (`install-linux.sh` e `install-win.sh`) mostra, em cinza ao lado de cada passo, um **resumo do que ele faz** (ex.: `cargo build --release`, o binário copiado, os arquivos de shell alterados). O resumo some quando o passo termina (✔); passos sem resumo, como a confirmação, ficam só com a label.
+
 ## [0.4.17] - 2026-10-27
 
 ### Alterado
