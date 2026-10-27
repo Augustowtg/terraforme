@@ -4,12 +4,13 @@
 mod app;
 mod chat;
 mod config;
+mod login;
 mod usage;
 mod widgets;
 mod workspace;
 
 use std::io::stdout;
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -21,10 +22,11 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-    supports_keyboard_enhancement,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+    enable_raw_mode, supports_keyboard_enhancement,
 };
-use ratatui::DefaultTerminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::{DefaultTerminal, Terminal};
 
 use crate::db::Db;
 
@@ -73,22 +75,24 @@ fn leave_app_mode(enhanced: bool) -> Result<()> {
     Ok(())
 }
 
-/// Roda o login do `/login` no terminal normal: o terra sai da tela, o
-/// login usa o terminal (navegador, código...) e a tela volta no fim.
+/// Roda o login do `/login` no terminal normal: o terra sai da tela, mostra
+/// o link e lê o código (veja [`login`]) e a tela volta no fim.
 fn run_login(
     terminal: &mut DefaultTerminal,
-    mut login: Command,
+    login: Command,
+    account: &str,
     enhanced: bool,
-) -> Result<std::io::Result<ExitStatus>> {
+) -> Result<std::result::Result<(), String>> {
     leave_app_mode(enhanced)?;
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen)?;
-    println!("terra: login do agente. Ao terminar, o terra volta.\n");
-    let result = login.status();
+    let result = login::run(login, account, &mut std::io::stdin().lock(), &mut stdout());
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
+    execute!(stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
     enter_app_mode(enhanced)?;
-    terminal.clear()?;
+    // Um terminal novo desenha a tela inteira de novo. O `clear()` do
+    // ratatui pergunta a posição do cursor, o que pode falhar aqui.
+    *terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     Ok(result)
 }
 
@@ -103,8 +107,8 @@ fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) 
                     if is_ctrl_c(&key) || app.handle_key(key) {
                         return Ok(());
                     }
-                    if let Some(login) = app.take_login() {
-                        let result = run_login(terminal, login, enhanced)?;
+                    if let Some((login, account)) = app.take_login() {
+                        let result = run_login(terminal, login, &account, enhanced)?;
                         app.login_finished(result);
                     }
                 }
