@@ -21,7 +21,7 @@ if (-not $bash) {
 }
 if (-not $bash) {
     Write-Error "Git Bash não encontrado. Instale o Git for Windows (https://git-scm.com/download/win) e rode de novo."
-    exit 1
+    return
 }
 
 $script = Join-Path $env:TEMP "terraforme-install-$PID.sh"

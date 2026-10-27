@@ -189,6 +189,13 @@ fn lang(name: &str) -> Lang {
 /// linha para a outra.
 pub(super) fn highlight(name: &str, lines: &[&str]) -> Vec<Vec<Glyph>> {
     let lang = lang(name);
+    // Sem linguagem conhecida, o bloco fica sem realce.
+    if lang.keywords.is_empty() {
+        return lines
+            .iter()
+            .map(|line| super::glyphs(line, theme::text(), true))
+            .collect();
+    }
     let sql = lang.keywords == SQL;
     let mut in_block = false;
     lines
@@ -235,7 +242,10 @@ fn line_glyphs(lang: &Lang, sql: bool, line: &str, in_block: &mut bool) -> Vec<G
             i += open.chars().count();
             continue;
         }
-        if lang.line.iter().any(|m| at(i, m)) {
+        // `#` só abre comentário no começo da linha ou depois de espaço
+        // (no shell, `$#` e `${#x}` não são comentário).
+        let starts = |m: &&str| at(i, m) && (*m != "#" || i == 0 || chars[i - 1].is_whitespace());
+        if lang.line.iter().any(starts) {
             push(&mut out, i, chars.len(), comment);
             break;
         }
@@ -247,7 +257,9 @@ fn line_glyphs(lang: &Lang, sql: bool, line: &str, in_block: &mut bool) -> Vec<G
                 j += if chars[j] == '\\' { 2 } else { 1 };
             }
             let end = (j + 1).min(chars.len());
-            let lifetime = c == '\'' && lang.keywords == RUST && end - i > 3;
+            // Um char é `'x'` ou `'\n'`; o resto, como `'a` ou `'static`, é lifetime.
+            let char_literal = j < chars.len() && (j == i + 2 || chars.get(i + 1) == Some(&'\\'));
+            let lifetime = c == '\'' && lang.keywords == RUST && !char_literal;
             if !lifetime {
                 push(&mut out, i, end, theme::variant(Variant::Success));
                 i = end;
@@ -338,9 +350,24 @@ mod tests {
     #[test]
     fn unknown_language_stays_plain() {
         let gs = &highlight("", &["if \"x\" 1"])[0];
-        assert!(
-            gs.iter()
-                .all(|g| g.style == theme::text() || g.ch.is_ascii_digit())
-        );
+        assert!(gs.iter().all(|g| g.style == theme::text()));
+    }
+
+    #[test]
+    fn rust_char_literals_and_lifetimes() {
+        let string = theme::variant(Variant::Success);
+        let text = "'\\n' &'a str";
+        let gs = &highlight("rust", &[text])[0];
+        assert_eq!(gs[1].style, string);
+        assert_ne!(style_of(gs, text, 'a'), string);
+    }
+
+    #[test]
+    fn shell_hash_inside_word_is_not_comment() {
+        let text = "echo $# ${#x} # c";
+        let gs = &highlight("sh", &[text])[0];
+        let comment = theme::muted().add_modifier(Modifier::ITALIC);
+        assert_ne!(gs[6].style, comment);
+        assert_eq!(gs.last().unwrap().style, comment);
     }
 }
