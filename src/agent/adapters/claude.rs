@@ -116,15 +116,7 @@ impl ChatAdapter for ClaudeAdapter {
     fn start(&self, request: Request<'_>) -> Result<Box<dyn Session>, String> {
         let bin = self.bin.as_ref().ok_or(NOT_FOUND)?;
         let account_dir = self.account_dir(request.account)?;
-        let run = Run::start(
-            bin,
-            request.prompt,
-            cli_mode(request.mode),
-            request.session_id,
-            request.mode == PermissionMode::Yolo,
-            request.model,
-            account_dir.as_deref(),
-        )?;
+        let run = Run::start(bin, request, account_dir.as_deref())?;
         Ok(Box::new(run))
     }
 }
@@ -179,6 +171,7 @@ fn cli_args<'a>(
     session: Option<&'a str>,
     auto_allow: bool,
     model: Option<&'a str>,
+    effort: Option<&'a str>,
 ) -> Vec<&'a str> {
     let mut args = vec![
         "-p",
@@ -200,6 +193,9 @@ fn cli_args<'a>(
     }
     if let Some(model) = model {
         args.extend(["--model", model]);
+    }
+    if let Some(effort) = effort {
+        args.extend(["--effort", effort]);
     }
     if let Some(id) = session {
         args.extend(["--resume", id]);
@@ -278,19 +274,22 @@ struct Run {
 }
 
 impl Run {
-    /// Inicia o `claude` com a mensagem. `mode` é o `--permission-mode`; com
-    /// `auto_allow`, o terra aprova tudo o que o agente pedir.
+    /// Inicia o `claude` com a mensagem, na conta da pasta `config_dir`. No
+    /// Yolo, o terra aprova tudo o que o agente pedir.
     fn start(
         claude: &Path,
-        prompt: &str,
-        mode: &str,
-        session: Option<&str>,
-        auto_allow: bool,
-        model: Option<&str>,
+        request: Request<'_>,
         config_dir: Option<&Path>,
     ) -> Result<Run, String> {
+        let auto_allow = request.mode == PermissionMode::Yolo;
         let mut cmd = command(claude);
-        cmd.args(cli_args(mode, session, auto_allow, model));
+        cmd.args(cli_args(
+            cli_mode(request.mode),
+            request.session_id,
+            auto_allow,
+            request.model,
+            request.effort,
+        ));
         // A conta escolhida: o `claude` lê credenciais e settings dessa pasta.
         if let Some(dir) = config_dir {
             cmd.env("CLAUDE_CONFIG_DIR", dir);
@@ -305,7 +304,7 @@ impl Run {
         // O stdin fica aberto durante a resposta, para responder aos pedidos
         // de permissão; fechar no fim é o que encerra o `claude`.
         let mut stdin = child.stdin.take();
-        let message = user_message(prompt);
+        let message = user_message(request.prompt);
 
         let mut stderr = child.stderr.take().expect("stderr configurado como pipe");
         let stderr = thread::spawn(move || {
@@ -414,7 +413,7 @@ mod tests {
 
     #[test]
     fn cli_args_skip_user_environment_and_resume_session() {
-        let args = cli_args("plan", None, false, None);
+        let args = cli_args("plan", None, false, None, None);
         for flag in [
             "--strict-mcp-config",
             "--disable-slash-commands",
@@ -425,10 +424,12 @@ mod tests {
         assert!(!args.contains(&"--resume"));
         assert!(!args.contains(&"--permission-prompt-tool"));
         assert!(!args.contains(&"--model"));
+        assert!(!args.contains(&"--effort"));
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
 
-        let args = cli_args("manual", Some("s1"), true, Some("haiku"));
+        let args = cli_args("manual", Some("s1"), true, Some("haiku"), Some("max"));
         assert!(args.windows(2).any(|w| w == ["--model", "haiku"]));
+        assert!(args.windows(2).any(|w| w == ["--effort", "max"]));
         assert!(args.ends_with(&["--resume", "s1"]));
         assert!(
             args.windows(2)
@@ -530,6 +531,7 @@ mod tests {
             session_id: None,
             model: None,
             account: None,
+            effort: None,
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
         assert!(adapter.accounts().is_empty());

@@ -4,6 +4,19 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.4] - 2026-10-27
+
+### Adicionado
+
+- Interface do terra para o **`/model`**, com a lista de modelos e os níveis de esforço vindos do agente (catálogo do adapter):
+  - **Selecione o modelo** (título em amarelo), uma descrição e a lista com o item em foco em verde;
+  - **Default (modelo padrão atual)**: `Enter` abre o mesmo menu com o título **Selecione o modelo default**, que salva o modelo e o esforço padrão nas configurações (a Config passa a mostrar esse modelo);
+  - os modelos numerados no formato `1. Opus - 5.5 - descrição`, com nome, versão e descrição informados pelo Claude; até 5 visíveis, com `... N modelos disponíveis`;
+  - **Esforço**: barra verde com os níveis que o modelo em foco aceita (cada modelo tem os seus; alguns não têm); `←`/`→` ajustam;
+  - `Enter` num modelo troca o modelo e o esforço desta conversa; `Esc` volta do menu do default ou fecha.
+- O agente recebe o esforço com `--effort` (`Request.effort`); o esforço padrão fica salvo (`agent.effort`).
+- A Config lista os modelos do catálogo do agente (antes, só Opus, Sonnet e Haiku).
+
 ## [0.4.3] - 2026-10-27
 
 ### Adicionado

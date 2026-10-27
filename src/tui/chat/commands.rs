@@ -14,7 +14,7 @@ use crate::theme::{self, Variant};
 use crate::tui::widgets::popup;
 
 /// Comandos que já têm interface no terra.
-const INTERFACES: &[&str] = &["clear"];
+const INTERFACES: &[&str] = &["clear", "model"];
 /// Largura da coluna do nome (`/nome`).
 const NAME_WIDTH: usize = 18;
 
@@ -131,8 +131,8 @@ mod tests {
             ("clear", "Start a new session"),
             ("model", "Set the AI model"),
         ]);
-        // Sem consulta, todos; o /clear (com interface) primeiro.
-        assert_eq!(found(&list, ""), ["clear", "compact", "context", "model"]);
+        // Sem consulta, todos; os com interface (/clear e /model) primeiro.
+        assert_eq!(found(&list, ""), ["clear", "model", "compact", "context"]);
         assert_eq!(found(&list, "co"), ["compact", "context"]);
         // "session" só aparece na descrição do /clear.
         assert_eq!(found(&list, "session"), ["clear"]);

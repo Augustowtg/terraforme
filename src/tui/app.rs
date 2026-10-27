@@ -88,19 +88,46 @@ impl App {
     /// Na aba Config, as setas mudam as configurações; cada mudança é salva
     /// e vale na hora para o chat. Retorna `true` se a tecla foi usada.
     fn handle_config_key(&mut self, key: KeyEvent) -> bool {
-        let choices = config::Choices::of(self.chat.adapter());
+        let choices = self.choices();
         let previous = self.settings.clone();
         match self.config.handle_key(key, &mut self.settings, &choices) {
             config::Outcome::Ignored => false,
             config::Outcome::Moved => true,
             config::Outcome::Changed => {
-                if let Some(db) = &self.db {
-                    // Sem conseguir salvar, a mudança vale só nesta execução.
-                    let _ = self.settings.save(db);
-                }
-                self.chat.apply_settings(&self.settings, Some(&previous));
+                self.save_settings(&previous);
                 true
             }
+        }
+    }
+
+    /// Opções da Config: contas do provedor e modelos do catálogo do chat.
+    fn choices(&self) -> config::Choices {
+        config::Choices {
+            accounts: self
+                .chat
+                .adapter()
+                .map(|a| a.accounts())
+                .unwrap_or_default(),
+            models: self.chat.model_options(),
+        }
+    }
+
+    /// Salva as configurações e as aplica ao chat.
+    fn save_settings(&mut self, previous: &AgentSettings) {
+        if let Some(db) = &self.db {
+            // Sem conseguir salvar, a mudança vale só nesta execução.
+            let _ = self.settings.save(db);
+        }
+        self.chat.apply_settings(&self.settings, Some(previous));
+    }
+
+    /// O `/model` escolheu um novo modelo padrão: vai para as configurações.
+    fn take_default_model(&mut self) {
+        if let Some((model, effort)) = self.chat.take_default_choice() {
+            let previous = self.settings.clone();
+            self.settings.model = Some(model);
+            self.settings.effort = effort;
+            self.save_settings(&previous);
         }
     }
 
@@ -108,6 +135,7 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         // Na aba Chat, o painel do agente tem prioridade (modo INSERT, Shift+Tab).
         if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.chat.handle_key(key) {
+            self.take_default_model();
             return false;
         }
         if self.tab == Tab::Config && self.focus == Focus::Tabs && self.handle_config_key(key) {
@@ -222,8 +250,13 @@ impl App {
             return;
         }
         if self.tab == Tab::Config {
-            self.config
-                .draw(frame, area, &self.settings, self.chat.adapter());
+            self.config.draw(
+                frame,
+                area,
+                &self.settings,
+                self.chat.adapter(),
+                &self.choices(),
+            );
             return;
         }
         // TODO: substituir pelo conteúdo real de Consumo.
@@ -364,6 +397,16 @@ mod tests {
         assert_eq!(app.focus, Focus::Quit, "Esc continua indo para Sair");
         key(&mut app, KeyCode::Esc);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Chat);
+    }
+
+    #[test]
+    fn default_model_chosen_in_chat_goes_to_settings() {
+        let mut app = App::default();
+        app.chat
+            .default_choice_for_test(("haiku".into(), Some("low".into())));
+        app.take_default_model();
+        assert_eq!(app.settings.model.as_deref(), Some("haiku"));
+        assert_eq!(app.settings.effort.as_deref(), Some("low"));
     }
 
     #[test]

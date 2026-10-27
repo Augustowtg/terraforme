@@ -12,6 +12,7 @@ mod history;
 mod input;
 mod mention;
 mod mode;
+mod model_menu;
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +28,7 @@ use ratatui::widgets::Paragraph;
 use self::history::{Entry, History};
 use self::input::{InputBox, InputMode, Outcome};
 use self::mode::{AgentStatus, mode_variant};
+use self::model_menu::{ModelMenu, Target, effort_label};
 use super::widgets::badge;
 use crate::agent::{
     self, AgentEvent, Catalog, ChatAdapter, PermissionMode, ReportedMode, Request, Session,
@@ -50,6 +52,7 @@ const HELP_NORMAL: &str =
 const HELP_RUNNING: &str = "Esc interromper · i escrever · Shift+Tab modo · PgUp/PgDn rolar";
 const HELP_INSERT: &str = "Enter enviar · Esc parar · \\+Enter nova linha · @ arquivo · / comando";
 const HELP_PICKER: &str = "↑/↓ escolher · Tab/Enter inserir · Esc fechar · digite para filtrar";
+const HELP_MODEL: &str = "↑/↓ escolher · ←/→ esforço · Enter selecionar · Esc voltar/fechar";
 const HELP_COMMANDS: &str = "↑/↓ escolher · Tab/Enter executar · Esc fechar · digite para filtrar";
 
 pub struct Chat {
@@ -59,6 +62,16 @@ pub struct Chat {
     model: Option<String>,
     /// Modelo escolhido na Config, enviado nas próximas mensagens.
     chosen_model: Option<String>,
+    /// Esforço padrão (escolhido no Default do `/model`).
+    default_effort: Option<String>,
+    /// Modelo e esforço desta conversa, escolhidos no `/model`; valem no
+    /// lugar dos padrões.
+    session_model: Option<String>,
+    session_effort: Option<String>,
+    /// Menu do `/model`, quando aberto.
+    model_menu: Option<ModelMenu>,
+    /// Novo modelo padrão escolhido no `/model`, para a tela principal salvar.
+    default_choice: Option<(String, Option<String>)>,
     /// Conta escolhida na Config (`None` é a Default do provedor).
     account: Option<String>,
     /// Sessão do agente, para continuar a conversa.
@@ -93,6 +106,11 @@ impl Default for Chat {
             adapter: None,
             model: None,
             chosen_model: None,
+            default_effort: None,
+            session_model: None,
+            session_effort: None,
+            model_menu: None,
+            default_choice: None,
             account: None,
             session_id: None,
             run: None,
@@ -165,6 +183,7 @@ impl Chat {
             self.permission_mode = self.start_mode(settings.start_mode);
         }
         self.chosen_model = settings.model.clone();
+        self.default_effort = settings.effort.clone();
     }
 
     /// Nome da conta escolhida, como o provedor a mostra.
@@ -223,6 +242,12 @@ impl Chat {
     /// Trata uma tecla. Retorna `true` se ela foi consumida pelo painel; as
     /// outras (Tab, Esc no modo NORMAL...) ficam para a tela principal.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // O menu do `/model`, aberto, fica com todas as teclas.
+        if let Some(menu) = &mut self.model_menu {
+            let outcome = menu.handle_key(key, self.catalog.as_ref());
+            self.apply_model_menu(outcome);
+            return true;
+        }
         match key.code {
             KeyCode::BackTab => {
                 self.permission_mode = self.permission_mode.next();
@@ -283,6 +308,9 @@ impl Chat {
         self.catalog_loading = None;
         self.input.set_commands(Some(catalog.commands.clone()));
         self.catalog = Some(catalog);
+        if let Some(menu) = &mut self.model_menu {
+            menu.sync(self.catalog.as_ref());
+        }
     }
 
     /// Executa um comando da `/`. A função de cada um é uma interface do
@@ -290,11 +318,123 @@ impl Chat {
     fn run_command(&mut self, name: &str) {
         match name {
             "clear" => self.clear_conversation(),
+            "model" => {
+                // O Default do menu é o modelo padrão salvo ou o do agente.
+                let default = self
+                    .chosen_model
+                    .clone()
+                    .or_else(|| self.catalog.as_ref().and_then(|c| c.default_model.clone()));
+                let effort = self.session_effort.clone().or(self.default_effort.clone());
+                let mut menu = ModelMenu::new(default, effort);
+                menu.sync(self.catalog.as_ref());
+                self.model_menu = Some(menu);
+            }
             _ => self.history.push(Entry::Info(format!(
                 "/{name} ainda não tem interface no terra."
             ))),
         }
         self.history.follow();
+    }
+
+    /// Aplica a escolha do menu do `/model`.
+    fn apply_model_menu(&mut self, outcome: model_menu::Outcome) {
+        let (target, model, effort) = match outcome {
+            model_menu::Outcome::Handled => return,
+            model_menu::Outcome::Close => {
+                self.model_menu = None;
+                return;
+            }
+            model_menu::Outcome::Chosen {
+                target,
+                model,
+                effort,
+            } => (target, model, effort),
+        };
+        self.model_menu = None;
+        let label = self.model_label_of(&model);
+        let effort_text = effort
+            .as_deref()
+            .map_or(String::new(), |e| format!(" · esforço {}", effort_label(e)));
+        match target {
+            Target::Session => {
+                self.history.push(Entry::Info(format!(
+                    "Modelo desta conversa: {label}{effort_text}."
+                )));
+                // O título já mostra o escolhido; o agente confirma na resposta.
+                self.model = self.resolved_model(&model).or(Some(model.clone()));
+                self.session_model = Some(model);
+                self.session_effort = effort;
+            }
+            Target::Default => {
+                self.history.push(Entry::Info(format!(
+                    "Modelo default: {label}{effort_text} (salvo na Config)."
+                )));
+                // A conversa passa a usar o novo padrão.
+                self.session_model = None;
+                self.session_effort = None;
+                self.model = self.resolved_model(&model);
+                self.default_choice = Some((model, effort));
+            }
+        }
+        self.history.follow();
+    }
+
+    /// O novo modelo padrão escolhido no `/model`, uma vez, para a tela
+    /// principal salvar nas configurações.
+    pub fn take_default_choice(&mut self) -> Option<(String, Option<String>)> {
+        self.default_choice.take()
+    }
+
+    #[cfg(test)]
+    pub fn default_choice_for_test(&mut self, choice: (String, Option<String>)) {
+        self.default_choice = Some(choice);
+    }
+
+    /// O nome real de um modelo do catálogo (ex.: `opus` → `claude-opus-5-5`).
+    fn resolved_model(&self, id: &str) -> Option<String> {
+        self.catalog
+            .as_ref()?
+            .models
+            .iter()
+            .find(|m| m.id == id)?
+            .resolved
+            .clone()
+    }
+
+    /// Nome de um modelo para a tela (ex.: `Opus - 5.5`).
+    fn model_label_of(&self, id: &str) -> String {
+        let info = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.models.iter().find(|m| m.id == id));
+        match (info, &self.adapter) {
+            (Some(info), Some(adapter)) => info
+                .resolved
+                .as_deref()
+                .map_or_else(|| info.label.clone(), |r| adapter.model_label(r)),
+            (Some(info), None) => info.label.clone(),
+            (None, _) => id.to_string(),
+        }
+    }
+
+    /// Modelos para a Config: os do catálogo, ou os fixos do provedor
+    /// enquanto o catálogo não chega.
+    pub fn model_options(&self) -> Vec<agent::ModelOption> {
+        match &self.catalog {
+            Some(catalog) if !catalog.models.is_empty() => catalog
+                .models
+                .iter()
+                .map(|m| agent::ModelOption {
+                    id: m.id.clone(),
+                    label: self.model_label_of(&m.id),
+                })
+                .collect(),
+            _ => self
+                .adapter
+                .as_ref()
+                .map(|a| a.models())
+                .unwrap_or_default(),
+        }
     }
 
     /// `/clear`: começa uma conversa nova, com o histórico limpo.
@@ -352,8 +492,15 @@ impl Chat {
             prompt: &prompt,
             mode: self.permission_mode,
             session_id: self.session_id.as_deref(),
-            model: self.chosen_model.as_deref(),
+            model: self
+                .session_model
+                .as_deref()
+                .or(self.chosen_model.as_deref()),
             account: self.account.as_deref(),
+            effort: self
+                .session_effort
+                .as_deref()
+                .or(self.default_effort.as_deref()),
         });
         match started {
             Ok(run) => {
@@ -524,6 +671,7 @@ impl Chat {
             return Cow::Owned(message.clone());
         }
         Cow::Borrowed(match self.input.mode() {
+            _ if self.model_menu.is_some() => HELP_MODEL,
             _ if self.input.command_picker_open() => HELP_COMMANDS,
             _ if self.input.picker_open() => HELP_PICKER,
             InputMode::Normal if self.run.is_some() => HELP_RUNNING,
@@ -609,6 +757,10 @@ impl Chat {
             theme::variant(status.variant()),
         );
         self.input.draw(frame, input, self.model_title(), status);
+        if let Some(menu) = &self.model_menu {
+            let label = |m: &agent::ModelInfo| self.model_label_of(&m.id);
+            menu.draw(frame, input, self.catalog.as_ref(), &label);
+        }
         self.draw_badges(frame, badges);
     }
 
