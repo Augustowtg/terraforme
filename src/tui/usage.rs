@@ -525,18 +525,18 @@ impl UsageView {
 }
 
 /// Uma barra do gráfico (um dia ou uma hora).
-struct ChartBar {
+pub(super) struct ChartBar {
     /// Embaixo da barra, com 2 colunas (ex.: `27`, `14`).
-    label: String,
-    value: u64,
+    pub label: String,
+    pub value: u64,
     /// O dia de hoje, em destaque.
-    highlight: bool,
+    pub highlight: bool,
 }
 
 /// Desenha as barras em `area` com os rótulos na última linha; sem espaço
 /// para todos, só alguns (a cada 3 horas, por exemplo). Devolve onde cada
 /// barra ficou, do topo ao rótulo.
-fn draw_bars(frame: &mut Frame, area: Rect, bars: &[ChartBar]) -> Vec<Rect> {
+pub(super) fn draw_bars(frame: &mut Frame, area: Rect, bars: &[ChartBar]) -> Vec<Rect> {
     if bars.is_empty() || area.height < 2 {
         return Vec::new();
     }

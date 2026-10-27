@@ -14,12 +14,14 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use super::chat::Chat;
 use super::config::{self, ConfigView};
+use super::extensions::{self, ExtensionsView};
 use super::term::Term;
 use super::usage::UsageView;
 use crate::agent::Interactive;
 use crate::db::Db;
+use crate::extension::Registry;
 use crate::platform::keyboard;
-use crate::settings::{AgentSettings, Interface, StartMode};
+use crate::settings::{AgentSettings, ExtensionSettings, Interface, StartMode};
 use crate::theme;
 
 const QUIT_LABEL: &str = " Sair ";
@@ -43,16 +45,18 @@ pub enum Tab {
     #[default]
     Chat,
     Consumo,
+    Extensoes,
     Config,
 }
 
 impl Tab {
-    const ALL: [Tab; 3] = [Tab::Chat, Tab::Consumo, Tab::Config];
+    const ALL: [Tab; 4] = [Tab::Chat, Tab::Consumo, Tab::Extensoes, Tab::Config];
 
     fn title(self) -> &'static str {
         match self {
             Tab::Chat => "Chat",
             Tab::Consumo => "Consumo",
+            Tab::Extensoes => "Extensões",
             Tab::Config => "Config",
         }
     }
@@ -108,7 +112,12 @@ pub struct App {
     chat: Chat,
     config_view: ConfigView,
     usage: UsageView,
+    extensions_view: ExtensionsView,
     settings: AgentSettings,
+    /// As extensões conhecidas (estratégias), já detectadas.
+    registry: Registry,
+    /// As extensões ativas no workspace.
+    extensions: ExtensionSettings,
     /// O `config.json` do workspace, onde as configurações são salvas
     /// (`None` nos testes).
     config: Option<PathBuf>,
@@ -133,15 +142,30 @@ impl App {
     /// padrão do router) e salvas nele.
     pub fn new(db: Db, dir: PathBuf, config: PathBuf) -> Self {
         let settings = AgentSettings::load_file(&config).unwrap_or_default();
+        let extensions = ExtensionSettings::load_file(&config);
         let saved = db.workspace_name(&dir).ok().flatten().is_some();
-        Self {
+        let mut app = Self {
             chat: Chat::connect(&settings),
             open_provider: settings.interface == Interface::Provider,
             settings,
+            registry: Registry::detect(),
+            extensions,
             config: Some(config),
             workspace: Some(Workspace { dir, saved }),
             db: Some(db),
             ..Self::default()
+        };
+        app.apply_extensions();
+        app
+    }
+
+    /// Passa ao chat o que as extensões ativas acrescentam ao agente (vale
+    /// a partir da próxima mensagem); as que falharem viram avisos.
+    fn apply_extensions(&mut self) {
+        let (contribution, warnings) = self.registry.contribution(&self.extensions.enabled);
+        self.chat.set_extensions(contribution);
+        for warning in warnings {
+            self.chat.warn(format!("Extensão {warning}"));
         }
     }
 
@@ -185,7 +209,7 @@ impl App {
         let previous = self.settings.clone();
         match self
             .config_view
-            .handle_key(key, &mut self.settings, &choices)
+            .handle_key(key, &mut self.settings, &mut self.extensions, &choices)
         {
             config::Outcome::Ignored => false,
             config::Outcome::Moved => true,
@@ -193,10 +217,19 @@ impl App {
                 self.save_settings(&previous);
                 true
             }
+            config::Outcome::ExtensionsChanged => {
+                if let Some(config) = &self.config {
+                    // Sem conseguir salvar, a mudança vale só nesta execução.
+                    let _ = self.extensions.save_file(config);
+                }
+                self.apply_extensions();
+                true
+            }
         }
     }
 
-    /// Opções da Config: contas do provedor e modelos do catálogo do chat.
+    /// Opções da Config: contas do provedor, modelos do catálogo do chat e
+    /// as extensões do registro.
     fn choices(&self) -> config::Choices {
         config::Choices {
             accounts: self
@@ -206,6 +239,17 @@ impl App {
                 .unwrap_or_default(),
             models: self.chat.model_options(),
             context_window: self.chat.context_window(),
+            extensions: self
+                .registry
+                .all()
+                .map(|e| config::ExtensionOption {
+                    id: e.id().to_string(),
+                    name: e.name().to_string(),
+                    description: e.description().to_string(),
+                    homepage: e.homepage().to_string(),
+                    status: e.status(),
+                })
+                .collect(),
         }
     }
 
@@ -258,6 +302,7 @@ impl App {
                 StartMode::Provider => None,
                 StartMode::Fixed(mode) => Some(mode),
             },
+            extensions: Some(self.chat.extensions()),
         };
         self.chat
             .adapter()
@@ -356,6 +401,12 @@ impl App {
         if self.tab == Tab::Config && self.focus == Focus::Tabs && self.handle_config_key(key) {
             return false;
         }
+        if self.tab == Tab::Extensoes
+            && self.focus == Focus::Tabs
+            && self.extensions_view.handle_key(key, &self.registry)
+        {
+            return false;
+        }
         if self.tab == Tab::Consumo
             && self.focus == Focus::Tabs
             && self
@@ -404,7 +455,7 @@ impl App {
             Tab::Chat if self.uses_provider() => {}
             Tab::Chat => self.chat.handle_mouse(mouse),
             Tab::Consumo => self.usage.handle_mouse(mouse),
-            Tab::Config => {}
+            Tab::Extensoes | Tab::Config => {}
         }
     }
 
@@ -422,6 +473,11 @@ impl App {
                 .refresh_if_stale(self.chat.adapter(), self.settings.account.as_deref());
         }
         self.usage.tick();
+        // O relatório das extensões, também só com a aba aberta.
+        if self.tab == Tab::Extensoes {
+            self.extensions_view.refresh_if_stale(&self.registry);
+        }
+        self.extensions_view.tick();
     }
 
     pub fn draw(&self, frame: &mut Frame) {
@@ -435,7 +491,8 @@ impl App {
             Focus::Tabs if self.captures_keys() => HELP_TERM.into(),
             Focus::Tabs if self.tab == Tab::Chat && self.uses_provider() => HELP_PROVIDER.into(),
             Focus::Tabs if self.tab == Tab::Chat => self.chat.help(),
-            Focus::Tabs if self.tab == Tab::Config => config::HELP.into(),
+            Focus::Tabs if self.tab == Tab::Config => self.config_view.help().into(),
+            Focus::Tabs if self.tab == Tab::Extensoes => extensions::HELP.into(),
             Focus::Tabs if self.tab == Tab::Consumo => self.usage.help().into(),
             Focus::Tabs => HELP.into(),
             Focus::Quit => HELP_QUIT.into(),
@@ -513,9 +570,15 @@ impl App {
                 frame,
                 area,
                 &self.settings,
+                &self.extensions,
                 self.chat.adapter(),
                 &self.choices(),
             );
+            return;
+        }
+        if self.tab == Tab::Extensoes {
+            self.extensions_view
+                .draw(frame, area, &self.registry, &self.extensions);
             return;
         }
         let route = match self.chat.adapter() {
@@ -675,6 +738,7 @@ mod tests {
         let mut app = App::default();
         assert_eq!(app.tab, Tab::Chat);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Consumo);
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Extensoes);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Chat);
     }
@@ -741,6 +805,7 @@ mod tests {
 
         let mut app = App::default();
         press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
         // Conta é a primeira; ↓ vai para o Modo inicial.
         assert!(!key(&mut app, KeyCode::Down));
@@ -782,13 +847,74 @@ mod tests {
             config: Some(config.clone()),
             ..App::default()
         };
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
+        app.tab = Tab::Config;
         key(&mut app, KeyCode::Down); // Modo inicial
         key(&mut app, KeyCode::Right);
         let saved = AgentSettings::load_file(&config).expect("config.json gravado");
         assert_eq!(saved, app.settings);
         assert_ne!(saved, AgentSettings::default());
+    }
+
+    #[test]
+    fn extensions_toggled_in_config_are_saved_and_reach_the_chat() {
+        use crate::extension::{Contribution, Extension, Hook, Status};
+
+        struct Fake;
+        impl Extension for Fake {
+            fn id(&self) -> &'static str {
+                "fake"
+            }
+            fn name(&self) -> &'static str {
+                "Fake"
+            }
+            fn description(&self) -> &'static str {
+                "faz"
+            }
+            fn homepage(&self) -> &'static str {
+                "https://fake"
+            }
+            fn status(&self) -> Status {
+                Status::Installed { version: None }
+            }
+            fn contribution(&self) -> Result<Contribution, String> {
+                Ok(Contribution {
+                    hooks: vec![Hook {
+                        event: "PreToolUse".into(),
+                        matcher: "Bash".into(),
+                        command: "fake".into(),
+                    }],
+                    mcp_servers: Vec::new(),
+                })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::settings::config_file(dir.path(), "terra");
+        let mut app = App {
+            config: Some(config.clone()),
+            registry: Registry::new(vec![Box::new(Fake)]),
+            tab: Tab::Config,
+            ..App::default()
+        };
+        assert!(!key(&mut app, KeyCode::BackTab));
+        assert!(!key(&mut app, KeyCode::Char(' ')));
+        assert_eq!(ExtensionSettings::load_file(&config).enabled, ["fake"]);
+        assert_eq!(app.chat.extensions().hooks[0].command, "fake");
+        // O agente continua igual.
+        assert_eq!(
+            AgentSettings::load_file(&config).unwrap_or_default(),
+            AgentSettings::default()
+        );
+
+        key(&mut app, KeyCode::Char(' '));
+        assert!(ExtensionSettings::load_file(&config).enabled.is_empty());
+        assert_eq!(app.chat.extensions(), &Contribution::default());
+
+        // A aba Extensões fica entre Consumo e Config.
+        app.tab = Tab::Consumo;
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Extensoes);
+        assert!(!key(&mut app, KeyCode::Down));
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
     }
 
     #[test]
@@ -983,7 +1109,7 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let row = |y: u16| (0..50).map(|x| buffer[(x, y)].symbol()).collect::<String>();
         assert_eq!(row(0), format!("╭{}╮", "─".repeat(48)));
-        assert_eq!(row(1), "│  Chat   Consumo   Config                 Sair  │");
+        assert_eq!(row(1), "│  Chat   Consumo   Extensões   Config     Sair  │");
         assert_eq!(row(2), format!("╰{}╯", "─".repeat(48)));
 
         // O pill " Consumo " (x = 9..18) usa o estilo da aba ativa; "Chat" não.

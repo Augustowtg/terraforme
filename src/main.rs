@@ -1,6 +1,7 @@
 mod agent;
 mod cli;
 mod db;
+mod extension;
 mod files;
 mod platform;
 mod settings;

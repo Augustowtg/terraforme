@@ -246,6 +246,7 @@ mod tests {
                 model: None,
                 account: None,
                 effort: None,
+                extensions: &crate::extension::Contribution::default(),
             })
             .err()
             .unwrap();

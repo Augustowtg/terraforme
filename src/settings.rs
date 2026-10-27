@@ -14,9 +14,13 @@
 //!     "effort": "high",
 //!     "interface": "terraforme",
 //!     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 }
-//!   }
+//!   },
+//!   "extensions": { "enabled": ["rtk", "ai-memory"] }
 //! }
 //! ```
+//!
+//! As extensões ativas ([`ExtensionSettings`]) também são de cada workspace;
+//! sem a chave, nenhuma.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -232,6 +236,47 @@ impl AgentSettings {
     }
 }
 
+/// As extensões ativas no workspace (seção Extensões da Config).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ExtensionSettings {
+    /// Ids das extensões ativas, na ordem em que foram escolhidas.
+    pub enabled: Vec<String>,
+}
+
+impl ExtensionSettings {
+    /// Lê as extensões do `config.json` de um workspace; sem o arquivo ou a
+    /// chave, nenhuma.
+    pub fn load_file(path: &Path) -> Self {
+        let enabled = read_file(path)["extensions"]["enabled"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| id.as_str().map(str::to_string))
+            .collect();
+        Self { enabled }
+    }
+
+    /// Grava as extensões no `config.json`, mantendo as outras chaves.
+    pub fn save_file(&self, path: &Path) -> Result<()> {
+        update_file(path, |json| {
+            json["extensions"] = json!({ "enabled": self.enabled });
+        })
+    }
+
+    pub fn is_enabled(&self, id: &str) -> bool {
+        self.enabled.iter().any(|e| e == id)
+    }
+
+    /// Liga a extensão `id`, ou desliga se ela já estava ativa.
+    pub fn toggle(&mut self, id: &str) {
+        if self.is_enabled(id) {
+            self.enabled.retain(|e| e != id);
+        } else {
+            self.enabled.push(id.to_string());
+        }
+    }
+}
+
 /// Se o terra pergunta, ao sair, se o workspace deve ser salvo. O "Não
 /// (não perguntar novamente)" grava `"workspace": {"ask_to_save": false}`.
 pub fn asks_to_save(path: &Path) -> bool {
@@ -334,6 +379,35 @@ mod tests {
         let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(json["outra"], 1);
         assert_eq!(json["agent"]["model"], "sonnet");
+    }
+
+    #[test]
+    fn extensions_toggle_and_round_trip_with_the_agent_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_file(dir.path(), "terra");
+        assert_eq!(
+            ExtensionSettings::load_file(&path),
+            ExtensionSettings::default()
+        );
+
+        let mut extensions = ExtensionSettings::default();
+        extensions.toggle("rtk");
+        extensions.toggle("ai-memory");
+        assert!(extensions.is_enabled("rtk"));
+        extensions.toggle("rtk");
+        assert_eq!(extensions.enabled, ["ai-memory"]);
+
+        let agent = AgentSettings {
+            model: Some("opus".into()),
+            ..AgentSettings::default()
+        };
+        agent.save_file(&path).unwrap();
+        extensions.save_file(&path).unwrap();
+        agent.save_file(&path).unwrap();
+        assert_eq!(ExtensionSettings::load_file(&path), extensions);
+        assert_eq!(AgentSettings::load_file(&path), Some(agent));
+        let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["extensions"], json!({"enabled": ["ai-memory"]}));
     }
 
     #[test]
