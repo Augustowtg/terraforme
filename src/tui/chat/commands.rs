@@ -14,7 +14,7 @@ use crate::theme::{self, Variant};
 use crate::tui::widgets::popup;
 
 /// Comandos que já têm interface no terra.
-const INTERFACES: &[&str] = &["clear", "model", "login"];
+const INTERFACES: &[&str] = &["clear", "model", "login", "usage"];
 /// Comandos do terra que o agente não informa (o `/login` do Claude Code só
 /// existe no modo interativo dele): nome e descrição.
 const TERRA_COMMANDS: &[(&str, &str)] = &[(
@@ -109,7 +109,11 @@ pub fn draw(frame: &mut Frame, input: Rect, found: Option<&[&CommandInfo]>, sele
 
 fn item(command: &CommandInfo, selected: bool) -> Line<'static> {
     let ready = has_interface(&command.name);
-    let name = format!("/{:<width$}", command.name, width = NAME_WIDTH - 1);
+    let mut name = format!("/{:<width$}", command.name, width = NAME_WIDTH - 1);
+    // Nomes que enchem a coluna (skills, por exemplo) não grudam na descrição.
+    if command.name.chars().count() >= NAME_WIDTH - 1 {
+        name.push(' ');
+    }
     let mut description = command.description.clone();
     if !ready {
         description = format!("{description} · sem interface no terra");
@@ -137,6 +141,24 @@ fn item(command: &CommandInfo, selected: bool) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_names_do_not_stick_to_the_description() {
+        let text = |name: &str| {
+            let command = CommandInfo {
+                name: name.into(),
+                description: "faz algo".into(),
+            };
+            item(&command, false)
+                .spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        assert!(text("usage").contains("/usage            faz algo"));
+        assert!(text("ai-memory-durable-pages").contains("/ai-memory-durable-pages faz algo"));
+        assert!(text("install-github-app").contains("/install-github-app faz algo"));
+    }
 
     fn commands(names: &[(&str, &str)]) -> Vec<CommandInfo> {
         names

@@ -54,7 +54,7 @@ impl ChatAdapter for FakeAdapter {
         _account: Option<&str>,
     ) -> Option<mpsc::Receiver<Result<Catalog, String>>> {
         let (tx, rx) = mpsc::channel();
-        let commands = ["clear", "compact", "model"]
+        let commands = ["clear", "compact", "model", "usage"]
             .iter()
             .map(|name| agent::CommandInfo {
                 name: name.to_string(),
@@ -289,7 +289,7 @@ fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
     let reply = vec![init(PermissionMode::Agente), done(1)];
     let (mut chat, _) = fake_chat(true, reply);
     chat.tick(); // chega o catálogo
-    assert_eq!(chat.catalog.as_ref().map(|c| c.commands.len()), Some(3));
+    assert_eq!(chat.catalog.as_ref().map(|c| c.commands.len()), Some(4));
 
     // Uma conversa, e depois /clear.
     press(&mut chat, KeyCode::Char('i'));
@@ -363,6 +363,21 @@ fn auth_error_suggests_login() {
         Some(&Entry::Info(
             "Use /login para entrar de novo na conta Default.".into()
         ))
+    );
+}
+
+#[test]
+fn usage_asks_for_the_consumo_tab() {
+    let (mut chat, _) = fake_chat(true, Vec::new());
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/usage");
+    press(&mut chat, KeyCode::Enter);
+    assert!(chat.take_open_usage());
+    assert!(!chat.take_open_usage(), "só uma vez");
+    assert!(
+        chat.history.entries().is_empty(),
+        "não avisa que falta interface"
     );
 }
 

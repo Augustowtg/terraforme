@@ -153,6 +153,9 @@ impl App {
         // Na aba Chat, o painel do agente tem prioridade (modo INSERT, Shift+Tab).
         if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.chat.handle_key(key) {
             self.take_default_model();
+            if self.chat.take_open_usage() {
+                self.tab = Tab::Consumo;
+            }
             return false;
         }
         if self.tab == Tab::Config && self.focus == Focus::Tabs && self.handle_config_key(key) {
@@ -441,6 +444,15 @@ mod tests {
         app.take_default_model();
         assert_eq!(app.settings.model.as_deref(), Some("haiku"));
         assert_eq!(app.settings.effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn usage_command_opens_the_consumo_tab() {
+        let mut app = App::default();
+        app.chat.open_usage_for_test();
+        // Qualquer tecla que o chat trate (aqui, entrar no modo INSERT).
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.tab, Tab::Consumo);
     }
 
     #[test]

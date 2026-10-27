@@ -4,6 +4,21 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.10] - 2026-10-27
+
+### Adicionado
+
+- **Todos os comandos do Claude na lista da `/`** (157 no Claude Code 2.1.308, antes 53):
+  - os do modo interativo que o `claude -p` não informa no `initialize`, como `/help`, `/status`, `/resume`, `/permissions`, `/memory` e `/logout` (lista em `claude/interactive.rs`);
+  - as skills e os comandos de plugins que o `claude` informa (ex.: `/graphify`, `/pdf`, `/postman:api-testing`), que antes ficavam de fora;
+  - os que ainda não têm interface no terra continuam esmaecidos, com "sem interface no terra".
+- **`/usage` pelo terra**: abre a aba **Consumo** (limites, crédito extra e o gráfico por dia).
+- O **`/login`** continua pelo terra (o da 0.4.8), agora com a descrição que vem do Claude.
+
+### Corrigido
+
+- Na lista da `/`, os nomes longos (ex.: `/ai-memory-durable-pages`) não grudam mais na descrição.
+
 ## [0.4.9] - 2026-10-27
 
 ### Adicionado
