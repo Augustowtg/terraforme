@@ -171,6 +171,7 @@ fn settings_choose_start_mode_and_model() {
     let settings = AgentSettings {
         start_mode: StartMode::Fixed(PermissionMode::Plan),
         model: Some("haiku".into()),
+        account: None,
     };
     let (mut chat, sent) = fake_chat_with(true, vec![done(1)], &settings);
     assert_eq!(chat.permission_mode, PermissionMode::Plan);
@@ -203,6 +204,49 @@ fn changing_only_the_model_keeps_shift_tab_choice() {
     };
     chat.apply_settings(&fixed, Some(&changed));
     assert_eq!(chat.permission_mode, PermissionMode::AcceptEdits);
+}
+
+#[test]
+fn switching_account_starts_a_new_conversation() {
+    let reply = vec![init(PermissionMode::Agente), done(1)];
+    let (mut chat, _) = fake_chat(true, reply);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(chat.session_id.as_deref(), Some("s1"));
+
+    let before = AgentSettings::default();
+    let work = AgentSettings {
+        account: Some(".claude-trabalho".into()),
+        ..before.clone()
+    };
+    chat.apply_settings(&work, Some(&before));
+    assert_eq!(chat.account.as_deref(), Some(".claude-trabalho"));
+    assert_eq!(chat.session_id, None, "a sessão era da outra conta");
+    assert_eq!(chat.model, None);
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info(
+            "Conta: .claude-trabalho. A próxima mensagem começa uma conversa nova.".into()
+        ))
+    );
+
+    // Sem conversa, trocar de novo não repete o aviso.
+    let entries = chat.history.entries().len();
+    chat.apply_settings(&before, Some(&work));
+    assert_eq!(chat.account, None);
+    assert_eq!(chat.history.entries().len(), entries);
+    chat.apply_settings(&work, Some(&before));
+
+    // Mudar outra configuração não troca a conta nem a sessão.
+    chat.session_id = Some("s2".into());
+    let model = AgentSettings {
+        model: Some("opus".into()),
+        ..work.clone()
+    };
+    chat.apply_settings(&model, Some(&work));
+    assert_eq!(chat.session_id.as_deref(), Some("s2"));
 }
 
 #[test]

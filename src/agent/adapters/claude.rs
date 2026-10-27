@@ -7,6 +7,7 @@
 //! que a interface consome sem travar. No modo Yolo, a mesma thread aprova os
 //! pedidos de permissão do agente.
 
+mod accounts;
 mod stream;
 
 use std::env;
@@ -20,7 +21,9 @@ use std::thread;
 use serde_json::Value;
 
 use self::stream::{StreamParser, text};
-use crate::agent::{AgentEvent, ChatAdapter, ModelOption, PermissionMode, Request, Session};
+use crate::agent::{
+    AccountOption, AgentEvent, ChatAdapter, ModelOption, PermissionMode, Request, Session,
+};
 
 const NOT_FOUND: &str =
     "Claude CLI não encontrado no PATH. Instale em https://claude.com/claude-code";
@@ -29,12 +32,29 @@ const NOT_FOUND: &str =
 pub struct ClaudeAdapter {
     /// Executável; `None` quando não está instalado.
     bin: Option<PathBuf>,
+    /// Onde ficam as pastas das contas.
+    home: Option<PathBuf>,
 }
 
 impl ClaudeAdapter {
     /// Procura o `claude` no `PATH`.
     pub fn detect() -> Self {
-        Self { bin: find_claude() }
+        Self {
+            bin: find_claude(),
+            home: dirs::home_dir(),
+        }
+    }
+
+    /// A pasta de configuração da conta, ou `None` para a padrão.
+    fn account_dir(&self, account: Option<&str>) -> Result<Option<PathBuf>, String> {
+        let Some(id) = account else {
+            return Ok(None);
+        };
+        self.home
+            .as_deref()
+            .and_then(|home| accounts::config_dir(home, id))
+            .map(Some)
+            .ok_or_else(|| format!("Conta do Claude não encontrada: {id}"))
     }
 }
 
@@ -51,8 +71,20 @@ impl ChatAdapter for ClaudeAdapter {
         NOT_FOUND.to_string()
     }
 
-    fn configured_mode(&self, cwd: &Path) -> Option<PermissionMode> {
-        configured_mode(cwd).and_then(|name| parse_mode(&name))
+    fn configured_mode(&self, cwd: &Path, account: Option<&str>) -> Option<PermissionMode> {
+        let dir = self.account_dir(account).ok().flatten();
+        configured_mode(cwd, dir.as_deref()).and_then(|name| parse_mode(&name))
+    }
+
+    /// A Default e as pastas `~/.claude*` com credenciais.
+    fn accounts(&self) -> Vec<AccountOption> {
+        let Some(home) = &self.home else {
+            return Vec::new();
+        };
+        let default_json = env::var_os("CLAUDE_CONFIG_DIR")
+            .map(|dir| PathBuf::from(dir).join(".claude.json"))
+            .unwrap_or_else(|| home.join(".claude.json"));
+        accounts::discover(home, &default_json)
     }
 
     /// Os apelidos que o `claude --model` aceita.
@@ -74,6 +106,7 @@ impl ChatAdapter for ClaudeAdapter {
     /// aprovado na hora pela thread que lê a resposta.
     fn start(&self, request: Request<'_>) -> Result<Box<dyn Session>, String> {
         let bin = self.bin.as_ref().ok_or(NOT_FOUND)?;
+        let account_dir = self.account_dir(request.account)?;
         let run = Run::start(
             bin,
             request.prompt,
@@ -81,6 +114,7 @@ impl ChatAdapter for ClaudeAdapter {
             request.session_id,
             request.mode == PermissionMode::Yolo,
             request.model,
+            account_dir.as_deref(),
         )?;
         Ok(Box::new(run))
     }
@@ -201,10 +235,12 @@ fn control_response(line: &str, auto_allow: bool) -> Option<String> {
 }
 
 /// Modo de permissão padrão configurado no Claude (`permissions.defaultMode`)
-/// para o diretório `cwd`, como o próprio `claude` leria.
-fn configured_mode(cwd: &Path) -> Option<String> {
-    let config_dir = env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
+/// para o diretório `cwd`, como o próprio `claude` leria. `account_dir` é a
+/// pasta da conta escolhida; sem ela, a padrão.
+fn configured_mode(cwd: &Path, account_dir: Option<&Path>) -> Option<String> {
+    let config_dir = account_dir
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))?;
     configured_mode_in(&config_dir, cwd)
 }
@@ -242,6 +278,7 @@ impl Run {
         session: Option<&str>,
         auto_allow: bool,
         model: Option<&str>,
+        config_dir: Option<&Path>,
     ) -> Result<Run, String> {
         let mut cmd = if claude.extension().is_some_and(|ext| ext == "cmd") {
             // Instalação via npm no Windows: o .cmd precisa do cmd.exe.
@@ -252,6 +289,10 @@ impl Run {
             Command::new(claude)
         };
         cmd.args(cli_args(mode, session, auto_allow, model));
+        // A conta escolhida: o `claude` lê credenciais e settings dessa pasta.
+        if let Some(dir) = config_dir {
+            cmd.env("CLAUDE_CONFIG_DIR", dir);
+        }
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -463,7 +504,10 @@ mod tests {
 
     #[test]
     fn adapter_without_claude_is_unavailable() {
-        let adapter = ClaudeAdapter { bin: None };
+        let adapter = ClaudeAdapter {
+            bin: None,
+            home: None,
+        };
         assert!(!adapter.is_available());
         assert_eq!(adapter.name(), "Claude");
         let request = Request {
@@ -471,8 +515,10 @@ mod tests {
             mode: PermissionMode::Agente,
             session_id: None,
             model: None,
+            account: None,
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
+        assert!(adapter.accounts().is_empty());
         let models: Vec<_> = adapter.models().into_iter().map(|m| m.id).collect();
         assert_eq!(models, ["opus", "sonnet", "haiku"]);
         assert_eq!(adapter.model_label("claude-opus-5-5"), "Opus - 5.5");

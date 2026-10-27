@@ -80,6 +80,7 @@ A seção **Agente** reúne as configurações do agente do chat. `↑`/`↓` es
 | Configuração | Valores |
 | --- | --- |
 | Provedor | Qual agente o chat usa e se está disponível (só leitura) |
+| Conta | Default (a conta padrão do `claude`) ou uma das contas encontradas em `~/.claude` e `~/.claude-*`, como Pessoal e Trabalho, com o e-mail de cada uma |
 | Modo inicial | Do provedor (o `defaultMode` do Claude), Agente, Yolo, Manual, Accept Edits ou Plan |
 | Modelo | Padrão ou um modelo do provedor (Opus, Sonnet, Haiku), enviado com `--model` |
 
@@ -163,6 +164,7 @@ src/
 │   ├── mode.rs           # PermissionMode
 │   └── adapters.rs       # registro dos provedores (routes)
 │       └── claude.rs     # ClaudeAdapter: o Claude CLI no contrato
+│           ├── accounts.rs # contas do Claude (pastas ~/.claude*)
 │           └── stream.rs # parser do stream-json
 ├── platform.rs           # integração com o sistema
 │   ├── clipboard.rs      # área de transferência (wl-copy, xclip, xsel ou OSC 52)
