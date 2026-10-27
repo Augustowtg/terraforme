@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
 
 use crate::agent::{AccountOption, ChatAdapter, ModelOption};
-use crate::settings::{AgentSettings, StartMode};
+use crate::settings::{AgentSettings, Interface, StartMode};
 use crate::theme::{self, Variant};
 
 pub const HELP: &str = "↑/↓ escolher · ←/→ ou Enter alterar · Tab trocar aba · Esc ir para Sair";
@@ -24,9 +24,15 @@ enum Field {
     Account,
     StartMode,
     Model,
+    Interface,
 }
 
-const FIELDS: [Field; 3] = [Field::Account, Field::StartMode, Field::Model];
+const FIELDS: [Field; 4] = [
+    Field::Account,
+    Field::StartMode,
+    Field::Model,
+    Field::Interface,
+];
 
 /// As opções que vêm do provedor: contas e modelos.
 #[derive(Debug, Default, Clone)]
@@ -111,6 +117,7 @@ fn field_label(field: Field) -> &'static str {
         Field::Account => "Conta",
         Field::StartMode => "Modo inicial",
         Field::Model => "Modelo",
+        Field::Interface => "Interface",
     }
 }
 
@@ -131,6 +138,7 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
                 |a| a.label.clone(),
             ),
         Field::StartMode => settings.start_mode.label().to_string(),
+        Field::Interface => settings.interface.label().to_string(),
         Field::Model => match &settings.model {
             None => "Padrão".to_string(),
             Some(id) => models
@@ -165,6 +173,14 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
                 .position(|m| *m == settings.start_mode)
                 .unwrap_or(0);
             settings.start_mode = all[cycle(i, all.len(), step)];
+        }
+        Field::Interface => {
+            let all = Interface::ALL;
+            let i = all
+                .iter()
+                .position(|m| *m == settings.interface)
+                .unwrap_or(0);
+            settings.interface = all[cycle(i, all.len(), step)];
         }
         Field::Model => {
             // Padrão (None) e depois os modelos do provedor.
@@ -314,6 +330,12 @@ mod tests {
         press(&mut view, &mut settings, KeyCode::Right);
         assert_eq!(settings.model, None, "depois do último, volta ao Padrão");
 
+        press(&mut view, &mut settings, KeyCode::Down);
+        press(&mut view, &mut settings, KeyCode::Right);
+        assert_eq!(settings.interface, Interface::Provider);
+        press(&mut view, &mut settings, KeyCode::Right);
+        assert_eq!(settings.interface, Interface::Terraforme, "dá a volta");
+
         assert_eq!(
             press(&mut view, &mut settings, KeyCode::Tab),
             Outcome::Ignored
@@ -328,8 +350,9 @@ mod tests {
             model: Some("haiku".into()),
             account: None,
             effort: None,
+            interface: Interface::Provider,
         };
-        let mut terminal = Terminal::new(TestBackend::new(50, 7)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(50, 8)).unwrap();
         terminal
             .draw(|frame| view.draw(frame, frame.area(), &settings, None, &Choices::default()))
             .unwrap();
@@ -347,6 +370,7 @@ mod tests {
         assert_eq!(row(4), "   Modo inicial      Do provedor");
         // Sem provedor, o id salvo aparece como está.
         assert_eq!(row(5), "   Modelo            haiku");
+        assert_eq!(row(6), "   Interface         Original do provedor");
         assert_eq!(buffer[(3, 3)].bg, theme::focused().bg.unwrap());
     }
 }

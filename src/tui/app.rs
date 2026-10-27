@@ -15,15 +15,17 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use super::chat::Chat;
 use super::config::{self, ConfigView};
 use super::usage::UsageView;
+use crate::agent::Interactive;
 use crate::db::Db;
 use crate::platform::keyboard;
-use crate::settings::AgentSettings;
+use crate::settings::{AgentSettings, Interface, StartMode};
 use crate::theme;
 
 const QUIT_LABEL: &str = " Sair ";
 const TAB_GAP: &str = " ";
 const HELP: &str = "Tab trocar aba · Esc ir para Sair";
 const HELP_QUIT: &str = "Enter sair · Tab/Esc voltar às abas";
+const HELP_PROVIDER: &str = "Enter abrir · Tab trocar aba · Esc ir para Sair";
 const HELP_CONFIRM: &str = "←/→ escolher · Enter confirmar · Esc cancelar";
 const CONFIRM_TITLE: &str = " Sair ";
 const CONFIRM_TEXT: &str = "Deseja sair do terraforme?";
@@ -112,6 +114,11 @@ pub struct App {
     workspace: Option<Workspace>,
     /// Onde o workspace é salvo, se o usuário pedir ao sair.
     db: Option<Db>,
+    /// Abrir a interface original do provedor (na Interface "Original do
+    /// provedor": ao iniciar e no `Enter` da aba Chat).
+    open_provider: bool,
+    /// Como terminou a última interface original, para a aba Chat mostrar.
+    provider_result: Option<Result<(), String>>,
 }
 
 impl App {
@@ -123,6 +130,7 @@ impl App {
         let saved = db.workspace_name(&dir).ok().flatten().is_some();
         Self {
             chat: Chat::connect(&settings),
+            open_provider: settings.interface == Interface::Provider,
             settings,
             config: Some(config),
             workspace: Some(Workspace { dir, saved }),
@@ -221,10 +229,59 @@ impl App {
         self.usage.invalidate();
     }
 
+    /// O comando da interface original do provedor, para o loop rodar fora
+    /// da tela, com as configurações do workspace.
+    pub fn take_provider(&mut self) -> Option<Command> {
+        if !std::mem::take(&mut self.open_provider) {
+            return None;
+        }
+        let dir = self.workspace.as_ref()?.dir.clone();
+        let settings = &self.settings;
+        let options = Interactive {
+            account: settings.account.as_deref(),
+            model: settings.model.as_deref(),
+            effort: settings.effort.as_deref(),
+            mode: match settings.start_mode {
+                StartMode::Provider => None,
+                StartMode::Fixed(mode) => Some(mode),
+            },
+        };
+        let command = self.chat.adapter()?.interactive(&dir, options);
+        if command.is_none() {
+            self.provider_result = Some(Err(self.unavailable_provider()));
+        }
+        command
+    }
+
+    fn unavailable_provider(&self) -> String {
+        match self.chat.adapter() {
+            Some(a) if !a.is_available() => a.unavailable_hint(),
+            Some(a) => format!("{} não tem uma interface original.", a.name()),
+            None => "Nenhum provedor disponível.".to_string(),
+        }
+    }
+
+    /// Volta da interface original: a aba Chat mostra como terminou e o
+    /// consumo é recarregado.
+    pub fn provider_finished(&mut self, result: Result<(), String>) {
+        self.provider_result = Some(result);
+        self.usage.invalidate();
+    }
+
+    fn uses_provider(&self) -> bool {
+        self.settings.interface == Interface::Provider
+    }
+
     /// Trata uma tecla. Retorna `true` quando a saída foi confirmada.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
-        // Na aba Chat, o painel do agente tem prioridade (modo INSERT, Shift+Tab).
-        if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.chat.handle_key(key) {
+        // Na Interface "Original do provedor", o Enter da aba Chat abre ela.
+        if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.uses_provider() {
+            if key.code == KeyCode::Enter {
+                self.open_provider = true;
+                return false;
+            }
+        } else if self.tab == Tab::Chat && self.focus == Focus::Tabs && self.chat.handle_key(key) {
+            // Na aba Chat, o painel do agente tem prioridade (modo INSERT, Shift+Tab).
             self.take_default_model();
             if self.chat.take_open_usage() {
                 self.tab = Tab::Consumo;
@@ -279,6 +336,7 @@ impl App {
             return;
         }
         match self.tab {
+            Tab::Chat if self.uses_provider() => {}
             Tab::Chat => self.chat.handle_mouse(mouse),
             Tab::Consumo => self.usage.handle_mouse(mouse),
             Tab::Config => {}
@@ -311,6 +369,7 @@ impl App {
         self.draw_nav(frame, nav);
         self.draw_content(frame, content);
         let help = match self.focus {
+            Focus::Tabs if self.tab == Tab::Chat && self.uses_provider() => HELP_PROVIDER.into(),
             Focus::Tabs if self.tab == Tab::Chat => self.chat.help(),
             Focus::Tabs if self.tab == Tab::Config => config::HELP.into(),
             Focus::Tabs if self.tab == Tab::Consumo => self.usage.help().into(),
@@ -370,6 +429,10 @@ impl App {
     }
 
     fn draw_content(&self, frame: &mut Frame, area: Rect) {
+        if self.tab == Tab::Chat && self.uses_provider() {
+            self.draw_provider(frame, area);
+            return;
+        }
         if self.tab == Tab::Chat {
             let [history, panel] =
                 Layout::vertical([Constraint::Fill(1), Constraint::Length(self.chat.height())])
@@ -393,6 +456,48 @@ impl App {
             None => String::new(),
         };
         self.usage.draw(frame, area, self.chat.adapter(), &route);
+    }
+}
+
+impl App {
+    /// A aba Chat na Interface "Original do provedor": o chat e o input são
+    /// os do provedor, abertos fora da tela com o `Enter`.
+    fn draw_provider(&self, frame: &mut Frame, area: Rect) {
+        let name = self.chat.adapter().map_or("provedor", |a| a.name());
+        let mut lines = vec![
+            Line::styled(" Interface original", theme::section_title()),
+            Line::from(vec![
+                Span::styled(format!("  {name}"), theme::text()),
+                Span::styled(format!(" · {}", self.chat.account_label()), theme::muted()),
+            ]),
+            Line::default(),
+            Line::styled(
+                format!("  Enter abre o chat do {name} neste workspace; ao sair dele, volta aqui."),
+                theme::muted(),
+            ),
+            Line::styled(
+                "  Para usar o chat do terra, troque a Interface na aba Config.",
+                theme::muted(),
+            ),
+        ];
+        match &self.provider_result {
+            Some(Ok(())) => {
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    format!("  {name} encerrado."),
+                    theme::variant(theme::Variant::Success),
+                ));
+            }
+            Some(Err(message)) => {
+                lines.push(Line::default());
+                lines.push(Line::styled(format!("  {message}"), theme::error()));
+            }
+            None => {}
+        }
+        frame.render_widget(
+            Paragraph::new(lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
+            area,
+        );
     }
 }
 
@@ -595,6 +700,30 @@ mod tests {
         let saved = AgentSettings::load_file(&config).expect("config.json gravado");
         assert_eq!(saved, app.settings);
         assert_ne!(saved, AgentSettings::default());
+    }
+
+    #[test]
+    fn provider_interface_opens_with_enter_and_chat_keys_are_not_used() {
+        let mut app = App {
+            settings: AgentSettings {
+                interface: Interface::Provider,
+                ..AgentSettings::default()
+            },
+            ..App::default()
+        };
+        // `i` entraria no modo INSERT do chat do terra.
+        key(&mut app, KeyCode::Char('i'));
+        assert!(!app.open_provider);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.open_provider);
+        // Sem provedor (nos testes), não há comando e a aba mostra o porquê.
+        assert!(app.take_provider().is_none());
+        assert!(!app.open_provider);
+        assert_eq!(
+            press(&mut app, KeyCode::Tab),
+            Tab::Consumo,
+            "Tab troca a aba"
+        );
     }
 
     /// Uma tela num workspace não salvo, com o `config.json` em `dir`.

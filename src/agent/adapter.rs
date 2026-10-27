@@ -135,6 +135,15 @@ impl DailyTokens {
     }
 }
 
+/// As configurações com que a interface original do provedor abre.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Interactive<'a> {
+    pub account: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub mode: Option<PermissionMode>,
+}
+
 /// Um provedor de agente para o chat.
 pub trait ChatAdapter {
     /// Nome no botão do título do input (ex.: "Claude").
@@ -187,6 +196,14 @@ pub trait ChatAdapter {
     /// foi revogado). Ele é interativo: o terra sai da tela enquanto ele roda.
     /// `None` quando o provedor não tem login.
     fn login(&self, _account: Option<&str>) -> Option<Command> {
+        None
+    }
+
+    /// O comando que abre a interface original do provedor (ex.: o `claude`
+    /// interativo) em `cwd`, com a conta, o modelo, o esforço e o modo
+    /// escolhidos (`None` fica com o do provedor). O terra sai da tela
+    /// enquanto ele roda. `None` quando o provedor não tem uma.
+    fn interactive(&self, _cwd: &Path, _options: Interactive<'_>) -> Option<Command> {
         None
     }
 

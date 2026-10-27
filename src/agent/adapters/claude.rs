@@ -26,8 +26,8 @@ use serde_json::Value;
 
 use self::stream::{StreamParser, text};
 use crate::agent::{
-    AccountOption, AgentEvent, Catalog, ChatAdapter, DailyTokens, ModelOption, PermissionMode,
-    Request, Session, Usage,
+    AccountOption, AgentEvent, Catalog, ChatAdapter, DailyTokens, Interactive, ModelOption,
+    PermissionMode, Request, Session, Usage,
 };
 
 const NOT_FOUND: &str =
@@ -102,6 +102,33 @@ impl ChatAdapter for ClaudeAdapter {
         cmd.args(["auth", "login"]);
         if let Some(email) = accounts::email(&json) {
             cmd.args(["--email", &email]);
+        }
+        if let Some(dir) = dir {
+            cmd.env("CLAUDE_CONFIG_DIR", dir);
+        }
+        Some(cmd)
+    }
+
+    /// O `claude` interativo, com o ambiente do usuário (MCP, skills e
+    /// hooks). No Yolo, `bypassPermissions`: fora da tela, o terra não tem
+    /// como aprovar os pedidos.
+    fn interactive(&self, cwd: &Path, options: Interactive<'_>) -> Option<Command> {
+        let bin = self.bin.as_ref()?;
+        let dir = self.account_dir(options.account).ok()?;
+        let mut cmd = command(bin);
+        cmd.current_dir(cwd);
+        if let Some(mode) = options.mode {
+            let name = match mode {
+                PermissionMode::Yolo => "bypassPermissions",
+                mode => cli_mode(mode),
+            };
+            cmd.args(["--permission-mode", name]);
+        }
+        if let Some(model) = options.model {
+            cmd.args(["--model", model]);
+        }
+        if let Some(effort) = options.effort {
+            cmd.args(["--effort", effort]);
         }
         if let Some(dir) = dir {
             cmd.env("CLAUDE_CONFIG_DIR", dir);

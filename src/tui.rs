@@ -84,10 +84,37 @@ fn run_login(
     account: &str,
     enhanced: bool,
 ) -> Result<std::result::Result<(), String>> {
+    outside_screen(terminal, enhanced, || {
+        login::run(login, account, &mut std::io::stdin().lock(), &mut stdout())
+    })
+}
+
+/// Roda a interface original do provedor (ex.: o `claude`) no terminal
+/// normal, com o teclado e a tela dele; a tela do terra volta quando ele sai.
+fn run_provider(
+    terminal: &mut DefaultTerminal,
+    mut provider: Command,
+    enhanced: bool,
+) -> Result<std::result::Result<(), String>> {
+    outside_screen(terminal, enhanced, || match provider.status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("A interface do provedor terminou com {status}.")),
+        Err(err) => Err(format!(
+            "Não foi possível abrir a interface do provedor: {err}"
+        )),
+    })
+}
+
+/// Sai da tela do terra, roda `f` no terminal normal e volta.
+fn outside_screen<T>(
+    terminal: &mut DefaultTerminal,
+    enhanced: bool,
+    f: impl FnOnce() -> T,
+) -> Result<T> {
     leave_app_mode(enhanced)?;
     disable_raw_mode()?;
     execute!(stdout(), LeaveAlternateScreen)?;
-    let result = login::run(login, account, &mut std::io::stdin().lock(), &mut stdout());
+    let result = f();
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
     enter_app_mode(enhanced)?;
@@ -100,6 +127,10 @@ fn run_login(
 fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) -> Result<()> {
     let mut last_tick = Instant::now();
     loop {
+        if let Some(provider) = app.take_provider() {
+            let result = run_provider(terminal, provider, enhanced)?;
+            app.provider_finished(result);
+        }
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(TICK.saturating_sub(last_tick.elapsed()))? {
             match event::read()? {

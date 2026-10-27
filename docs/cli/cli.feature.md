@@ -22,6 +22,7 @@ Configurações do agente (conta, modo inicial, modelo e esforço padrão), de c
 1. Salvas em `~/.terraforme/workspace/[nome_da_workspace]/config.json`
 2. O nome é o do workspace salvo para o diretório ou, sem um, o nome da pasta
 3. O config.json é lido ao iniciar; sem ele, o workspace começa com o padrão do router (modo do provedor, modelo e esforço padrão, conta Default)
+4. Interface: Agente Terraforme (chat e input do terra) ou Original do provedor (o `claude` interativo, aberto ao iniciar e com Enter na aba Chat, com as mesmas configurações)
 
 ## Sair
 Botão em vermelho, e quando apertar Esc ele redireciona para o botão de sair quando clicar enter ele mostra o box abaixo

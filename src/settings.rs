@@ -11,7 +11,8 @@
 //!     "start_mode": "accept_edits",
 //!     "model": "sonnet",
 //!     "account": ".claude-trabalho",
-//!     "effort": "high"
+//!     "effort": "high",
+//!     "interface": "terraforme"
 //!   }
 //! }
 //! ```
@@ -67,6 +68,37 @@ impl StartMode {
     }
 }
 
+/// A interface do chat e do input: a do terra ou a original do provedor
+/// (ex.: o `claude` interativo), aberta com as mesmas configurações.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Interface {
+    #[default]
+    Terraforme,
+    Provider,
+}
+
+impl Interface {
+    pub const ALL: [Interface; 2] = [Interface::Terraforme, Interface::Provider];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Interface::Terraforme => "Agente Terraforme",
+            Interface::Provider => "Original do provedor",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Interface::Terraforme => "terraforme",
+            Interface::Provider => PROVIDER,
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Interface> {
+        Interface::ALL.into_iter().find(|i| i.key() == key)
+    }
+}
+
 /// Configurações da seção Agente. O padrão ([`Default`]) é o do router: tudo
 /// fica com o provedor.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -78,6 +110,7 @@ pub struct AgentSettings {
     pub account: Option<String>,
     /// Esforço padrão (escolhido no `/model`); `None` é o do provedor.
     pub effort: Option<String>,
+    pub interface: Interface,
 }
 
 impl AgentSettings {
@@ -94,6 +127,9 @@ impl AgentSettings {
             model: text("model"),
             account: text("account"),
             effort: text("effort"),
+            interface: text("interface")
+                .and_then(|key| Interface::from_key(&key))
+                .unwrap_or_default(),
         })
     }
 
@@ -106,6 +142,7 @@ impl AgentSettings {
                 "model": self.model,
                 "account": self.account,
                 "effort": self.effort,
+                "interface": self.interface.key(),
             });
         })
     }
@@ -184,12 +221,14 @@ mod tests {
             model: Some("sonnet".into()),
             account: Some(".claude-trabalho".into()),
             effort: None,
+            interface: Interface::Provider,
         };
         settings.save_file(&path).unwrap();
         assert_eq!(AgentSettings::load_file(&path), Some(settings.clone()));
         let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(json["agent"]["start_mode"], "accept_edits");
         assert_eq!(json["agent"]["effort"], Value::Null);
+        assert_eq!(json["agent"]["interface"], "provider");
 
         // Chaves de fora do agente ficam no arquivo.
         fs::write(&path, r#"{"outra": 1, "agent": {"model": "opus"}}"#).unwrap();
@@ -239,7 +278,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = config_file(dir.path(), "terra");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, r#"{"agent": {"start_mode": "???"}}"#).unwrap();
+        fs::write(
+            &path,
+            r#"{"agent": {"start_mode": "???", "interface": "???"}}"#,
+        )
+        .unwrap();
         assert_eq!(
             AgentSettings::load_file(&path),
             Some(AgentSettings::default())
