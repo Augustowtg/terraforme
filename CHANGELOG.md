@@ -4,6 +4,14 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.16] - 2026-10-27
+
+### Alterado
+
+- Na Interface **Original do provedor**, o `claude` interativo roda **dentro da tela do terra**, na área de conteúdo da aba Chat, mantendo a **barra de abas** e o rodapé (antes, o terra saía da tela enquanto ele rodava). Ele roda num pseudo-terminal e acompanha o tamanho da tela.
+  - Com o terminal em foco, todas as teclas vão para o `claude` (inclusive `Tab`, `Esc`, `Shift+Tab` e `Ctrl+C`); **`Ctrl+Q`** volta às abas e **`Enter`** na aba Chat volta ao terminal.
+  - Ao sair do `claude`, a aba mostra como ele terminou; `Enter` abre de novo. Voltar a Interface para Agente Terraforme ou sair do terra encerra o processo.
+
 ## [0.4.15] - 2026-10-27
 
 ### Adicionado

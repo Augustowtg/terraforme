@@ -1,6 +1,6 @@
 [package]
 name = "terraforme"
-version = "0.4.15"
+version = "0.4.16"
 edition = "2024"
 
 [[bin]]
@@ -17,10 +17,12 @@ dunce = "1.0.5"
 ignore = "0.4.33"
 jiff = "0.2.38"
 notify = "8.2.1"
+portable-pty = "0.9"
 ratatui = "0.30.2"
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 serde_json = "1.0.154"
 unicode-width = "0.2.2"
+vt100 = "0.18.1"
 
 [dev-dependencies]
 tempfile = "3.27.0"
