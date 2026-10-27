@@ -505,7 +505,7 @@ impl Chat {
             }
             Target::Default => {
                 self.history.push(Entry::Info(format!(
-                    "Modelo default: {label}{effort_text} (salvo na Config)."
+                    "Modelo default: {label}{effort_text} (salvo nas Configurações)."
                 )));
                 // A conversa passa a usar o novo padrão.
                 self.session_model = None;

@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.7.1] - 2026-10-27
+
+### Alterado
+
+- A aba **MCP** passa a se chamar **Orquestrador** e continua ao lado da aba de configurações; o título dela também é `Orquestrador · http://127.0.0.1:30303/mcp`.
+- A aba **Config** passa a se chamar **Configurações**, assim como os textos que apontam para ela (no `/model`, na aba Extensões e na Interface Original do provedor).
+
 ## [0.7.0] - 2026-10-27
 
 ### Adicionado
