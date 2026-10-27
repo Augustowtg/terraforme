@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.6.1] - 2026-10-27
+
+### Adicionado
+
+- Os instaladores (`install-linux.sh` e `install-win.sh`) perguntam, depois de instalar o terra, se é para instalar as extensões. Com **SIM** (ou com `-y`), dois passos novos: **Instalar o RTK** (`cargo install --git https://github.com/rtk-ai/rtk rtk`, se ainda não estiver no `PATH`) e **Instalar e configurar o ai-memory** (o `install.sh` oficial no Linux, o `install.ps1` pelo PowerShell no Windows, e depois o `ai-memory setup --yes`, que deixa o servidor rodando como serviço do usuário e liga os agentes detectados). Com **NÃO**, os dois aparecem como pulados.
+- `install-ui.sh`: `ui_ask`, um passo com pergunta SIM/NÃO em que o NÃO não cancela a instalação, e `ui_skip`, que marca um passo como pulado (`– passo (pulado)`).
+
 ## [0.6.0] - 2026-10-27
 
 ### Adicionado

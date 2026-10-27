@@ -10,6 +10,13 @@ O binário se chama `terra`. O dia a dia é feito pelo comando `terra`, uma fun�
 
 Os instaladores mostram o banner TERRAFORME, a versão, uma barra de progresso com os passos e pedem confirmação antes de começar: escolha **SIM** ou **NÃO** com `←`/`→` e confirme com `Enter`. Para instalar sem a pergunta (ex.: fora de um terminal interativo), passe `-y`. Se um passo falhar, o instalador mostra o fim do log de compilação.
 
+Depois de instalar o terra, o instalador pergunta se é para instalar as [extensões](#aba-extensões) (SIM ou NÃO, como na confirmação; com `-y`, instala). Com SIM, ele:
+
+- instala o **RTK** com `cargo install --git https://github.com/rtk-ai/rtk rtk` (se o `rtk` ainda não estiver no `PATH`). O RTK não precisa de setup: o terra passa o hook dele ao agente;
+- instala o **ai-memory** pelo instalador oficial (`install.sh` no Linux, `install.ps1` pelo PowerShell no Windows), se ainda não estiver no `PATH`, e roda o `ai-memory setup --yes`: o servidor como serviço do usuário (ou ao fazer login, no Windows) e os hooks, o MCP e as skills nos agentes que ele detectar. Rodar de novo não muda nada.
+
+Com NÃO, os dois passos aparecem como pulados. O LLM do ai-memory (para a consolidação das memórias) continua desligado até você configurar um provedor (`AI_MEMORY_LLM_PROVIDER`, ver a documentação do ai-memory).
+
 ### Linux
 
 ```bash
@@ -121,7 +128,7 @@ Extensões são aplicações secundárias que melhoram o agente do chat. Hoje:
 | [RTK](https://github.com/rtk-ai/rtk) | Filtra e comprime a saída dos comandos antes de ela chegar ao agente (60-90% menos tokens) | Hook `PreToolUse` do Bash (`rtk hook claude`), que troca o comando pelo do RTK (ex.: `git status` → `rtk git status`) |
 | [ai-memory](https://github.com/akitaonrails/ai-memory) | Memória de longo prazo entre sessões e agentes, num wiki versionado com git | Servidor MCP e hooks do ciclo de vida, os que o próprio `ai-memory install-mcp`/`install-hooks` imprime para o Claude Code |
 
-Cada extensão precisa estar instalada e no `PATH`; o terra não instala nem muda a configuração do Claude: ele só passa as extensões ativas para o agente, em cada mensagem (e para a Interface original do provedor).
+Cada extensão precisa estar instalada e no `PATH` (o instalador oferece instalar as duas); o terra em si não muda a configuração do Claude: ele só passa as extensões ativas para o agente, em cada mensagem (e para a Interface original do provedor).
 
 A aba lista as extensões (ativa, inativa ou não instalada) e mostra, da escolhida com `↑`/`↓`, a versão, o link e o relatório: no RTK, os tokens economizados (do `rtk gain`), com o gráfico dos tokens economizados por dia; no ai-memory, as páginas, sessões e observações guardadas, o tamanho do banco e o estado dos embeddings e do LLM (do `ai-memory status`). O relatório é carregado ao abrir a aba e atualizado a cada minuto com ela aberta; `r` atualiza na hora.
 
