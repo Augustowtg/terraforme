@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.6] - 2026-10-27
+
+### Alterado
+
+- Com a **Auto compactação** ligada, o terra compacta a conversa **no máximo uma vez por mensagem enviada pelo usuário**: só no fim da resposta a uma mensagem, nunca no fim de um `/compact` (pedido à mão ou automático, mesmo que ele falhe) e não quando o próprio agente já compactou a conversa naquela resposta. Interromper a resposta também cancela a auto compactação dela.
+
 ## [0.5.4] - 2026-10-27
 
 ### Alterado

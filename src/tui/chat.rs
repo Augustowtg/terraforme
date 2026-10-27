@@ -109,9 +109,10 @@ pub struct Chat {
     context_window: Option<u64>,
     /// Display da barra, auto compactação e ponto de compactar (Config).
     context_settings: ContextSettings,
-    /// A resposta em andamento é um `/compact`: no fim dela, a auto
-    /// compactação não roda de novo (mesmo se a compactação falhou).
-    compacting: bool,
+    /// A resposta em andamento é a de uma mensagem do usuário que ainda pode
+    /// ser auto compactada: a auto compactação roda no máximo uma vez por
+    /// mensagem enviada (nunca no fim de um `/compact`, mesmo se ele falhou).
+    auto_compact_armed: bool,
     /// Comandos e modelos do agente, depois de carregados.
     catalog: Option<Catalog>,
     /// Carregamento do catálogo em andamento.
@@ -149,7 +150,7 @@ impl Default for Chat {
             context: None,
             context_window: None,
             context_settings: ContextSettings::default(),
-            compacting: false,
+            auto_compact_armed: false,
             catalog: None,
             catalog_loading: None,
         }
@@ -564,7 +565,7 @@ impl Chat {
     }
 
     fn start_compact(&mut self, entry: Entry) {
-        self.compacting = self.start("/compact", entry);
+        self.start("/compact", entry);
     }
 
     /// A roda rola a conversa em qualquer ponto da aba; arrastar no
@@ -602,6 +603,7 @@ impl Chat {
         }
         if self.start(&prompt, Entry::User(prompt.clone())) {
             self.input.clear();
+            self.auto_compact_armed = true;
         }
     }
 
@@ -647,7 +649,7 @@ impl Chat {
     /// Interrompe a resposta em andamento (soltar a sessão a encerra).
     fn cancel(&mut self) {
         self.run = None;
-        self.compacting = false;
+        self.auto_compact_armed = false;
         self.history.push(Entry::Info("Interrompido.".to_string()));
         self.agent_status = AgentStatus::Ocioso;
         self.agent_activity = None;
@@ -687,8 +689,10 @@ impl Chat {
                 }
             }
             AgentEvent::Compacted => {
-                // O tamanho novo vem na próxima chamada ao modelo.
+                // O tamanho novo vem na próxima chamada ao modelo. A mensagem
+                // já foi compactada (pelo próprio agente): não compacta de novo.
                 self.context = None;
+                self.auto_compact_armed = false;
                 self.history
                     .push(Entry::Info("Conversa compactada.".to_string()));
             }
@@ -710,9 +714,9 @@ impl Chat {
                     self.history.push(Entry::Error(message.clone()));
                     self.hint_login(&message);
                 }
-                let compacted = std::mem::take(&mut self.compacting);
+                let armed = std::mem::take(&mut self.auto_compact_armed);
                 self.finish(is_error);
-                if !is_error && !compacted {
+                if !is_error && armed {
                     self.auto_compact();
                 }
             }
@@ -764,7 +768,7 @@ impl Chat {
 
     fn finish(&mut self, is_error: bool) {
         self.run = None;
-        self.compacting = false;
+        self.auto_compact_armed = false;
         self.agent_activity = None;
         self.agent_status = if is_error {
             AgentStatus::Erro
@@ -909,7 +913,8 @@ impl Chat {
     }
 
     /// Com a auto compactação ligada, compacta a conversa quando o contexto
-    /// chega no ponto de compactar.
+    /// chega no ponto de compactar. Só no fim da resposta a uma mensagem do
+    /// usuário, e uma vez por mensagem.
     fn auto_compact(&mut self) {
         let full = self.context.is_some_and(|t| t >= self.compact_tokens());
         if self.context_settings.auto_compact && full {
