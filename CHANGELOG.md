@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.7.2] - 2026-10-27
+
+### Alterado
+
+- Aba Orquestrador: a lista passa a se chamar **Sessões** e agrupa os terra abertos pelo workspace. Embaixo de cada space aparece cada terra aberto nele, com o pid e o estado (**sessão ativa** ou **terra cli aberto**), os com sessão ativa primeiro; ao rolar, o space escolhido aparece junto com os terra dele.
+
+### Removido
+
+- Aba Orquestrador: a contagem de terra ao lado do estado do space (ex.: `terra cli aberto (2)`), agora que cada terra aparece embaixo dele.
+
 ## [0.7.1] - 2026-10-27
 
 ### Alterado
