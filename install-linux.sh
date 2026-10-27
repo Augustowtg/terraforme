@@ -17,18 +17,26 @@ for arg in "$@"; do
   esac
 done
 
-if ! command -v cargo >/dev/null 2>&1; then
+# O binário compilado da release, baixado pelo install.sh; sem ele, compila
+# com o cargo.
+PREBUILT="${TERRAFORME_BIN:-}"
+BUILT="$SCRIPT_DIR/target/release/terra"
+
+if [ -z "$PREBUILT" ] && ! command -v cargo >/dev/null 2>&1; then
   echo "erro: 'cargo' não encontrado. Instale o Rust em https://rustup.rs e rode o script de novo." >&2
   exit 1
 fi
 
 build() {
+  if [ -n "$PREBUILT" ]; then
+    return
+  fi
   cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
 }
 
 install_bin() {
   mkdir -p "$BIN_DIR"
-  install -m 755 "$SCRIPT_DIR/target/release/terra" "$BIN_DIR/terra"
+  install -m 755 "${PREBUILT:-$BUILT}" "$BIN_DIR/terra"
   ui_note "Binário instalado em $BIN_DIR/terra"
 }
 
@@ -99,6 +107,10 @@ install_rtk() {
     ui_note "RTK já instalado: $(rtk --version)"
     return
   fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    ui_note "${C_YELLOW}aviso: o RTK não foi instalado: ele é compilado com o cargo. Instale o Rust em https://rustup.rs e rode o instalador de novo.${C_RESET}"
+    return
+  fi
   cargo install --locked --git https://github.com/rtk-ai/rtk rtk
   ui_note "RTK instalado em ~/.cargo/bin/rtk"
 }
@@ -164,9 +176,18 @@ EXT_INSTALLED=(0 0)
 if command -v rtk >/dev/null 2>&1; then EXT_INSTALLED[0]=1; fi
 if command -v ai-memory >/dev/null 2>&1; then EXT_INSTALLED[1]=1; fi
 
+# O passo 2 compila ou usa o binário baixado da release.
+if [ -n "$PREBUILT" ]; then
+  BUILD_LABEL="Usar o binário compilado da release"
+  BUILD_SUMMARY="baixado do GitHub; não precisa compilar"
+else
+  BUILD_LABEL="Compilar em modo release"
+  BUILD_SUMMARY="cargo build --release; pode levar alguns minutos"
+fi
+
 ui_init "$SCRIPT_DIR" \
   "Confirmar instalação" \
-  "Compilar em modo release" \
+  "$BUILD_LABEL" \
   "Instalar o binário em $BIN_DIR" \
   "Adicionar a função 'terra' aos shells"
 
@@ -184,8 +205,8 @@ shell_files() {
 
 ui_summaries \
   "" \
-  "cargo build --release; pode levar alguns minutos" \
-  "copia target/release/terra" \
+  "$BUILD_SUMMARY" \
+  "copia o binário" \
   "$(shell_files)"
 
 # O passo do terraforme antigo só aparece se ele estiver na máquina.

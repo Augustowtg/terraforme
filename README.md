@@ -6,7 +6,7 @@ O binário se chama `terra`. O dia a dia é feito pelo comando `terra`, uma fun�
 
 ## Instalação
 
-É preciso ter o Rust instalado (`cargo`). Se não tiver, instale em <https://rustup.rs>.
+A instalação [direto do GitHub](#direto-do-github) baixa o binário já compilado da última release, sem precisar do Rust. Os instaladores rodados de um clone compilam o código: é preciso ter o Rust instalado (`cargo`); se não tiver, instale em <https://rustup.rs>.
 
 Os instaladores mostram o banner TERRAFORME, a versão, uma barra de progresso com os passos e pedem confirmação antes de começar: escolha **SIM** ou **NÃO** com `←`/`→` e confirme com `Enter`. Para instalar sem a pergunta (ex.: fora de um terminal interativo), passe `-y`. Se um passo falhar, o instalador mostra o fim do log de compilação.
 
@@ -21,7 +21,7 @@ Com NÃO, os passos das extensões nem aparecem. O LLM do ai-memory (para a cons
 
 ### Direto do GitHub
 
-Sem clonar o repositório, um comando baixa o código e roda o instalador do sistema:
+Sem clonar o repositório, um comando baixa a última release (o código e o binário compilado para Linux x86_64 ou Windows x86_64) e roda o instalador do sistema, que instala o binário baixado em vez de compilar. Assim, não precisa do Rust:
 
 ```bash
 # Linux ou Git Bash
@@ -33,7 +33,9 @@ curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.
 irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
 ```
 
-Para instalar sem a pergunta, use `curl ... | bash -s -- -y`. Para outra branch ou tag, defina `TERRAFORME_REF` (ex.: `TERRAFORME_REF=v0.8.15`). Os passos são os mesmos dos instaladores abaixo.
+Para instalar sem a pergunta, use `curl ... | bash -s -- -y`. Para outra branch ou tag, defina `TERRAFORME_REF` (ex.: `TERRAFORME_REF=v0.8.17`). Numa tag sem binário compilado (as anteriores à v0.8.17), numa branch (como a `main`) ou em outro processador, o instalador compila com o `cargo`, como os instaladores abaixo. O RTK das extensões é compilado com o `cargo`: sem o Rust, o instalador pula o RTK e avisa no fim. Os passos são os mesmos dos instaladores abaixo.
+
+Os binários vêm do workflow `release` do GitHub Actions: a cada tag `vX.Y.Z`, ele compila o `terra` para Linux (`terra-x86_64-unknown-linux-gnu`) e Windows (`terra-x86_64-pc-windows-msvc.exe`) e anexa os dois à release da tag, criando a release com as notas do CHANGELOG se ela ainda não existir. Para uma tag já publicada, rode o workflow pelo Actions com a tag.
 
 ### Linux
 
@@ -369,4 +371,5 @@ O chat usa o padrão **Adapter**: ele só conhece o trait `ChatAdapter` (`src/ag
 
 Nada na interface muda: o histórico, os modos, o consumo e a sincronia do modo funcionam com qualquer adapter. O `src/tui/chat/tests.rs` tem um `FakeAdapter` que serve de exemplo mínimo.
 | `install.sh` / `install.ps1` | Instalação direto do GitHub (`curl ... \| bash` e `irm ... \| iex`) |
+| `.github/workflows/release.yml` | Compila o `terra` para Linux e Windows a cada tag e anexa os binários à release |
 | `install-ui.sh` | Interface dos instaladores (banner, progresso e confirmação) |
