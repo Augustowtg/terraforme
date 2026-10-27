@@ -70,7 +70,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Shift+Enter` (escrevendo) | Pula uma linha. No GNOME Terminal e em outros que não diferenciam o `Shift+Enter`, use `\` + `Enter`, `Alt+Enter` ou `Ctrl+J` |
 | `Esc` no modo INSERT | Volta ao modo NORMAL |
 | Mouse no input (aba Chat) | Clique posiciona o cursor; arrastar seleciona o texto (digitar substitui a seleção) |
-| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 200K (22%)`): verde, laranja a partir da metade do limite e vermelho a partir de 75%; no limite, ela mostra **Compacte a conversa** |
+| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 200K (22%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra é configurada na seção Contexto da aba Config |
 | `r` (aba Consumo) | Atualiza o consumo na hora (ele também se atualiza sozinho a cada minuto com a aba aberta) |
 | `c` ou clique nos botões (aba Consumo) | Alterna o gráfico Consumo por dia entre **Sem cache** (padrão) e **Com cache** |
 | Clique num dia (aba Consumo) | Mostra o consumo daquele dia por hora; **‹ Dias** ou `Esc` volta |
@@ -121,7 +121,8 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
     "model": "sonnet",
     "account": ".claude-trabalho",
     "effort": "high",
-    "interface": "terraforme"
+    "interface": "terraforme",
+    "context": { "display": "visible", "auto_compact": false, "compact_at": 75 }
   }
 }
 ```
@@ -133,6 +134,14 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
 | Modo inicial | Do provedor (o `defaultMode` do Claude), Agente, Yolo, Manual, Accept Edits ou Plan |
 | Modelo | Padrão ou um modelo do provedor (Opus, Sonnet, Haiku), enviado com `--model` |
 | Interface | **Agente Terraforme** (o chat e o input do terra, o padrão) ou **Original do provedor**: a aba Chat roda o `claude` interativo no workspace, dentro da tela do terra (abaixo da barra de abas, com o rodapé), aberto ao iniciar e com `Enter`, com a conta, o modelo, o esforço e o modo inicial da Config (o Yolo vira `bypassPermissions`). As teclas vão para o `claude` (inclusive `Tab`, `Esc` e `Ctrl+C`); `Ctrl+Q` volta às abas e `Enter` na aba Chat volta ao terminal. Trocar a Interface não fecha o `claude` se já foi enviada alguma mensagem: a sessão reaparece ao voltar |
+
+Dentro da seção Agente, separada por uma linha, fica a seção **Contexto**, da barra de contexto do chat:
+
+| Configuração | Valores |
+| --- | --- |
+| Display | **Visível** (o padrão) ou **Oculto**: mostra ou esconde a barra de contexto |
+| Auto compactação | **Não** (o padrão) ou **Sim**: ao fim de uma resposta que deixou o contexto no ponto de compactar, o terra manda o `/compact` sozinho |
+| Compactar em | O ponto de compactar, de 50% a 95% do limite do modelo (padrão **75%**), com os tokens que ele representa (ex.: `75% · 150K tokens`). A barra vai até ele: fica laranja na metade, vermelha a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele |
 
 ### Navegação no `terra workspace`
 

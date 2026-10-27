@@ -35,7 +35,7 @@ use crate::agent::{
     self, AgentEvent, Catalog, ChatAdapter, PermissionMode, ReportedMode, Request, Session,
 };
 use crate::platform::clipboard;
-use crate::settings::{AgentSettings, StartMode};
+use crate::settings::{AgentSettings, ContextSettings, StartMode};
 use crate::theme::{self, Variant};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -51,7 +51,7 @@ const NOTICE_TICKS: u32 = 20;
 const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 /// Largura da barra de contexto, com as bordas.
 const CONTEXT_WIDTH: u16 = 26;
-/// Texto da barra de contexto quando ele chega no limite.
+/// Texto da barra de contexto quando ele chega no ponto de compactar.
 const COMPACT_HINT: &str = "Compacte a conversa";
 
 const HELP_NORMAL: &str =
@@ -107,6 +107,11 @@ pub struct Chat {
     context: Option<u64>,
     /// Limite de contexto do modelo, quando o agente informa.
     context_window: Option<u64>,
+    /// Display da barra, auto compactação e ponto de compactar (Config).
+    context_settings: ContextSettings,
+    /// A resposta em andamento é um `/compact`: no fim dela, a auto
+    /// compactação não roda de novo (mesmo se a compactação falhou).
+    compacting: bool,
     /// Comandos e modelos do agente, depois de carregados.
     catalog: Option<Catalog>,
     /// Carregamento do catálogo em andamento.
@@ -143,6 +148,8 @@ impl Default for Chat {
             tokens_used: 0,
             context: None,
             context_window: None,
+            context_settings: ContextSettings::default(),
+            compacting: false,
             catalog: None,
             catalog_loading: None,
         }
@@ -204,6 +211,7 @@ impl Chat {
         }
         self.chosen_model = settings.model.clone();
         self.default_effort = settings.effort.clone();
+        self.context_settings = settings.context;
     }
 
     /// Nome da conta escolhida, como o provedor a mostra.
@@ -551,11 +559,12 @@ impl Chat {
                 "Espere o agente terminar para compactar a conversa.".to_string(),
             ));
         } else {
-            self.start(
-                "/compact",
-                Entry::Info("Compactando a conversa...".to_string()),
-            );
+            self.start_compact(Entry::Info("Compactando a conversa...".to_string()));
         }
+    }
+
+    fn start_compact(&mut self, entry: Entry) {
+        self.compacting = self.start("/compact", entry);
     }
 
     /// A roda rola a conversa em qualquer ponto da aba; arrastar no
@@ -638,6 +647,7 @@ impl Chat {
     /// Interrompe a resposta em andamento (soltar a sessão a encerra).
     fn cancel(&mut self) {
         self.run = None;
+        self.compacting = false;
         self.history.push(Entry::Info("Interrompido.".to_string()));
         self.agent_status = AgentStatus::Ocioso;
         self.agent_activity = None;
@@ -700,7 +710,11 @@ impl Chat {
                     self.history.push(Entry::Error(message.clone()));
                     self.hint_login(&message);
                 }
+                let compacted = std::mem::take(&mut self.compacting);
                 self.finish(is_error);
+                if !is_error && !compacted {
+                    self.auto_compact();
+                }
             }
             AgentEvent::Failed(message) => {
                 self.history.push(Entry::Error(message.clone()));
@@ -750,6 +764,7 @@ impl Chat {
 
     fn finish(&mut self, is_error: bool) {
         self.run = None;
+        self.compacting = false;
         self.agent_activity = None;
         self.agent_status = if is_error {
             AgentStatus::Erro
@@ -881,11 +896,36 @@ impl Chat {
         badges
     }
 
-    /// A barra de contexto, quando o agente já informou o tamanho dele: o
-    /// texto e quanto do limite está ocupado (de 0 a 1).
+    /// Limite de contexto do modelo: o informado pelo agente ou o padrão.
+    pub fn context_window(&self) -> u64 {
+        self.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW)
+    }
+
+    /// Tokens em que a conversa deve ser compactada (o ponto da Config).
+    fn compact_tokens(&self) -> u64 {
+        self.context_settings
+            .compact_tokens(self.context_window())
+            .max(1)
+    }
+
+    /// Com a auto compactação ligada, compacta a conversa quando o contexto
+    /// chega no ponto de compactar.
+    fn auto_compact(&mut self) {
+        let full = self.context.is_some_and(|t| t >= self.compact_tokens());
+        if self.context_settings.auto_compact && full {
+            self.start_compact(Entry::Info(format!(
+                "O contexto chegou em {}% do limite: compactando a conversa...",
+                self.context_settings.compact_at
+            )));
+        }
+    }
+
+    /// A barra de contexto, quando ela está visível e o agente já informou o
+    /// tamanho dele: o texto e quanto do ponto de compactar está ocupado (de
+    /// 0 a 1).
     fn context_bar(&self) -> Option<(String, f64)> {
-        let tokens = self.context?;
-        let limit = self.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        let tokens = self.context.filter(|_| self.context_settings.visible)?;
+        let limit = self.compact_tokens();
         let ratio = tokens as f64 / limit as f64;
         let label = if ratio >= 1.0 {
             COMPACT_HINT.to_string()

@@ -205,6 +205,7 @@ impl App {
                 .map(|a| a.accounts())
                 .unwrap_or_default(),
             models: self.chat.model_options(),
+            context_window: self.chat.context_window(),
         }
     }
 

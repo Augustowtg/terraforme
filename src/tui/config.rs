@@ -1,5 +1,6 @@
 //! Aba Config: as configurações do terra, em seções (como as seções Recentes
-//! e Salvos do navegador de workspaces). Hoje há a seção Agente.
+//! e Salvos do navegador de workspaces). Hoje há a seção Agente e, dentro
+//! dela, separada por uma linha, a do Contexto.
 //!
 //! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor; a
 //! tela principal salva e aplica a mudança.
@@ -10,13 +11,14 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
 
+use super::chat::compact_count;
 use crate::agent::{AccountOption, ChatAdapter, ModelOption};
-use crate::settings::{AgentSettings, Interface, StartMode};
+use crate::settings::{AgentSettings, ContextSettings, Interface, StartMode};
 use crate::theme::{self, Variant};
 
 pub const HELP: &str = "↑/↓ escolher · ←/→ ou Enter alterar · Tab trocar aba · Esc ir para Sair";
 /// Largura da coluna dos nomes das configurações.
-const LABEL_WIDTH: usize = 16;
+const LABEL_WIDTH: usize = 18;
 
 /// Uma configuração que pode ser alterada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,20 +27,30 @@ enum Field {
     StartMode,
     Model,
     Interface,
+    ContextDisplay,
+    AutoCompact,
+    CompactAt,
 }
 
-const FIELDS: [Field; 4] = [
+const FIELDS: [Field; 7] = [
     Field::Account,
     Field::StartMode,
     Field::Model,
     Field::Interface,
+    Field::ContextDisplay,
+    Field::AutoCompact,
+    Field::CompactAt,
 ];
+/// Onde começa a seção Contexto em [`FIELDS`].
+const CONTEXT_START: usize = 4;
 
-/// As opções que vêm do provedor: contas e modelos.
+/// As opções que vêm do provedor: contas e modelos, e o limite de contexto
+/// do modelo (para mostrar em tokens o ponto de compactar).
 #[derive(Debug, Default, Clone)]
 pub struct Choices {
     pub accounts: Vec<AccountOption>,
     pub models: Vec<ModelOption>,
+    pub context_window: u64,
 }
 
 /// O que a Config fez com uma tecla.
@@ -101,10 +113,22 @@ impl ConfigView {
             Line::styled(" Agente", theme::section_title()),
             info_row("Provedor", provider),
         ];
-        for (i, field) in FIELDS.into_iter().enumerate() {
+        let row = |i: usize, field: Field| {
             let value = value_label(field, settings, choices);
-            lines.push(field_row(field_label(field), value, i == self.focus));
-        }
+            field_row(field_label(field), value, i == self.focus)
+        };
+        let (agent, context) = FIELDS.split_at(CONTEXT_START);
+        lines.extend(agent.iter().enumerate().map(|(i, f)| row(i, *f)));
+        let context: Vec<Line> = context
+            .iter()
+            .enumerate()
+            .map(|(i, f)| row(CONTEXT_START + i, *f))
+            .collect();
+        // A linha vai só até onde vai a seção, e não a tela inteira.
+        let width = lines.iter().chain(&context).map(Line::width).max();
+        lines.push(separator(width.unwrap_or(0)));
+        lines.push(Line::styled(" Contexto", theme::section_title()));
+        lines.extend(context);
         frame.render_widget(
             Paragraph::new(lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
             area,
@@ -118,6 +142,9 @@ fn field_label(field: Field) -> &'static str {
         Field::StartMode => "Modo inicial",
         Field::Model => "Modelo",
         Field::Interface => "Interface",
+        Field::ContextDisplay => "Display",
+        Field::AutoCompact => "Auto compactação",
+        Field::CompactAt => "Compactar em",
     }
 }
 
@@ -139,6 +166,23 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
             ),
         Field::StartMode => settings.start_mode.label().to_string(),
         Field::Interface => settings.interface.label().to_string(),
+        Field::ContextDisplay => if settings.context.visible {
+            "Visível"
+        } else {
+            "Oculto"
+        }
+        .to_string(),
+        Field::AutoCompact => if settings.context.auto_compact {
+            "Sim"
+        } else {
+            "Não"
+        }
+        .to_string(),
+        Field::CompactAt => {
+            let context = settings.context;
+            let tokens = context.compact_tokens(choices.context_window);
+            format!("{}% · {} tokens", context.compact_at, compact_count(tokens))
+        }
         Field::Model => match &settings.model {
             None => "Padrão".to_string(),
             Some(id) => models
@@ -182,6 +226,14 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
                 .unwrap_or(0);
             settings.interface = all[cycle(i, all.len(), step)];
         }
+        Field::ContextDisplay => settings.context.visible = !settings.context.visible,
+        Field::AutoCompact => settings.context.auto_compact = !settings.context.auto_compact,
+        Field::CompactAt => {
+            let all = ContextSettings::COMPACT_AT;
+            let at = &mut settings.context.compact_at;
+            let i = all.iter().position(|p| p == at).unwrap_or(0);
+            *at = all[cycle(i, all.len(), step)];
+        }
         Field::Model => {
             // Padrão (None) e depois os modelos do provedor.
             let options: Vec<Option<String>> = std::iter::once(None)
@@ -198,6 +250,14 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
 
 fn cycle(index: usize, len: usize, step: isize) -> usize {
     (index as isize + step).rem_euclid(len as isize) as usize
+}
+
+/// A linha que separa as seções, com `width` colunas.
+fn separator(width: usize) -> Line<'static> {
+    Line::styled(
+        format!(" {}", "─".repeat(width.saturating_sub(1))),
+        theme::border(),
+    )
 }
 
 fn label_span(label: &str) -> String {
@@ -257,6 +317,7 @@ mod tests {
                     label: id.to_uppercase(),
                 })
                 .collect(),
+            context_window: 200_000,
         }
     }
 
@@ -343,6 +404,32 @@ mod tests {
     }
 
     #[test]
+    fn context_settings_toggle_and_cycle() {
+        let mut view = ConfigView {
+            focus: CONTEXT_START,
+        };
+        let mut settings = AgentSettings::default();
+        press(&mut view, &mut settings, KeyCode::Enter);
+        assert!(!settings.context.visible, "Visível → Oculto");
+        press(&mut view, &mut settings, KeyCode::Down);
+        press(&mut view, &mut settings, KeyCode::Right);
+        assert!(settings.context.auto_compact, "Não → Sim");
+        press(&mut view, &mut settings, KeyCode::Down);
+        press(&mut view, &mut settings, KeyCode::Right);
+        assert_eq!(settings.context.compact_at, 80);
+        assert_eq!(
+            value_label(Field::CompactAt, &settings, &choices()),
+            "80% · 160K tokens"
+        );
+        press(&mut view, &mut settings, KeyCode::Down);
+        assert_eq!(view.focus, FIELDS.len() - 1, "a última fica");
+        for _ in 0..7 {
+            press(&mut view, &mut settings, KeyCode::Left);
+        }
+        assert_eq!(settings.context.compact_at, 95, "dá a volta");
+    }
+
+    #[test]
     fn draws_agent_section_with_focus() {
         let view = ConfigView::default();
         let settings = AgentSettings {
@@ -351,26 +438,33 @@ mod tests {
             account: None,
             effort: None,
             interface: Interface::Provider,
+            context: ContextSettings::default(),
         };
-        let mut terminal = Terminal::new(TestBackend::new(50, 8)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
         terminal
-            .draw(|frame| view.draw(frame, frame.area(), &settings, None, &Choices::default()))
+            .draw(|frame| view.draw(frame, frame.area(), &settings, None, &choices()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let row = |y: u16| {
-            (0..50)
+            (0..60)
                 .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>()
                 .trim_end()
                 .to_string()
         };
         assert_eq!(row(1), "  Agente");
-        assert_eq!(row(2), "   Provedor        Nenhum");
-        assert_eq!(row(3), " ▌ Conta           ‹ Default ›");
-        assert_eq!(row(4), "   Modo inicial      Do provedor");
-        // Sem provedor, o id salvo aparece como está.
-        assert_eq!(row(5), "   Modelo            haiku");
-        assert_eq!(row(6), "   Interface         Original do provedor");
+        assert_eq!(row(2), "   Provedor          Nenhum");
+        assert_eq!(row(3), " ▌ Conta             ‹ Default · eu@gmail.com ›");
+        assert_eq!(row(4), "   Modo inicial        Do provedor");
+        assert_eq!(row(5), "   Modelo              HAIKU");
+        assert_eq!(row(6), "   Interface           Original do provedor");
         assert_eq!(buffer[(3, 3)].bg, theme::focused().bg.unwrap());
+        // A linha que separa o Contexto vai até onde vai a seção.
+        assert!(row(7).starts_with("  ─"));
+        assert_eq!(row(7).chars().count(), row(3).chars().count());
+        assert_eq!(row(8), "  Contexto");
+        assert_eq!(row(9), "   Display             Visível");
+        assert_eq!(row(10), "   Auto compactação    Não");
+        assert_eq!(row(11), "   Compactar em        75% · 150K tokens");
     }
 }

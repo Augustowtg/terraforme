@@ -208,6 +208,7 @@ fn settings_choose_start_mode_and_model() {
         account: None,
         effort: None,
         interface: Default::default(),
+        context: Default::default(),
     };
     let (mut chat, sent) = fake_chat_with(true, vec![done(1)], &settings);
     assert_eq!(chat.permission_mode, PermissionMode::Plan);
@@ -746,21 +747,22 @@ fn context_bar_sits_on_the_right_below_the_status() {
         window: None,
     });
     assert_eq!(chat.height(), HEIGHT);
-    // Sem o limite do agente, vale o padrão (200K); o texto fica dentro da
-    // barra, encostada na direita, como o status no input.
+    // Sem o limite do agente, vale o padrão (200K), e a barra vai até o
+    // ponto de compactar (75%: 150K). O texto fica dentro da barra, encostada
+    // na direita, como o status no input.
     let row = badge_row(&chat);
-    assert!(row.ends_with("45K / 200K (22%)    │"), "{row}");
+    assert!(row.ends_with("45K / 150K (30%)    │"), "{row}");
     assert_eq!(row.chars().count(), 60, "encostada na direita");
-    assert_eq!(chat.context_bar().unwrap().1, 0.225);
+    assert_eq!(chat.context_bar().unwrap().1, 0.3);
 
     chat.apply(AgentEvent::Context {
-        tokens: 900_000,
+        tokens: 600_000,
         window: Some(1_000_000),
     });
-    assert!(badge_row(&chat).contains("900K / 1M (90%)"));
+    assert!(badge_row(&chat).contains("600K / 750K (80%)"));
     // Um contexto sem limite novo mantém o informado.
     chat.apply(AgentEvent::Context {
-        tokens: 1_000_000,
+        tokens: 750_000,
         window: None,
     });
     assert!(badge_row(&chat).contains("Compacte a conversa"));
@@ -830,4 +832,80 @@ fn clear_resets_the_context() {
     };
     chat.clear_conversation();
     assert_eq!(chat.context, None);
+}
+
+/// Um chat com a conversa "s1" e o contexto em `tokens` de um limite de 200K.
+fn chat_with_context(tokens: u64, context: ContextSettings) -> (Chat, Sent) {
+    let settings = AgentSettings {
+        context,
+        ..AgentSettings::default()
+    };
+    let reply = vec![
+        init(PermissionMode::Agente),
+        AgentEvent::Context {
+            tokens,
+            window: Some(200_000),
+        },
+        done(1),
+    ];
+    let (mut chat, sent) = fake_chat_with(true, reply, &settings);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    (chat, sent)
+}
+
+#[test]
+fn context_bar_is_relative_to_the_compact_point() {
+    // Ponto de compactar padrão: 75% de 200K = 150K.
+    let (chat, _) = chat_with_context(75_000, ContextSettings::default());
+    assert!(badge_row(&chat).contains("75K / 150K (50%)"));
+    assert_eq!(chat.context_bar().unwrap().1, 0.5, "metade: laranja");
+
+    let (chat, sent) = chat_with_context(150_000, ContextSettings::default());
+    assert!(badge_row(&chat).contains("Compacte a conversa"));
+    // Sem a auto compactação (o padrão), só avisa.
+    assert_eq!(sent.borrow().len(), 1);
+}
+
+#[test]
+fn hidden_context_bar_does_not_take_the_badge_row() {
+    let hidden = ContextSettings {
+        visible: false,
+        ..ContextSettings::default()
+    };
+    let (chat, _) = chat_with_context(75_000, hidden);
+    assert_eq!(chat.context_bar(), None);
+    // Fica só o badge de consumo, sem a barra no canto.
+    assert_eq!(badge_row(&chat), "│ Modo: Agente │ │ Consumo: 1 Tokens │");
+}
+
+#[test]
+fn auto_compact_runs_once_at_the_compact_point() {
+    let auto = ContextSettings {
+        auto_compact: true,
+        compact_at: 50,
+        ..ContextSettings::default()
+    };
+    let (_, sent) = chat_with_context(99_000, auto);
+    assert_eq!(
+        sent.borrow().len(),
+        1,
+        "abaixo de 50% de 200K, não compacta"
+    );
+
+    let (mut full, sent) = chat_with_context(100_000, auto);
+    assert_eq!(sent.borrow().last().unwrap().0, "/compact");
+    assert_eq!(
+        full.history.entries().last(),
+        Some(&Entry::Info(
+            "O contexto chegou em 50% do limite: compactando a conversa...".into()
+        ))
+    );
+    // A compactação responde com o mesmo contexto (ela falhou sem avisar): a
+    // auto compactação não entra em loop.
+    full.tick();
+    assert_eq!(sent.borrow().len(), 2);
+    assert!(full.run.is_none());
 }
