@@ -22,6 +22,9 @@
 //!
 //! As extensões ativas ([`ExtensionSettings`]) também são de cada workspace;
 //! sem a chave, nenhuma.
+//!
+//! O MCP ([`McpSettings`]) é um só para a máquina, então fica no
+//! `~/.terraforme/config.json` ([`global_file`]): `{"mcp": {"enabled": true}}`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -310,6 +313,31 @@ impl ExtensionSettings {
     }
 }
 
+/// O MCP do terra (seção MCP da Config): o servidor orquestrador, um só para
+/// a máquina.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct McpSettings {
+    /// Ao iniciar, o terra abre o MCP (se ninguém abriu) e se registra nele.
+    /// Desativado por padrão.
+    pub enabled: bool,
+}
+
+impl McpSettings {
+    /// Lê o MCP do `config.json` global; sem o arquivo ou a chave, desativado.
+    pub fn load_file(path: &Path) -> Self {
+        Self {
+            enabled: read_file(path)["mcp"]["enabled"] == true,
+        }
+    }
+
+    /// Grava o MCP no `config.json` global, mantendo as outras chaves.
+    pub fn save_file(&self, path: &Path) -> Result<()> {
+        update_file(path, |json| {
+            json["mcp"] = json!({ "enabled": self.enabled });
+        })
+    }
+}
+
 /// Se o terra pergunta, ao sair, se o workspace deve ser salvo. O "Não
 /// (não perguntar novamente)" grava `"workspace": {"ask_to_save": false}`.
 pub fn asks_to_save(path: &Path) -> bool {
@@ -346,6 +374,12 @@ fn update_file(path: &Path, change: impl FnOnce(&mut Value)) -> Result<()> {
     }
     let text = serde_json::to_string_pretty(&json)? + "\n";
     fs::write(path, text).with_context(|| format!("não foi possível gravar {}", path.display()))
+}
+
+/// O `config.json` global, das configurações da máquina toda, dentro de
+/// `root` (o `~/.terraforme`).
+pub fn global_file(root: &Path) -> PathBuf {
+    root.join("config.json")
 }
 
 /// O `config.json` do workspace `name` dentro de `root` (o
@@ -461,6 +495,22 @@ mod tests {
         // Salvar o agente de novo não volta a perguntar.
         settings.save_file(&path).unwrap();
         assert!(!asks_to_save(&path));
+    }
+
+    #[test]
+    fn mcp_defaults_to_disabled_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = global_file(dir.path());
+        assert_eq!(path, dir.path().join("config.json"));
+        assert!(
+            !McpSettings::load_file(&path).enabled,
+            "desativado por padrão"
+        );
+        fs::write(&path, r#"{"outra": 1}"#).unwrap();
+        McpSettings { enabled: true }.save_file(&path).unwrap();
+        assert!(McpSettings::load_file(&path).enabled);
+        let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json, json!({"outra": 1, "mcp": {"enabled": true}}));
     }
 
     #[test]

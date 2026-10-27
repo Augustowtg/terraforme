@@ -1,7 +1,8 @@
 //! Aba Config: as configurações do terra, em seções (como as seções Recentes
 //! e Salvos do navegador de workspaces). Há a seção Agente e, dentro dela,
-//! separadas por uma linha, a do Contexto e a do Consumo; à direita (embaixo, em telas
-//! estreitas), a seção Extensões.
+//! separadas por uma linha, a do Contexto e a do Consumo; embaixo, separada
+//! do Agente, a seção MCP (com uma bola verde com o MCP online); à direita
+//! (embaixo, em telas estreitas), a seção Extensões.
 //!
 //! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor; a
 //! tela principal salva e aplica a mudança. `Shift+Tab` alterna entre o
@@ -19,7 +20,10 @@ use ratatui::widgets::{Block, Padding, Paragraph};
 use super::chat::compact_count;
 use crate::agent::{AccountOption, ChatAdapter, ModelOption};
 use crate::extension::Status;
-use crate::settings::{AgentSettings, ContextSettings, ExtensionSettings, Interface, StartMode};
+use crate::mcp;
+use crate::settings::{
+    AgentSettings, ContextSettings, ExtensionSettings, Interface, McpSettings, StartMode,
+};
 use crate::theme::{self, Variant};
 
 const HELP: &str =
@@ -45,9 +49,10 @@ enum Field {
     Limit,
     CompactAt,
     UsageDisplay,
+    Mcp,
 }
 
-const FIELDS: [Field; 9] = [
+const FIELDS: [Field; 10] = [
     Field::Account,
     Field::StartMode,
     Field::Model,
@@ -57,21 +62,25 @@ const FIELDS: [Field; 9] = [
     Field::Limit,
     Field::CompactAt,
     Field::UsageDisplay,
+    Field::Mcp,
 ];
 /// Onde começa a seção Contexto em [`FIELDS`].
 const CONTEXT_START: usize = 4;
 /// Onde começa a seção Consumo em [`FIELDS`].
 const USAGE_START: usize = 8;
+/// Onde começa a seção MCP em [`FIELDS`].
+const MCP_START: usize = 9;
 
 /// As opções que vêm do provedor: contas e modelos, e o limite de contexto
 /// do modelo (para mostrar em tokens o ponto de compactar). E as extensões
-/// do registro.
+/// do registro e o MCP.
 #[derive(Debug, Default, Clone)]
 pub struct Choices {
     pub accounts: Vec<AccountOption>,
     pub models: Vec<ModelOption>,
     pub context_window: u64,
     pub extensions: Vec<ExtensionOption>,
+    pub mcp: McpState,
 }
 
 /// Uma extensão que pode ser ativada na seção Extensões.
@@ -93,6 +102,15 @@ pub enum Outcome {
     Changed,
     /// Uma extensão foi ligada ou desligada: salvar e aplicar.
     ExtensionsChanged,
+    /// O MCP foi ativado ou desativado: salvar e abrir ou fechar.
+    McpChanged,
+}
+
+/// O MCP como a seção MCP mostra: a configuração e se ele está online.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct McpState {
+    pub settings: McpSettings,
+    pub online: bool,
 }
 
 /// A seção em foco.
@@ -125,6 +143,7 @@ impl ConfigView {
         key: KeyEvent,
         settings: &mut AgentSettings,
         extensions: &mut ExtensionSettings,
+        mcp: &mut McpSettings,
         choices: &Choices,
     ) -> Outcome {
         if key.code == KeyCode::BackTab {
@@ -138,6 +157,18 @@ impl ConfigView {
             return self.handle_extension_key(key, extensions, &choices.extensions);
         }
         let last = FIELDS.len() - 1;
+        let changes = matches!(
+            key.code,
+            KeyCode::Right
+                | KeyCode::Left
+                | KeyCode::Enter
+                | KeyCode::Char('l')
+                | KeyCode::Char('h')
+        );
+        if FIELDS[self.focus] == Field::Mcp && changes {
+            mcp.enabled = !mcp.enabled;
+            return Outcome::McpChanged;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.focus = self.focus.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => self.focus = (self.focus + 1).min(last),
@@ -226,7 +257,7 @@ impl ConfigView {
         };
         lines.extend(rows(0..CONTEXT_START));
         let context = rows(CONTEXT_START..USAGE_START);
-        let usage = rows(USAGE_START..FIELDS.len());
+        let usage = rows(USAGE_START..MCP_START);
         // A linha vai só até onde vai a seção, e não a tela inteira.
         let width = lines
             .iter()
@@ -240,6 +271,30 @@ impl ConfigView {
         lines.push(separator(width.unwrap_or(0)));
         lines.push(Line::styled(" Consumo", theme::section_title()));
         lines.extend(usage);
+
+        // O MCP fica separado do Agente: é da máquina, não do workspace.
+        let mcp = choices.mcp;
+        let mut title = vec![Span::styled(" MCP", theme::section_title())];
+        if mcp.online {
+            title.push(Span::styled(" ●", theme::variant(Variant::Success)));
+        }
+        let enabled = if mcp.settings.enabled {
+            "Ativado"
+        } else {
+            "Desativado"
+        };
+        let mcp_lines = [
+            Line::from(title),
+            field_row(
+                field_label(Field::Mcp),
+                enabled.to_string(),
+                agent_focus && FIELDS[self.focus] == Field::Mcp,
+            ),
+            info_row("Endereço", Span::styled(mcp::url(), theme::path())),
+        ];
+        let width = width.max(mcp_lines.iter().map(Line::width).max());
+        lines.push(Line::default());
+        lines.extend(mcp_lines);
 
         let extension_lines = self.extension_lines(extensions, &choices.extensions);
         // A seção Agente com o recuo (1) e a folga (2) do bloco.
@@ -362,6 +417,7 @@ fn field_label(field: Field) -> &'static str {
         Field::Limit => "Limite de tokens",
         Field::CompactAt => "Compactar em",
         Field::UsageDisplay => "Display",
+        Field::Mcp => "Servidor",
     }
 }
 
@@ -410,6 +466,7 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
             let tokens = context.compact_tokens(choices.context_window);
             format!("{}% · {} tokens", context.compact_at, compact_count(tokens))
         }
+        Field::Mcp => String::new(),
         Field::Model => match &settings.model {
             None => "Padrão".to_string(),
             Some(id) => models
@@ -483,6 +540,8 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
                 .unwrap_or(0);
             settings.model = options[cycle(i, options.len(), step)].clone();
         }
+        // Fica com a Config, que tem o MCP.
+        Field::Mcp => {}
     }
 }
 
@@ -557,6 +616,7 @@ mod tests {
                 .collect(),
             context_window: 200_000,
             extensions: Vec::new(),
+            mcp: McpState::default(),
         }
     }
 
@@ -565,6 +625,7 @@ mod tests {
             KeyEvent::new(code, KeyModifiers::NONE),
             settings,
             &mut ExtensionSettings::default(),
+            &mut McpSettings::default(),
             &choices(),
         )
     }
@@ -601,6 +662,7 @@ mod tests {
                 KeyEvent::new(code, KeyModifiers::NONE),
                 &mut settings,
                 &mut extensions,
+                &mut McpSettings::default(),
                 &choices,
             )
         };
@@ -646,6 +708,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
             &mut AgentSettings::default(),
             &mut extensions,
+            &mut McpSettings::default(),
             &Choices {
                 extensions: extension_options(2),
                 ..choices()
@@ -844,10 +907,8 @@ mod tests {
         }
         assert_eq!(settings.context.compact_at, 95, "dá a volta");
 
-        // A seção Consumo, a última.
+        // A seção Consumo.
         press(&mut view, &mut settings, KeyCode::Down);
-        press(&mut view, &mut settings, KeyCode::Down);
-        assert_eq!(view.focus, FIELDS.len() - 1, "a última fica");
         press(&mut view, &mut settings, KeyCode::Enter);
         assert!(settings.usage.visible, "Oculto → Visível");
     }
@@ -864,7 +925,7 @@ mod tests {
             context: ContextSettings::default(),
             usage: Default::default(),
         };
-        let mut terminal = Terminal::new(TestBackend::new(60, 17)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         terminal
             .draw(|frame| {
                 let extensions = ExtensionSettings::default();
@@ -874,7 +935,13 @@ mod tests {
                     &settings,
                     &extensions,
                     None,
-                    &choices(),
+                    &Choices {
+                        mcp: McpState {
+                            settings: McpSettings { enabled: true },
+                            online: true,
+                        },
+                        ..choices()
+                    },
                 )
             })
             .unwrap();
@@ -904,5 +971,32 @@ mod tests {
         assert!(row(13).starts_with("  ─"));
         assert_eq!(row(14), "  Consumo");
         assert_eq!(row(15), "   Display             Oculto");
+        // O MCP, separado, com a bola verde de online.
+        assert_eq!(row(16), "");
+        assert_eq!(row(17), "  MCP ●");
+        assert_eq!(row(18), "   Servidor            Ativado");
+        assert_eq!(row(19), "   Endereço          http://127.0.0.1:30303/mcp");
+    }
+
+    #[test]
+    fn mcp_is_the_last_setting_and_toggles() {
+        let mut view = ConfigView::default();
+        let mut mcp = McpSettings::default();
+        let mut press = |view: &mut ConfigView, code: KeyCode| {
+            view.handle_key(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut AgentSettings::default(),
+                &mut ExtensionSettings::default(),
+                &mut mcp,
+                &choices(),
+            )
+        };
+        for _ in 0..FIELDS.len() {
+            press(&mut view, KeyCode::Down);
+        }
+        assert_eq!(view.focus, MCP_START, "a última fica");
+        assert_eq!(press(&mut view, KeyCode::Enter), Outcome::McpChanged);
+        assert_eq!(press(&mut view, KeyCode::Up), Outcome::Moved);
+        assert!(mcp.enabled, "Desativado → Ativado");
     }
 }

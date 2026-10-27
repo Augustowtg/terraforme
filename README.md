@@ -55,16 +55,17 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | Comando | O que faz |
 | --- | --- |
 | `terra --version` | Mostra a versão |
-| `terra cli` | Abre a interface com as abas Chat, Consumo, Extensões e Config e registra o diretório atual em **Recentes** |
+| `terra cli` | Abre a interface com as abas Chat, Consumo, Extensões e Config (e MCP, com o MCP online) e registra o diretório atual em **Recentes** |
 | `terra workspace` | Lista Recentes e Salvos; `Enter` entra no diretório escolhido |
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
+| `terra mcp` | Roda o [MCP do terra](#aba-mcp) (o orquestrador) em `http://127.0.0.1:30303/mcp`. Com o MCP ativado na Config, o `terra cli` já abre ele sozinho |
 
 ### Navegação no `terra cli`
 
 | Tecla | Ação |
 | --- | --- |
-| `Tab` | Troca de aba (Chat, Consumo, Extensões, Config) |
+| `Tab` | Troca de aba (Chat, Consumo, Extensões, Config e, com o MCP online, MCP) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
 | `↑` / `↓` (escrevendo) | Mostram as mensagens já enviadas (desde que o terra abriu, de todas as sessões), da mais nova para a mais antiga. Com o texto em várias linhas, primeiro andam entre as linhas. Depois da mais nova, o `↓` volta ao que estava sendo escrito |
@@ -178,7 +179,36 @@ Embaixo do Contexto, também separada por uma linha, fica a seção **Consumo**,
 | --- | --- |
 | Display | **Oculto** (o padrão) ou **Visível**: esconde ou mostra a barra de consumo (a sessão de 5 horas). Oculta, o terra não busca o consumo para ela |
 
+Embaixo do Consumo, separada da seção Agente, fica a seção **MCP**, com uma bola verde (`MCP ●`) quando o MCP está online. Ela é da máquina, e não do workspace: fica em `~/.terraforme/config.json` (`{"mcp": {"enabled": true}}`).
+
+| Configuração | Valores |
+| --- | --- |
+| Servidor | **Desativado** (o padrão) ou **Ativado**: abre o [MCP](#aba-mcp) e mostra a aba MCP. Desativar fecha o MCP |
+| Endereço | `http://127.0.0.1:30303/mcp` (só leitura) |
+
 À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) ativa ou desativa a extensão neste workspace. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada aparece como **indisponível** (`(indisponível)` na lista e `indisponível (não instalada)` embaixo) e não pode ser ativada. As ativas ficam em `extensions.enabled` no `config.json` e valem a partir da próxima mensagem; sem a chave, nenhuma.
+
+### Aba MCP
+
+O MCP do terra é um servidor [MCP](https://modelcontextprotocol.io) (JSON-RPC por HTTP) em `http://127.0.0.1:30303/mcp`, um só para a máquina, que orquestra os terra abertos. Ele vem **desativado**; para ativar, troque o Servidor na seção MCP da Config.
+
+Ativado, ao iniciar o `terra cli` verifica se já há um MCP na porta 30303: se houver, usa ele; se não, abre um num processo novo (`terra mcp`, que continua rodando depois que o terra fecha). Cada terra se registra nele e avisa, a cada 2 segundos, o workspace e se há uma sessão ativa com o agente; um terra que para de avisar por 6 segundos sai da lista.
+
+Com o MCP online, a seção MCP da Config mostra uma bola verde (`MCP ●`) e aparece a aba **MCP**, o orquestrador, com os spaces (os workspaces salvos e os abertos em algum terra):
+
+```
+ MCP · http://127.0.0.1:30303/mcp
+   2 terra cli abertos · 1 com sessão ativa
+
+ Spaces
+ ▌ ● terraforme-cli  sessão ativa      /home/eu/terraforme-cli
+   ● site            terra cli aberto  /home/eu/site
+   ○ notas           fechado           /home/eu/notas
+```
+
+A bola verde é um terra com uma conversa com o agente (no chat do terra ou na interface original do provedor), a amarela é só o terra cli aberto e a vazia, nenhum terra aberto. Com mais de um terra no mesmo space, aparece quantos (ex.: `terra cli aberto (2)`). `↑`/`↓` escolhem o space; a lista se atualiza a cada segundo.
+
+Desativar o MCP na Config fecha ele (para todos os terra) e esconde a aba. Para os agentes, o MCP tem a ferramenta `spaces`, a mesma lista.
 
 ### Navegação no `terra workspace`
 
@@ -240,7 +270,7 @@ Tudo fica em `~/.terraforme/terra.sqlite`, criado na primeira execução.
 - `workspaces`: `id`, `name` (único), `path` (único), `created_at` (epoch em ms)
 - `settings`: as configurações globais de antes da 0.4.12; desde a 0.4.14 não são mais usadas
 
-As configurações de cada workspace ficam em `~/.terraforme/workspace/<nome>/config.json` (veja a aba Config).
+As configurações de cada workspace ficam em `~/.terraforme/workspace/<nome>/config.json` e as da máquina (o MCP), em `~/.terraforme/config.json` (veja a aba Config).
 
 Os paths são canonicalizados antes de serem salvos: ficam absolutos, sem `..` e sem barra no final. No Windows, a comparação de paths não diferencia maiúsculas de minúsculas.
 
@@ -258,6 +288,8 @@ src/
 ├── main.rs, cli.rs, db.rs, theme.rs
 ├── settings.rs           # configurações da aba Config, salvas no banco
 ├── files.rs              # índice dos arquivos do diretório, atualizado em tempo real
+├── mcp.rs                # MCP do terra: abrir, cliente e o Link de cada terra
+│   └── server.rs         # o servidor (terra mcp): JSON-RPC por HTTP na 30303
 ├── extension.rs          # extensões do agente (Strategy + Registry)
 │   ├── contract.rs       # Extension (a estratégia), Contribution e Report
 │   ├── registry.rs       # Registry: as extensões e o que as ativas acrescentam
@@ -279,7 +311,8 @@ src/
 └── tui.rs                # loop da tela principal e do terminal
     ├── app.rs            # tela principal: abas, Sair e confirmação
     ├── workspace.rs      # navegador de workspaces
-    ├── config.rs         # aba Config: seções Agente e Extensões
+    ├── config.rs         # aba Config: seções Agente, MCP e Extensões
+    ├── mcp.rs            # aba MCP: o orquestrador, com os spaces
     ├── extensions.rs     # aba Extensões: relatório de cada extensão
     ├── widgets.rs → widgets/badge.rs, widgets/popup.rs
     └── chat.rs           # aba Chat: liga o adapter, histórico, input e badges
@@ -299,8 +332,9 @@ src/
 | `src/db.rs` | SQLite, canonicalização de paths e regras de nome |
 | `src/agent/` | Agente do chat: eventos e integração com o Claude CLI |
 | `src/extension/` | Extensões do agente: o contrato (Strategy), o Registry e as extensões |
+| `src/mcp/` | MCP do terra: o servidor orquestrador e o registro de cada terra nele |
 | `src/platform/` | Área de transferência e estado do teclado |
-| `src/tui/` | Telas ratatui: tela principal, chat, consumo, extensões, config e workspaces |
+| `src/tui/` | Telas ratatui: tela principal, chat, consumo, extensões, config, MCP e workspaces |
 | `src/theme.rs` | Cores do Catppuccin; troque `FLAVOR` para mudar de variante |
 
 ### Adicionar um provedor (route) ao chat
