@@ -64,8 +64,8 @@ ui_on_exit() {
   fi
 }
 
-# O resumo de cada passo, na ordem do ui_init, mostrado ao lado da label
-# até o passo terminar. Passos sem resumo usam "".
+# O resumo de cada passo, na ordem do ui_init, mostrado ao lado da label só
+# enquanto o passo roda (ou no passo que falhou). Passos sem resumo usam "".
 ui_summaries() {
   UI_SUMMARIES=("$@")
 }
@@ -113,7 +113,7 @@ ui_render() {
     elif [ "$i" -eq "$UI_CURRENT" ]; then
       echo "  ${C_YELLOW}●${C_RESET} ${C_BOLD}${UI_STEPS[$i]}${C_RESET}$(ui_summary "$i")"
     else
-      echo "  ${C_DIM}○ ${UI_STEPS[$i]}${C_RESET}$(ui_summary "$i")"
+      echo "  ${C_DIM}○ ${UI_STEPS[$i]}${C_RESET}"
     fi
   done
   echo
