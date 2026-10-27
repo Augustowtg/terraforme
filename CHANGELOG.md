@@ -4,6 +4,18 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.2] - 2026-10-26
+
+### Adicionado
+
+- Configuração **Conta** na seção Agente da aba Config, para trocar a conta do Claude usada pelo chat:
+  - **Default**: o `claude` usa a conta padrão dele (sem `CLAUDE_CONFIG_DIR`); o rótulo mostra o e-mail dela;
+  - **Pessoal** e **Trabalho**: descobertas nas pastas `~/.claude` e `~/.claude-*` que têm credenciais. O tipo vem da organização (a pessoal da Anthropic se chama "…'s Organization") e o rótulo mostra o e-mail, e a organização nas de trabalho;
+  - a conta escolhida vai para o `claude` como `CLAUDE_CONFIG_DIR`, e o modo "Do provedor" passa a ler o `defaultMode` dela;
+  - trocar de conta com uma conversa aberta começa uma conversa nova (a sessão era da outra conta) e avisa no histórico;
+  - a escolha fica salva (`agent.account`) e vale ao abrir o `terra cli` de novo.
+- O contrato `ChatAdapter` ganhou `accounts()` e o `Request` ganhou `account`.
+
 ## [0.4.1] - 2026-10-26
 
 ### Adicionado
