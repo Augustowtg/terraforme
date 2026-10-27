@@ -19,6 +19,22 @@ Depois, o instalador pergunta se é para instalar as [extensões](#aba-extensõe
 
 Com NÃO, os passos das extensões nem aparecem. O LLM do ai-memory (para a consolidação das memórias) continua desligado até você configurar um provedor (`AI_MEMORY_LLM_PROVIDER`, ver a documentação do ai-memory).
 
+### Direto do GitHub
+
+Sem clonar o repositório, um comando baixa o código e roda o instalador do sistema:
+
+```bash
+# Linux ou Git Bash
+curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell; precisa do Git for Windows, o terra roda no Git Bash)
+irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
+```
+
+Para instalar sem a pergunta, use `curl ... | bash -s -- -y`. Para outra branch ou tag, defina `TERRAFORME_REF` (ex.: `TERRAFORME_REF=v0.8.15`). Os passos são os mesmos dos instaladores abaixo.
+
 ### Linux
 
 ```bash
@@ -352,4 +368,5 @@ O chat usa o padrão **Adapter**: ele só conhece o trait `ChatAdapter` (`src/ag
 2. Declare o módulo e inclua-o na lista de `all()` em `src/agent/adapters.rs`.
 
 Nada na interface muda: o histórico, os modos, o consumo e a sincronia do modo funcionam com qualquer adapter. O `src/tui/chat/tests.rs` tem um `FakeAdapter` que serve de exemplo mínimo.
+| `install.sh` / `install.ps1` | Instalação direto do GitHub (`curl ... \| bash` e `irm ... \| iex`) |
 | `install-ui.sh` | Interface dos instaladores (banner, progresso e confirmação) |
