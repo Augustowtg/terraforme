@@ -4,6 +4,19 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.5] - 2026-10-27
+
+### Adicionado
+
+- Aba **Consumo** (antes "Em construção"):
+  - **Route**: o provedor e a conta do chat, com o plano (ex.: `Claude · Default · eu@gmail.com · Pro`);
+  - uma **barra de 0 a 100%** por limite de uso, com a porcentagem: verde, amarela a partir de 70% e vermelha a partir de 90%;
+  - embaixo de cada barra, quando ela zera: `Reseta DD-MM-YYYY HH:MM · zera em 2h 13m` (no fuso local);
+  - carrega ao abrir a aba, atualiza a cada minuto com ela aberta (e quando um limite zera ou a conta muda) e com `r`.
+- No Claude, os limites são os do `/usage` do Claude Code (Sessão de 5 h, Semana e, quando o plano tem, Opus e Sonnet), do endpoint de uso (`/api/oauth/usage`) com o token da conta escolhida. Não chama o modelo nem gasta tokens; a chamada usa o `curl`, com o token pelo stdin (fora da linha de comando).
+- `ChatAdapter::load_usage`: o consumo de cada provedor, em segundo plano.
+- Dependência `jiff`, para as datas no fuso local.
+
 ## [0.4.4] - 2026-10-27
 
 ### Adicionado

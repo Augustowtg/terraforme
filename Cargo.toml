@@ -1,6 +1,6 @@
 [package]
 name = "terraforme"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 
 [[bin]]
@@ -15,6 +15,7 @@ crossterm = "0.29.0"
 dirs = "7.0.0"
 dunce = "1.0.5"
 ignore = "0.4.33"
+jiff = "0.2.38"
 notify = "8.2.1"
 ratatui = "0.30.2"
 rusqlite = { version = "0.41.0", features = ["bundled"] }

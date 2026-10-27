@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 use super::chat::Chat;
 use super::config::{self, ConfigView};
+use super::usage::{self, UsageView};
 use crate::db::Db;
 use crate::platform::keyboard;
 use crate::settings::AgentSettings;
@@ -67,6 +68,7 @@ pub struct App {
     focus: Focus,
     chat: Chat,
     config: ConfigView,
+    usage: UsageView,
     settings: AgentSettings,
     /// Onde as configurações são salvas (`None` nos testes).
     db: Option<Db>,
@@ -141,6 +143,14 @@ impl App {
         if self.tab == Tab::Config && self.focus == Focus::Tabs && self.handle_config_key(key) {
             return false;
         }
+        if self.tab == Tab::Consumo
+            && self.focus == Focus::Tabs
+            && self
+                .usage
+                .handle_key(key, self.chat.adapter(), self.settings.account.as_deref())
+        {
+            return false;
+        }
         match (self.focus, key.code) {
             (Focus::Tabs, KeyCode::Tab) => self.tab = self.tab.next(),
             (Focus::Tabs, KeyCode::Esc) => self.focus = Focus::Quit,
@@ -170,6 +180,12 @@ impl App {
         self.chat
             .set_caps_lock(keyboard::caps_lock().unwrap_or(false));
         self.chat.tick();
+        // O consumo só é carregado com a aba aberta.
+        if self.tab == Tab::Consumo {
+            self.usage
+                .refresh_if_stale(self.chat.adapter(), self.settings.account.as_deref());
+        }
+        self.usage.tick();
     }
 
     pub fn draw(&self, frame: &mut Frame) {
@@ -187,6 +203,7 @@ impl App {
         let help = match self.focus {
             Focus::Tabs if self.tab == Tab::Chat => self.chat.help(),
             Focus::Tabs if self.tab == Tab::Config => config::HELP.into(),
+            Focus::Tabs if self.tab == Tab::Consumo => usage::HELP.into(),
             Focus::Tabs => HELP.into(),
             Focus::Quit => HELP_QUIT.into(),
             Focus::Confirm(_) => HELP_CONFIRM.into(),
@@ -259,15 +276,11 @@ impl App {
             );
             return;
         }
-        // TODO: substituir pelo conteúdo real de Consumo.
-        let lines = vec![
-            Line::styled(self.tab.title(), theme::section_title()),
-            Line::styled("Em construção", theme::muted()),
-        ];
-        frame.render_widget(
-            Paragraph::new(lines).block(Block::new().padding(Padding::new(2, 2, 1, 0))),
-            area,
-        );
+        let route = match self.chat.adapter() {
+            Some(adapter) => format!("{} · {}", adapter.name(), self.chat.account_label()),
+            None => String::new(),
+        };
+        self.usage.draw(frame, area, self.chat.adapter(), &route);
     }
 }
 

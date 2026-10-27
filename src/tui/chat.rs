@@ -187,7 +187,7 @@ impl Chat {
     }
 
     /// Nome da conta escolhida, como o provedor a mostra.
-    fn account_label(&self) -> String {
+    pub fn account_label(&self) -> String {
         let accounts = self
             .adapter
             .as_ref()

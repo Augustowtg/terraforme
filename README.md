@@ -69,11 +69,31 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Esc` no modo INSERT | Volta ao modo NORMAL |
 | Mouse no input (aba Chat) | Clique posiciona o cursor; arrastar seleciona o texto (digitar substitui a seleção) |
 | `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token |
+| `r` (aba Consumo) | Atualiza o consumo na hora (ele também se atualiza sozinho a cada minuto com a aba aberta) |
 | `Esc` | Leva o foco ao botão vermelho **Sair**; de novo (ou `Tab`), volta às abas |
 | `Enter` em **Sair** | Abre a confirmação de saída |
 | `←` / `→` | Alterna entre **Sim** (verde) e **Não** (vermelho) na confirmação |
 | `Enter` na confirmação | **Sim** sai; **Não** fecha a caixa |
 | `Ctrl+C` | Sai direto, sem confirmação |
+
+### Aba Consumo
+
+Mostra o **route** (provedor e conta do chat, com o plano) e, para cada limite de uso da conta, uma barra de 0 a 100% (verde, amarela a partir de 70% e vermelha a partir de 90%) com quando ela zera:
+
+```text
+ Consumo
+  Route           Claude · Default · eu@gmail.com · Pro
+
+  Sessão (5 h)
+  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  6%
+  Reseta 27-10-2026 14:10 · zera em 4h 52m
+
+  Semana (todos os modelos)
+  ██████████████████████████████████████░░  96%
+  Reseta 27-10-2026 12:00 · zera em 2h 42m
+```
+
+No Claude, os limites são os mesmos do `/usage` do Claude Code (sessão de 5 h e semana, mais Opus/Sonnet quando o plano tem), lidos do endpoint de uso com o token da conta escolhida na Config. Não chama o modelo nem gasta tokens; precisa do `curl` no `PATH`.
 
 ### Aba Config
 
@@ -194,7 +214,7 @@ src/
 | `src/db.rs` | SQLite, canonicalização de paths e regras de nome |
 | `src/agent/` | Agente do chat: eventos e integração com o Claude CLI |
 | `src/platform/` | Área de transferência e estado do teclado |
-| `src/tui/` | Telas ratatui: tela principal, chat e workspaces |
+| `src/tui/` | Telas ratatui: tela principal, chat, consumo, config e workspaces |
 | `src/theme.rs` | Cores do Catppuccin; troque `FLAVOR` para mudar de variante |
 
 ### Adicionar um provedor (route) ao chat
@@ -205,7 +225,7 @@ O chat usa o padrão **Adapter**: ele só conhece o trait `ChatAdapter` (`src/ag
    - `name()`: o nome no botão do título (ex.: `"Claude"`);
    - `is_available()`: se o provedor está instalado ou configurado (sem ele, o chat fica Desconectado com o `unavailable_hint()`);
    - `start(Request)`: começa uma resposta e devolve uma `Session`, cujo `poll()` entrega os `AgentEvent`s até `Done` ou `Failed`. No `PermissionMode::Yolo`, aprove tudo o que o agente pedir;
-   - opcionais: `configured_mode()` (modo inicial vindo da configuração do provedor) e `model_label()` (nome amigável do modelo).
+   - opcionais: `configured_mode()` (modo inicial vindo da configuração do provedor), `model_label()` (nome amigável do modelo) e `load_usage()` (o consumo da aba Consumo, em segundo plano).
 2. Declare o módulo e inclua-o na lista de `all()` em `src/agent/adapters.rs`.
 
 Nada na interface muda: o histórico, os modos, o consumo e a sincronia do modo funcionam com qualquer adapter. O `src/tui/chat/tests.rs` tem um `FakeAdapter` que serve de exemplo mínimo.
