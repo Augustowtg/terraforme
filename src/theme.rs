@@ -176,6 +176,31 @@ pub fn context_border(ratio: f64) -> Style {
     Style::new().fg(context_color(ratio))
 }
 
+/// Cor do consumo da sessão pelo que resta (`left`, de 0 a 100): verde,
+/// laranja de 50% para baixo, vermelho de 25% para baixo e cinza no 0%.
+fn usage_color(left: f64) -> Color {
+    let name = match left {
+        l if l <= 0.0 => ColorName::Overlay0,
+        l if l <= 25.0 => ColorName::Red,
+        l if l <= 50.0 => ColorName::Peach,
+        _ => ColorName::Green,
+    };
+    color(name)
+}
+
+/// Barra de consumo: a parte que resta na cor do consumo.
+pub fn usage_bar(left: f64) -> Style {
+    Style::new()
+        .fg(usage_color(left))
+        .bg(color(ColorName::Surface0))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Borda da barra de consumo, na cor dele.
+pub fn usage_border(left: f64) -> Style {
+    Style::new().fg(usage_color(left))
+}
+
 /// Texto selecionado com o mouse: mesmo destaque do item em foco.
 pub fn selection() -> Style {
     focused()

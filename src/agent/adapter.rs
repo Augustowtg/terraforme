@@ -94,6 +94,8 @@ pub struct UsageWindow {
     /// O que mostrar no lugar de quando zera (ex.: o valor que resta do
     /// crédito extra).
     pub detail: Option<String>,
+    /// É a janela da sessão (as 5 horas), a da barra de consumo do chat.
+    pub session: bool,
 }
 
 /// O consumo da conta no provedor (aba Consumo).
@@ -102,6 +104,13 @@ pub struct Usage {
     /// Plano da conta (ex.: `Max`), quando o provedor informa.
     pub plan: Option<String>,
     pub windows: Vec<UsageWindow>,
+}
+
+impl Usage {
+    /// A janela da sessão (as 5 horas), quando o plano tem.
+    pub fn session(&self) -> Option<&UsageWindow> {
+        self.windows.iter().find(|w| w.session)
+    }
 }
 
 /// Os tokens gastos numa hora de um dia.

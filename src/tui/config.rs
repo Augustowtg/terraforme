@@ -1,6 +1,6 @@
 //! Aba Config: as configurações do terra, em seções (como as seções Recentes
 //! e Salvos do navegador de workspaces). Há a seção Agente e, dentro dela,
-//! separada por uma linha, a do Contexto; à direita (embaixo, em telas
+//! separadas por uma linha, a do Contexto e a do Consumo; à direita (embaixo, em telas
 //! estreitas), a seção Extensões.
 //!
 //! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor; a
@@ -44,9 +44,10 @@ enum Field {
     AutoCompact,
     Limit,
     CompactAt,
+    UsageDisplay,
 }
 
-const FIELDS: [Field; 8] = [
+const FIELDS: [Field; 9] = [
     Field::Account,
     Field::StartMode,
     Field::Model,
@@ -55,9 +56,12 @@ const FIELDS: [Field; 8] = [
     Field::AutoCompact,
     Field::Limit,
     Field::CompactAt,
+    Field::UsageDisplay,
 ];
 /// Onde começa a seção Contexto em [`FIELDS`].
 const CONTEXT_START: usize = 4;
+/// Onde começa a seção Consumo em [`FIELDS`].
+const USAGE_START: usize = 8;
 
 /// As opções que vêm do provedor: contas e modelos, e o limite de contexto
 /// do modelo (para mostrar em tokens o ponto de compactar). E as extensões
@@ -217,18 +221,25 @@ impl ConfigView {
             let value = value_label(field, settings, choices);
             field_row(field_label(field), value, agent_focus && i == self.focus)
         };
-        let (agent, context) = FIELDS.split_at(CONTEXT_START);
-        lines.extend(agent.iter().enumerate().map(|(i, f)| row(i, *f)));
-        let context: Vec<Line> = context
-            .iter()
-            .enumerate()
-            .map(|(i, f)| row(CONTEXT_START + i, *f))
-            .collect();
+        let rows = |range: std::ops::Range<usize>| -> Vec<Line> {
+            range.map(|i| row(i, FIELDS[i])).collect()
+        };
+        lines.extend(rows(0..CONTEXT_START));
+        let context = rows(CONTEXT_START..USAGE_START);
+        let usage = rows(USAGE_START..FIELDS.len());
         // A linha vai só até onde vai a seção, e não a tela inteira.
-        let width = lines.iter().chain(&context).map(Line::width).max();
+        let width = lines
+            .iter()
+            .chain(&context)
+            .chain(&usage)
+            .map(Line::width)
+            .max();
         lines.push(separator(width.unwrap_or(0)));
         lines.push(Line::styled(" Contexto", theme::section_title()));
         lines.extend(context);
+        lines.push(separator(width.unwrap_or(0)));
+        lines.push(Line::styled(" Consumo", theme::section_title()));
+        lines.extend(usage);
 
         let extension_lines = self.extension_lines(extensions, &choices.extensions);
         // A seção Agente com o recuo (1) e a folga (2) do bloco.
@@ -279,7 +290,10 @@ impl ConfigView {
         for (i, option) in options.iter().enumerate().skip(page * PAGE).take(PAGE) {
             let enabled = settings.is_enabled(&option.id);
             let check = if enabled { "[x]" } else { "[ ]" };
-            let text = format!("{}. {} - {}", i + 1, option.name, option.description);
+            let mut text = format!("{}. {} - {}", i + 1, option.name, option.description);
+            if !option.status.is_installed() {
+                text.push_str(" (indisponível)");
+            }
             lines.push(if focused && i == current {
                 Line::from(vec![
                     Span::raw(format!("{} ", theme::FOCUS_MARKER)),
@@ -323,9 +337,10 @@ impl ConfigView {
             Status::Installed { version: None } => {
                 Span::styled(format!("{} · ", option.name), theme::text())
             }
-            Status::Missing => {
-                Span::styled(format!("{} não instalada · ", option.name), theme::error())
-            }
+            Status::Missing => Span::styled(
+                format!("{} indisponível (não instalada) · ", option.name),
+                theme::error(),
+            ),
         };
         lines.push(Line::from(vec![Span::raw("  "), status, state]));
         lines.push(Line::styled(
@@ -346,6 +361,7 @@ fn field_label(field: Field) -> &'static str {
         Field::AutoCompact => "Auto compactação",
         Field::Limit => "Limite de tokens",
         Field::CompactAt => "Compactar em",
+        Field::UsageDisplay => "Display",
     }
 }
 
@@ -368,6 +384,12 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
         Field::StartMode => settings.start_mode.label().to_string(),
         Field::Interface => settings.interface.label().to_string(),
         Field::ContextDisplay => if settings.context.visible {
+            "Visível"
+        } else {
+            "Oculto"
+        }
+        .to_string(),
+        Field::UsageDisplay => if settings.usage.visible {
             "Visível"
         } else {
             "Oculto"
@@ -432,6 +454,7 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
             settings.interface = all[cycle(i, all.len(), step)];
         }
         Field::ContextDisplay => settings.context.visible = !settings.context.visible,
+        Field::UsageDisplay => settings.usage.visible = !settings.usage.visible,
         Field::AutoCompact => settings.context.auto_compact = !settings.context.auto_compact,
         Field::Limit => {
             // Do modelo (None) e depois os limites fixos. Um valor do arquivo
@@ -676,6 +699,35 @@ mod tests {
     }
 
     #[test]
+    fn missing_extension_shows_as_unavailable() {
+        let view = ConfigView {
+            section: Section::Extensions,
+            extension: 1,
+            ..ConfigView::default()
+        };
+        let choices = Choices {
+            extensions: extension_options(2),
+            ..choices()
+        };
+        let lines = view.extension_lines(&ExtensionSettings::default(), &choices.extensions);
+        let text = |line: &Line| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(text(&lines[1]), "  [ ] 1. Ext1 - faz 1");
+        assert_eq!(
+            text(&lines[2]),
+            format!("{} [ ] 2. Ext2 - faz 2 (indisponível)", theme::FOCUS_MARKER)
+        );
+        assert_eq!(
+            text(&lines[5]),
+            "  Ext2 indisponível (não instalada) · inativa"
+        );
+    }
+
+    #[test]
     fn account_cycles_through_provider_accounts() {
         let mut view = ConfigView::default();
         let mut settings = AgentSettings::default();
@@ -787,12 +839,17 @@ mod tests {
             value_label(Field::CompactAt, &settings, &choices()),
             "80% · 80K tokens"
         );
-        press(&mut view, &mut settings, KeyCode::Down);
-        assert_eq!(view.focus, FIELDS.len() - 1, "a última fica");
         for _ in 0..7 {
             press(&mut view, &mut settings, KeyCode::Left);
         }
         assert_eq!(settings.context.compact_at, 95, "dá a volta");
+
+        // A seção Consumo, a última.
+        press(&mut view, &mut settings, KeyCode::Down);
+        press(&mut view, &mut settings, KeyCode::Down);
+        assert_eq!(view.focus, FIELDS.len() - 1, "a última fica");
+        press(&mut view, &mut settings, KeyCode::Enter);
+        assert!(!settings.usage.visible, "Visível → Oculto");
     }
 
     #[test]
@@ -805,8 +862,9 @@ mod tests {
             effort: None,
             interface: Interface::Provider,
             context: ContextSettings::default(),
+            usage: Default::default(),
         };
-        let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 17)).unwrap();
         terminal
             .draw(|frame| {
                 let extensions = ExtensionSettings::default();
@@ -843,5 +901,8 @@ mod tests {
         assert_eq!(row(10), "   Auto compactação    Não");
         assert_eq!(row(11), "   Limite de tokens    200K");
         assert_eq!(row(12), "   Compactar em        75% · 150K tokens");
+        assert!(row(13).starts_with("  ─"));
+        assert_eq!(row(14), "  Consumo");
+        assert_eq!(row(15), "   Display             Visível");
     }
 }

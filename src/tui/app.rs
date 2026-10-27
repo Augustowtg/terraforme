@@ -16,7 +16,7 @@ use super::chat::Chat;
 use super::config::{self, ConfigView};
 use super::extensions::{self, ExtensionsView};
 use super::term::Term;
-use super::usage::UsageView;
+use super::usage::{SessionUsage, UsageView};
 use crate::agent::Interactive;
 use crate::db::Db;
 use crate::extension::Registry;
@@ -112,6 +112,8 @@ pub struct App {
     chat: Chat,
     config_view: ConfigView,
     usage: UsageView,
+    /// O consumo da sessão, para a barra de consumo do chat.
+    session_usage: SessionUsage,
     extensions_view: ExtensionsView,
     settings: AgentSettings,
     /// As extensões conhecidas (estratégias), já detectadas.
@@ -283,6 +285,7 @@ impl App {
     pub fn login_finished(&mut self, result: Result<(), String>) {
         self.chat.finish_login(result);
         self.usage.invalidate();
+        self.session_usage.invalidate();
     }
 
     /// O comando da interface original do provedor, com as configurações
@@ -332,6 +335,7 @@ impl App {
             self.term_focus = false;
             self.provider_result = Some(result);
             self.usage.invalidate();
+            self.session_usage.invalidate();
         }
         if !self.uses_provider() {
             if self.term.as_ref().is_some_and(|t| !t.has_session()) {
@@ -473,6 +477,15 @@ impl App {
                 .refresh_if_stale(self.chat.adapter(), self.settings.account.as_deref());
         }
         self.usage.tick();
+        // A barra de consumo carrega só enquanto está visível.
+        if self.settings.usage.visible {
+            self.session_usage
+                .refresh_if_stale(self.chat.adapter(), self.settings.account.as_deref());
+        }
+        if self.session_usage.tick() {
+            self.chat
+                .set_session_usage(self.session_usage.window().cloned());
+        }
         // O relatório das extensões, também só com a aba aberta.
         if self.tab == Tab::Extensoes {
             self.extensions_view.refresh_if_stale(&self.registry);

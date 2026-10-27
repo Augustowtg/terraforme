@@ -21,6 +21,7 @@ use std::process::Command;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use jiff::tz::TimeZone;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -30,13 +31,15 @@ use self::history::{Entry, History};
 use self::input::{InputBox, InputMode, Outcome};
 use self::mode::{AgentStatus, mode_variant};
 use self::model_menu::{ModelMenu, Target, effort_label};
+use super::usage;
 use super::widgets::badge;
 use crate::agent::{
     self, AgentEvent, Catalog, ChatAdapter, PermissionMode, ReportedMode, Request, Session,
+    UsageWindow,
 };
 use crate::extension::Contribution;
 use crate::platform::clipboard;
-use crate::settings::{AgentSettings, ContextSettings, StartMode};
+use crate::settings::{AgentSettings, ContextSettings, StartMode, UsageSettings};
 use crate::theme::{self, Variant};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -53,6 +56,8 @@ const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 /// Largura da barra de contexto, com as bordas.
 const CONTEXT_WIDTH: u16 = 26;
 /// Texto da barra de contexto quando ele chega no ponto de compactar.
+/// Largura da barra de consumo, ao lado da de contexto.
+const USAGE_WIDTH: u16 = 24;
 const COMPACT_HINT: &str = "Compacte a conversa";
 
 const HELP_NORMAL: &str =
@@ -112,6 +117,10 @@ pub struct Chat {
     context_window: Option<u64>,
     /// Display da barra, auto compactação e ponto de compactar (Config).
     context_settings: ContextSettings,
+    /// Display da barra de consumo (Config).
+    usage_settings: UsageSettings,
+    /// O consumo da sessão (as 5 horas), quando o provedor informa.
+    session_usage: Option<UsageWindow>,
     /// A resposta em andamento é a de uma mensagem do usuário que ainda pode
     /// ser auto compactada: a auto compactação roda no máximo uma vez por
     /// mensagem enviada (nunca no fim de um `/compact`, mesmo se ele falhou).
@@ -154,6 +163,8 @@ impl Default for Chat {
             context: None,
             context_window: None,
             context_settings: ContextSettings::default(),
+            usage_settings: UsageSettings::default(),
+            session_usage: None,
             auto_compact_armed: false,
             catalog: None,
             catalog_loading: None,
@@ -217,6 +228,12 @@ impl Chat {
         self.chosen_model = settings.model.clone();
         self.default_effort = settings.effort.clone();
         self.context_settings = settings.context;
+        self.usage_settings = settings.usage;
+    }
+
+    /// O consumo da sessão (as 5 horas) para a barra de consumo.
+    pub fn set_session_usage(&mut self, window: Option<UsageWindow>) {
+        self.session_usage = window;
     }
 
     /// Nome da conta escolhida, como o provedor a mostra.
@@ -901,7 +918,7 @@ impl Chat {
     /// Altura do painel: sem badges para mostrar, a linha deles some e o
     /// espaço fica para a conversa.
     pub fn height(&self) -> u16 {
-        if self.badges().is_empty() && self.context_bar().is_none() {
+        if self.badges().is_empty() && self.context_bar().is_none() && self.usage_bar().is_none() {
             HEIGHT - badge::HEIGHT
         } else {
             HEIGHT
@@ -980,6 +997,17 @@ impl Chat {
         Some((label, ratio.min(1.0)))
     }
 
+    /// A barra de consumo, quando ela está visível e o provedor já informou o
+    /// consumo da sessão: o texto e quanto dela resta (de 0 a 100).
+    fn usage_bar(&self) -> Option<(String, f64)> {
+        let window = self
+            .session_usage
+            .as_ref()
+            .filter(|_| self.usage_settings.visible)?;
+        let left = (100.0 - window.percent).clamp(0.0, 100.0);
+        Some((usage::session_label(window, &TimeZone::system()), left))
+    }
+
     /// Painel: atividade do agente, caixa de input e badges.
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         // Os badges ficam com o que sobra: sem eles, o painel encolhe (veja
@@ -1027,7 +1055,7 @@ impl Chat {
     }
 
     /// Os badges à esquerda e, no canto direito, embaixo do status, a barra
-    /// de contexto.
+    /// de contexto, com a de consumo à esquerda dela.
     fn draw_badges(&self, frame: &mut Frame, area: Rect) {
         let mut area = area;
         if let Some((label, ratio)) = self.context_bar() {
@@ -1046,6 +1074,23 @@ impl Chat {
                 .ratio(ratio)
                 .label(label);
             frame.render_widget(gauge, context);
+        }
+        if let Some((label, left)) = self.usage_bar() {
+            let [badges, usage] =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Length(USAGE_WIDTH)])
+                    .spacing(1)
+                    .areas(area);
+            area = badges;
+            let gauge = Gauge::default()
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(theme::usage_border(left)),
+                )
+                .gauge_style(theme::usage_bar(left))
+                .ratio(left / 100.0)
+                .label(label);
+            frame.render_widget(gauge, usage);
         }
         let badges = self.badges();
         let areas = Layout::horizontal(

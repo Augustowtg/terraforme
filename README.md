@@ -10,12 +10,12 @@ O binário se chama `terra`. O dia a dia é feito pelo comando `terra`, uma fun�
 
 Os instaladores mostram o banner TERRAFORME, a versão, uma barra de progresso com os passos e pedem confirmação antes de começar: escolha **SIM** ou **NÃO** com `←`/`→` e confirme com `Enter`. Para instalar sem a pergunta (ex.: fora de um terminal interativo), passe `-y`. Se um passo falhar, o instalador mostra o fim do log de compilação.
 
-Depois de instalar o terra, o instalador pergunta se é para instalar as [extensões](#aba-extensões) (SIM ou NÃO, como na confirmação; com `-y`, instala). Com SIM, ele:
+Depois de instalar o terra, o instalador pergunta se é para instalar as [extensões](#aba-extensões) (SIM ou NÃO, como na confirmação; com `-y`, instala as duas). Com SIM, aparece um menu no estilo da lista de extensões da Config (`[x] 1. RTK - descrição`), com as duas marcadas: `↑`/`↓` escolhem, `Espaço` marca ou desmarca e `Enter` confirma. Só então os passos das escolhidas entram na lista do instalador. Para cada uma:
 
 - instala o **RTK** com `cargo install --git https://github.com/rtk-ai/rtk rtk` (se o `rtk` ainda não estiver no `PATH`). O RTK não precisa de setup: o terra passa o hook dele ao agente;
 - instala o **ai-memory** pelo instalador oficial (`install.sh` no Linux, `install.ps1` pelo PowerShell no Windows), se ainda não estiver no `PATH`, e roda o `ai-memory setup --yes`: o servidor como serviço do usuário (ou ao fazer login, no Windows) e os hooks, o MCP e as skills nos agentes que ele detectar. Rodar de novo não muda nada.
 
-Com NÃO, os dois passos aparecem como pulados. O LLM do ai-memory (para a consolidação das memórias) continua desligado até você configurar um provedor (`AI_MEMORY_LLM_PROVIDER`, ver a documentação do ai-memory).
+Com NÃO, os passos das extensões nem aparecem. O LLM do ai-memory (para a consolidação das memórias) continua desligado até você configurar um provedor (`AI_MEMORY_LLM_PROVIDER`, ver a documentação do ai-memory).
 
 ### Linux
 
@@ -78,7 +78,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Shift+Enter` (escrevendo) | Pula uma linha. No GNOME Terminal e em outros que não diferenciam o `Shift+Enter`, use `\` + `Enter`, `Alt+Enter` ou `Ctrl+J` |
 | `Esc` no modo INSERT | Volta ao modo NORMAL |
 | Mouse no input (aba Chat) | Clique posiciona o cursor; arrastar seleciona o texto (digitar substitui a seleção) |
-| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 150K (30%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra vem oculta: para vê-la, troque o Display na seção Contexto da aba Config |
+| `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 150K (30%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra vem oculta: para vê-la, troque o Display na seção Contexto da aba Config. À esquerda dela, a **barra de consumo** mostra quanto resta da sessão de 5 horas do provedor e quando ela zera (ex.: `58% · reseta 15:00`): verde, laranja de 50% para baixo, vermelha de 25% para baixo e cinza ao chegar em 0%. Ela vem visível e é atualizada a cada minuto; para escondê-la, troque o Display na seção Consumo da aba Config |
 | `↑` / `↓` (aba Extensões) | Escolhem a extensão; `r` atualiza o relatório dela |
 | `Shift+Tab` (aba Config) | Alterna entre a seção Agente e a seção Extensões |
 | `Espaço` (aba Config, Extensões) | Ativa ou desativa a extensão em foco neste workspace; `←`/`→` trocam de página |
@@ -146,7 +146,8 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
     "account": ".claude-trabalho",
     "effort": "high",
     "interface": "terraforme",
-    "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 }
+    "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 },
+    "usage": { "display": "visible" }
   },
   "extensions": { "enabled": ["rtk", "ai-memory"] }
 }
@@ -169,7 +170,13 @@ Dentro da seção Agente, separada por uma linha, fica a seção **Contexto**, d
 | Limite de tokens | Um limite fixo, de 50K a 1M (padrão **200K**), ou **Do modelo** (o limite que o agente informa, ou 200K até ele informar). No `config.json`, `"limit"` aceita qualquer número de tokens, e `null` é o do modelo |
 | Compactar em | O ponto de compactar, de 50% a 95% do limite de tokens (padrão **75%**), com os tokens que ele representa (ex.: `75% · 150K tokens`). A barra vai até ele: fica laranja na metade, vermelha a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele |
 
-À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) ativa ou desativa a extensão neste workspace. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada não pode ser ativada. As ativas ficam em `extensions.enabled` no `config.json` e valem a partir da próxima mensagem; sem a chave, nenhuma.
+Embaixo do Contexto, também separada por uma linha, fica a seção **Consumo**, da barra de consumo do chat:
+
+| Configuração | Valores |
+| --- | --- |
+| Display | **Visível** (o padrão) ou **Oculto**: mostra ou esconde a barra de consumo (a sessão de 5 horas). Oculta, o terra não busca o consumo para ela |
+
+À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) ativa ou desativa a extensão neste workspace. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada aparece como **indisponível** (`(indisponível)` na lista e `indisponível (não instalada)` embaixo) e não pode ser ativada. As ativas ficam em `extensions.enabled` no `config.json` e valem a partir da próxima mensagem; sem a chave, nenhuma.
 
 ### Navegação no `terra workspace`
 

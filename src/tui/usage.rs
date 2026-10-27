@@ -593,6 +593,105 @@ pub(super) fn draw_bars(frame: &mut Frame, area: Rect, bars: &[ChartBar]) -> Vec
         .collect()
 }
 
+/// O consumo da sessão (as 5 horas) para a barra de consumo do chat. Carrega
+/// só o consumo (sem os tokens por dia da aba), enquanto a barra está
+/// visível, e recarrega como a aba: a cada [`STALE`], ao trocar de conta ou
+/// depois de a janela zerar.
+#[derive(Default)]
+pub struct SessionUsage {
+    window: Option<UsageWindow>,
+    loading: Option<Receiver<Result<Usage, String>>>,
+    /// Quando o consumo foi pedido, e de qual conta.
+    fetched: Option<(Instant, Option<String>)>,
+    /// A janela mudou desde o último [`SessionUsage::tick`].
+    changed: bool,
+}
+
+impl SessionUsage {
+    pub fn refresh_if_stale(&mut self, adapter: Option<&dyn ChatAdapter>, account: Option<&str>) {
+        if self.loading.is_some() {
+            return;
+        }
+        let now = Timestamp::now().as_second();
+        let reset = self
+            .window
+            .as_ref()
+            .and_then(|w| w.resets_at)
+            .is_some_and(|at| at <= now);
+        let stale = match &self.fetched {
+            None => true,
+            Some((at, loaded)) => at.elapsed() >= STALE || loaded.as_deref() != account || reset,
+        };
+        if !stale {
+            return;
+        }
+        if self
+            .fetched
+            .as_ref()
+            .is_some_and(|(_, loaded)| loaded.as_deref() != account)
+        {
+            // Era da outra conta.
+            self.set_window(None);
+        }
+        self.fetched = Some((Instant::now(), account.map(str::to_string)));
+        self.loading = adapter
+            .filter(|a| a.is_available())
+            .and_then(|a| a.load_usage(account));
+        if self.loading.is_none() {
+            self.set_window(None);
+        }
+    }
+
+    fn set_window(&mut self, window: Option<UsageWindow>) {
+        self.changed |= window != self.window;
+        self.window = window;
+    }
+
+    /// O consumo não vale mais (ex.: depois de um login): recarrega na
+    /// próxima vez.
+    pub fn invalidate(&mut self) {
+        self.fetched = None;
+    }
+
+    /// Recebe o consumo, se já chegou. Retorna `true` quando a janela mudou
+    /// desde a última chamada. Com erro, fica a última janela carregada.
+    pub fn tick(&mut self) -> bool {
+        if let Some(loading) = &self.loading {
+            match loading.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Ok(Ok(usage)) => {
+                    self.loading = None;
+                    self.set_window(usage.session().cloned());
+                }
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.loading = None;
+                }
+            }
+        }
+        std::mem::take(&mut self.changed)
+    }
+
+    pub fn window(&self) -> Option<&UsageWindow> {
+        self.window.as_ref()
+    }
+}
+
+/// O texto da barra de consumo do chat: quanto resta da sessão e quando ela
+/// zera (`58% · reseta 15:00`).
+pub fn session_label(window: &UsageWindow, tz: &TimeZone) -> String {
+    let left = (100.0 - window.percent).clamp(0.0, 100.0);
+    match window
+        .resets_at
+        .and_then(|at| Timestamp::from_second(at).ok())
+    {
+        Some(at) => format!(
+            "{left:.0}% · reseta {}",
+            at.to_zoned(tz.clone()).strftime("%H:%M")
+        ),
+        None => format!("{left:.0}% restantes"),
+    }
+}
+
 /// Nome, barra com a porcentagem que resta e quando zera.
 fn window_lines(window: &UsageWindow, bar: usize, tz: &TimeZone, now: i64) -> Vec<Line<'static>> {
     let style = level_style(window.percent);
@@ -696,6 +795,7 @@ mod tests {
             percent: 25.0,
             resets_at: Some(1_793_124_000),
             detail: None,
+            session: true,
         };
         let lines = window_lines(&window, 20, &tz, 1_793_124_000 - (2 * 3600 + 13 * 60));
         assert_eq!(text(&lines[0]), "  Sessão (5 h)");
@@ -707,6 +807,13 @@ mod tests {
             text(&lines[2]),
             "  Reseta 27-10-2026 18:00 · zera em 2h 13m"
         );
+        // Na barra do chat: o que resta e a hora de zerar.
+        assert_eq!(session_label(&window, &tz), "75% · reseta 18:00");
+        let window = UsageWindow {
+            resets_at: None,
+            ..window
+        };
+        assert_eq!(session_label(&window, &tz), "75% restantes");
     }
 
     #[test]
