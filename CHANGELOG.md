@@ -4,6 +4,17 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.17] - 2026-10-27
+
+### Adicionado
+
+- Binários compilados na release: o workflow `release` do GitHub Actions compila o `terra` para Linux (`terra-x86_64-unknown-linux-gnu`) e Windows (`terra-x86_64-pc-windows-msvc.exe`) a cada tag `vX.Y.Z` e anexa os dois à release da tag, que ele cria com as notas do CHANGELOG se ainda não existir. Pelo Actions, dá para rodar o workflow numa tag já publicada.
+
+### Alterado
+
+- Instalação direto do GitHub sem o Rust: o `install.sh` baixa a última release (antes, a `main`) e o binário compilado dela para o sistema, e o `install-linux.sh` e o `install-win.sh` instalam esse binário em vez de compilar (o passo vira "Usar o binário compilado da release"). Sem binário (tag antiga, branch ou outro processador), compilam com o `cargo`, como antes.
+- O instalador pula o RTK quando não há `cargo`, com um aviso no fim, em vez de falhar.
+
 ## [0.8.16] - 2026-10-27
 
 ### Corrigido

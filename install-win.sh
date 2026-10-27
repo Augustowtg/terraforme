@@ -17,18 +17,26 @@ for arg in "$@"; do
   esac
 done
 
-if ! command -v cargo >/dev/null 2>&1; then
+# O binário compilado da release, baixado pelo install.sh; sem ele, compila
+# com o cargo.
+PREBUILT="${TERRAFORME_BIN:-}"
+BUILT="$SCRIPT_DIR/target/release/terra.exe"
+
+if [ -z "$PREBUILT" ] && ! command -v cargo >/dev/null 2>&1; then
   echo "erro: 'cargo' não encontrado. Instale o Rust em https://rustup.rs, reabra o Git Bash e rode o script de novo." >&2
   exit 1
 fi
 
 build() {
+  if [ -n "$PREBUILT" ]; then
+    return
+  fi
   cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
 }
 
 install_bin() {
   mkdir -p "$BIN_DIR"
-  cp "$SCRIPT_DIR/target/release/terra.exe" "$BIN_DIR/terra.exe"
+  cp "${PREBUILT:-$BUILT}" "$BIN_DIR/terra.exe"
   # Versões anteriores instalavam como terraforme.exe nesta pasta, o que
   # escondia o terraforme principal no PATH.
   rm -f "$BIN_DIR/terraforme.exe"
@@ -86,6 +94,10 @@ setup_shell() {
 install_rtk() {
   if command -v rtk >/dev/null 2>&1; then
     ui_note "RTK já instalado: $(rtk --version)"
+    return
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    ui_note "${C_YELLOW}aviso: o RTK não foi instalado: ele é compilado com o cargo. Instale o Rust em https://rustup.rs e rode o instalador de novo.${C_RESET}"
     return
   fi
   cargo install --locked --git https://github.com/rtk-ai/rtk rtk
@@ -156,16 +168,25 @@ EXT_INSTALLED=(0 0)
 if command -v rtk >/dev/null 2>&1; then EXT_INSTALLED[0]=1; fi
 if command -v ai-memory >/dev/null 2>&1; then EXT_INSTALLED[1]=1; fi
 
+# O passo 2 compila ou usa o binário baixado da release.
+if [ -n "$PREBUILT" ]; then
+  BUILD_LABEL="Usar o binário compilado da release"
+  BUILD_SUMMARY="baixado do GitHub; não precisa compilar"
+else
+  BUILD_LABEL="Compilar em modo release"
+  BUILD_SUMMARY="cargo build --release; pode levar alguns minutos"
+fi
+
 ui_init "$SCRIPT_DIR" \
   "Confirmar instalação" \
-  "Compilar em modo release" \
+  "$BUILD_LABEL" \
   "Instalar o binário em $BIN_DIR" \
   "Adicionar a função 'terra' ao Git Bash"
 
 ui_summaries \
   "" \
-  "cargo build --release; pode levar alguns minutos" \
-  "copia target/release/terra.exe e remove o antigo terraforme.exe" \
+  "$BUILD_SUMMARY" \
+  "copia o binário.exe e remove o antigo terraforme.exe" \
   "~/.bashrc e ~/.bash_profile"
 
 # O passo do terraforme antigo só aparece se ele estiver na máquina.

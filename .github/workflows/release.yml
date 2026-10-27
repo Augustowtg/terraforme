@@ -1,0 +1,94 @@
+# Compila o terra para Linux e Windows a cada tag vX.Y.Z e anexa os binários
+# à release da tag (cria a release, com as notas do CHANGELOG, se ainda não
+# existir). O install.sh baixa esses binários, sem precisar do Rust.
+# Para uma tag já publicada, rode pelo Actions com a tag no campo "tag".
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag a compilar (ex.: v0.8.17)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # O 22.04 pede uma glibc mais antiga, que roda em mais distros.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bin: terra
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: terra.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Renomeia o binário com o target
+        shell: bash
+        run: |
+          src="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          dst="terra-${{ matrix.target }}"
+          case "${{ matrix.bin }}" in *.exe) dst="$dst.exe" ;; esac
+          mkdir -p dist
+          cp "$src" "dist/$dst"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terra-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Cria a release (se faltar) e anexa os binários
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            version="${TAG#v}"
+            {
+              echo "## Instalação"
+              echo
+              echo "Linux ou Git Bash:"
+              echo
+              echo '```sh'
+              echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/$TAG/install.sh | TERRAFORME_REF=$TAG bash"
+              echo '```'
+              echo
+              echo "PowerShell (roda o instalador no Git Bash):"
+              echo
+              echo '```powershell'
+              echo "\$env:TERRAFORME_REF='$TAG'; irm https://raw.githubusercontent.com/${{ github.repository }}/$TAG/install.ps1 | iex"
+              echo '```'
+              echo
+              echo "O instalador baixa o binário compilado desta release; não precisa do Rust."
+              echo
+              awk -v v="## [$version]" 'index($0, v) == 1 { p = 1; next } /^## \[/ { p = 0 } p' CHANGELOG.md
+            } >notes.md
+            gh release create "$TAG" --verify-tag --title "terraforme-cli $TAG" --notes-file notes.md
+          fi
+          gh release upload "$TAG" dist/* --clobber
