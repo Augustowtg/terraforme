@@ -16,19 +16,27 @@ use super::*;
 /// O que o chat pediu ao provedor: texto, modo, sessão e modelo.
 type Sent = Rc<RefCell<Vec<(String, PermissionMode, Option<String>, Option<String>)>>>;
 
+/// As respostas do chat aos pedidos de permissão: id e se permitiu.
+type Responses = Rc<RefCell<Vec<(String, bool)>>>;
+
 /// Provedor de mentira: responde cada mensagem com os eventos de `reply` e
 /// guarda o que recebeu.
 struct FakeAdapter {
     available: bool,
     reply: Vec<AgentEvent>,
     sent: Sent,
+    responses: Responses,
 }
 
-struct FakeSession(Vec<AgentEvent>);
+struct FakeSession(Vec<AgentEvent>, Responses);
 
 impl Session for FakeSession {
     fn poll(&mut self) -> Vec<AgentEvent> {
         std::mem::take(&mut self.0)
+    }
+
+    fn respond(&mut self, id: &str, allow: bool) {
+        self.1.borrow_mut().push((id.to_string(), allow));
     }
 }
 
@@ -105,7 +113,10 @@ impl ChatAdapter for FakeAdapter {
             request.session_id.map(str::to_string),
             request.model.map(str::to_string),
         ));
-        Ok(Box::new(FakeSession(self.reply.clone())))
+        Ok(Box::new(FakeSession(
+            self.reply.clone(),
+            Rc::clone(&self.responses),
+        )))
     }
 }
 
@@ -118,13 +129,25 @@ fn fake_chat_with(
     reply: Vec<AgentEvent>,
     settings: &AgentSettings,
 ) -> (Chat, Sent) {
+    let (chat, sent, _) = fake_chat_responses(available, reply, settings);
+    (chat, sent)
+}
+
+fn fake_chat_responses(
+    available: bool,
+    reply: Vec<AgentEvent>,
+    settings: &AgentSettings,
+) -> (Chat, Sent, Responses) {
     let sent = Sent::default();
+    let responses = Responses::default();
     let adapter = FakeAdapter {
         available,
         reply,
         sent: Rc::clone(&sent),
+        responses: Rc::clone(&responses),
     };
-    (Chat::with_adapter(Box::new(adapter), settings), sent)
+    let chat = Chat::with_adapter(Box::new(adapter), settings);
+    (chat, sent, responses)
 }
 
 fn done(tokens: u64) -> AgentEvent {
@@ -635,9 +658,84 @@ fn agent_events_update_history_status_and_consumption() {
                 name: "Bash".into(),
                 detail: "ls".into()
             },
-            Entry::Info("1 ferramenta(s) bloqueada(s) pelo modo de permissão Agente.".into()),
+            Entry::Info("1 ferramenta(s) negada(s) no modo de permissão Agente.".into()),
         ]
     );
+}
+
+#[test]
+fn permission_requests_ask_the_user_and_answer_the_session() {
+    let request = |id: &str, detail: &str| AgentEvent::PermissionRequest {
+        id: id.into(),
+        name: "Bash".into(),
+        detail: detail.into(),
+    };
+    let reply = vec![
+        init(PermissionMode::Agente),
+        request("r1", "rm -rf build"),
+        request("r2", "ls"),
+    ];
+    let (mut chat, _, responses) = fake_chat_responses(true, reply, &AgentSettings::default());
+    chat.submit("limpa");
+    chat.tick();
+    assert_eq!(
+        chat.agent_activity.as_deref(),
+        Some("Aguardando permissão para Bash...")
+    );
+    assert_eq!(chat.help(), HELP_PERMISSION);
+    // A caixa fica acima do painel, no espaço da conversa.
+    let mut terminal = Terminal::new(TestBackend::new(60, HEIGHT + 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let panel = Rect {
+                y: area.height - HEIGHT,
+                height: HEIGHT,
+                ..area
+            };
+            chat.draw(frame, panel);
+        })
+        .unwrap();
+    let screen = format!("{:?}", terminal.backend().buffer());
+    assert!(screen.contains("rm -rf build"));
+    assert!(screen.contains("Permitir"));
+
+    // Teclas de texto não vão para o input enquanto o pedido está aberto.
+    assert!(press(&mut chat, KeyCode::Char('i')));
+    assert_eq!(chat.input.mode(), InputMode::Normal);
+    // O Tab continua com a tela principal (troca de aba).
+    assert!(!press(&mut chat, KeyCode::Tab));
+
+    press(&mut chat, KeyCode::Char('n'));
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(
+        *responses.borrow(),
+        [("r1".to_string(), false), ("r2".to_string(), true)]
+    );
+    assert_eq!(
+        chat.history.entries()[1..],
+        [
+            Entry::Info("Negado: Bash (rm -rf build).".into()),
+            Entry::Info("Permitido: Bash (ls).".into()),
+        ]
+    );
+    assert_eq!(chat.agent_activity.as_deref(), Some("Pensando..."));
+    assert!(!chat.prompts.is_open());
+}
+
+#[test]
+fn interrupting_drops_pending_permission_requests() {
+    let reply = vec![AgentEvent::PermissionRequest {
+        id: "r1".into(),
+        name: "Bash".into(),
+        detail: "ls".into(),
+    }];
+    let (mut chat, _) = fake_chat(true, reply);
+    chat.submit("oi");
+    chat.tick();
+    assert!(chat.prompts.is_open());
+    chat.cancel();
+    assert!(!chat.prompts.is_open());
 }
 
 #[test]
