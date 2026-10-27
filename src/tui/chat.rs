@@ -856,7 +856,7 @@ impl Chat {
 }
 
 /// Formata contagens de forma compacta: 950, 12.3K, 1M.
-fn compact_count(n: u64) -> String {
+pub(super) fn compact_count(n: u64) -> String {
     let (value, suffix) = match n {
         0..1_000 => return n.to_string(),
         1_000..1_000_000 => (n as f64 / 1_000.0, "K"),

@@ -89,6 +89,16 @@ pub fn confirm_no(selected: bool) -> Style {
     choice(ColorName::Red, selected)
 }
 
+/// Botão "Sem cache" do gráfico de consumo: verde, preenchido quando escolhido.
+pub fn without_cache(selected: bool) -> Style {
+    choice(ColorName::Green, selected)
+}
+
+/// Botão "Com cache" do gráfico de consumo: vermelho, preenchido quando escolhido.
+pub fn with_cache(selected: bool) -> Style {
+    choice(ColorName::Red, selected)
+}
+
 fn choice(name: ColorName, selected: bool) -> Style {
     if selected {
         button(name)
