@@ -17,6 +17,18 @@ pub struct Request<'a> {
     pub mode: PermissionMode,
     /// Sessão a continuar (o `session_id` do último [`AgentEvent::Init`]).
     pub session_id: Option<&'a str>,
+    /// Modelo escolhido na Config (um [`ModelOption::id`]); `None` usa o
+    /// padrão do provedor.
+    pub model: Option<&'a str>,
+}
+
+/// Um modelo que o provedor oferece na Config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOption {
+    /// O que vai para o provedor (ex.: `opus`).
+    pub id: String,
+    /// O que aparece na tela (ex.: `Opus`).
+    pub label: String,
 }
 
 /// Um provedor de agente para o chat.
@@ -37,6 +49,11 @@ pub trait ChatAdapter {
     /// chat começar em sincronia com ele.
     fn configured_mode(&self, _cwd: &Path) -> Option<PermissionMode> {
         None
+    }
+
+    /// Modelos que podem ser escolhidos na Config, além do padrão.
+    fn models(&self) -> Vec<ModelOption> {
+        Vec::new()
     }
 
     /// Nome do modelo para a tela (ex.: `claude-opus-5-5` → `Opus - 5.5`).

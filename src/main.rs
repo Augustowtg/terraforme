@@ -3,6 +3,7 @@ mod cli;
 mod db;
 mod files;
 mod platform;
+mod settings;
 mod theme;
 mod tui;
 

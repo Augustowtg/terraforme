@@ -3,6 +3,7 @@
 
 mod app;
 mod chat;
+mod config;
 mod widgets;
 mod workspace;
 
@@ -20,6 +21,8 @@ use crossterm::execute;
 use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::DefaultTerminal;
 
+use crate::db::Db;
+
 pub use workspace::run_workspace;
 
 /// Intervalo das animações da tela principal (spinner e cursor piscante).
@@ -27,8 +30,8 @@ const TICK: Duration = Duration::from_millis(100);
 
 /// Tela principal com a barra de abas; sai pelo botão "Sair" (`Esc`, `Enter` e
 /// confirmação) ou direto com `Ctrl+C`.
-pub fn run_app() -> Result<()> {
-    let mut app = app::App::new();
+pub fn run_app(db: Db) -> Result<()> {
+    let mut app = app::App::new(db);
     with_terminal(|terminal| {
         // Mouse para selecionar o texto do input; cursor em barra (`|`).
         execute!(stdout(), EnableMouseCapture, SetCursorStyle::SteadyBar)?;
