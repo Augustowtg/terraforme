@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.6.5] - 2026-10-27
+
+### Adicionado
+
+- Instaladores: o passo **Desinstalar o terraforme antigo**, que só aparece com o terraforme de antes do terra na máquina (o `terraforme`, o `terraforme-mcp` ou o `terraforme-pet` no `PATH` ou em `~/.local/bin`). Pergunta SIM ou NÃO (com `-y`, desinstala); com SIM, encerra o daemon e o mascote (no Windows, também o `terraforme`, porque um `.exe` aberto não pode ser apagado), remove os binários e guarda a config e os dados com o sufixo `.antigo-<data>`, em vez de apagar. O RTK, o ai-memory e o `~/.terraforme` do terra ficam.
+- `install-ui.sh`: `ui_ask_step`, um passo que pergunta SIM ou NÃO e, com SIM, roda como o `ui_step`.
+
 ## [0.6.4] - 2026-10-27
 
 ### Adicionado
