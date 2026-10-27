@@ -363,9 +363,15 @@ impl Chat {
                 menu.sync(self.catalog.as_ref());
                 self.model_menu = Some(menu);
             }
-            _ => self.history.push(Entry::Info(format!(
-                "/{name} ainda não tem interface no terra."
+            // Sem interface no terra, fica o padrão do router: o comando vai
+            // para o agente, que responde no chat.
+            _ if self.run.is_some() => self.history.push(Entry::Info(format!(
+                "Espere o agente terminar para rodar /{name}."
             ))),
+            _ => {
+                let command = format!("/{name}");
+                self.start(&command, Entry::User(command.clone()));
+            }
         }
         self.history.follow();
     }

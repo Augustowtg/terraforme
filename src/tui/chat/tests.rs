@@ -289,7 +289,7 @@ fn switching_account_starts_a_new_conversation() {
 #[test]
 fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
     let reply = vec![init(PermissionMode::Agente), done(1)];
-    let (mut chat, _) = fake_chat(true, reply);
+    let (mut chat, sent) = fake_chat(true, reply);
     chat.tick(); // chega o catálogo
     assert_eq!(chat.catalog.as_ref().map(|c| c.commands.len()), Some(5));
 
@@ -307,15 +307,26 @@ fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
         [Entry::Info("Nova conversa.".into())]
     );
 
-    // Um comando do agente que ainda não tem interface no terra.
+    // Sem interface no terra, o comando vai para o agente (o padrão do
+    // router), que responde no chat.
+    type_text(&mut chat, "/context");
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(sent.borrow().last().unwrap().0, "/context");
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::User("/context".into()))
+    );
+    // Com o agente respondendo, espera.
     type_text(&mut chat, "/context");
     press(&mut chat, KeyCode::Enter);
     assert_eq!(
         chat.history.entries().last(),
         Some(&Entry::Info(
-            "/context ainda não tem interface no terra.".into()
+            "Espere o agente terminar para rodar /context.".into()
         ))
     );
+    chat.tick();
+    assert!(chat.run.is_none());
 }
 
 #[test]

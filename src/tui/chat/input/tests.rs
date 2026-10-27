@@ -500,7 +500,7 @@ fn commands_list_shows_loading_then_items_above_input() {
     let screen = draw(&input);
     assert!(screen.contains("Comandos (2)"), "{screen}");
     assert!(screen.contains("▌ /clear"));
-    assert!(screen.contains("/context          Summarize · sem interface no terra"));
+    assert!(screen.contains("/context          Summarize · padrão do router"));
 }
 
 #[test]

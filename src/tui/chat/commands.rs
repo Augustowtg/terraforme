@@ -3,7 +3,7 @@
 //! A lista vem do agente (o catálogo do adapter: [`CommandInfo`]); a função
 //! de cada comando é uma interface do terra, implementada no chat. Comandos
 //! que o terra ainda não implementa aparecem esmaecidos e, se escolhidos,
-//! avisam no histórico.
+//! vão para o agente: a resposta é o padrão do router (o provedor).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -116,7 +116,7 @@ fn item(command: &CommandInfo, selected: bool) -> Line<'static> {
     }
     let mut description = command.description.clone();
     if !ready {
-        description = format!("{description} · sem interface no terra");
+        description = format!("{description} · padrão do router");
     }
     if selected {
         return Line::from(vec![
