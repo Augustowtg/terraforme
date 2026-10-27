@@ -54,16 +54,25 @@ impl ChatAdapter for FakeAdapter {
         _account: Option<&str>,
     ) -> Option<mpsc::Receiver<Result<Catalog, String>>> {
         let (tx, rx) = mpsc::channel();
-        let commands = ["clear", "compact"]
+        let commands = ["clear", "compact", "model"]
             .iter()
             .map(|name| agent::CommandInfo {
                 name: name.to_string(),
                 description: format!("faz {name}"),
             })
             .collect();
+        let model = |id: &str, efforts: &[&str]| agent::ModelInfo {
+            id: id.to_string(),
+            label: id.to_string(),
+            description: format!("sobre {id}"),
+            resolved: Some(format!("claude-{id}-5-5")),
+            efforts: efforts.iter().map(|e| e.to_string()).collect(),
+        };
+        let all = ["low", "medium", "high", "xhigh", "max"];
         tx.send(Ok(Catalog {
             commands,
-            ..Catalog::default()
+            models: vec![model("opus", &all), model("haiku", &[])],
+            default_model: Some("claude-opus-5-5".into()),
         }))
         .unwrap();
         Some(rx)
@@ -193,6 +202,7 @@ fn settings_choose_start_mode_and_model() {
         start_mode: StartMode::Fixed(PermissionMode::Plan),
         model: Some("haiku".into()),
         account: None,
+        effort: None,
     };
     let (mut chat, sent) = fake_chat_with(true, vec![done(1)], &settings);
     assert_eq!(chat.permission_mode, PermissionMode::Plan);
@@ -275,7 +285,7 @@ fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
     let reply = vec![init(PermissionMode::Agente), done(1)];
     let (mut chat, _) = fake_chat(true, reply);
     chat.tick(); // chega o catálogo
-    assert_eq!(chat.catalog.as_ref().map(|c| c.commands.len()), Some(2));
+    assert_eq!(chat.catalog.as_ref().map(|c| c.commands.len()), Some(3));
 
     // Uma conversa, e depois /clear.
     press(&mut chat, KeyCode::Char('i'));
@@ -299,6 +309,63 @@ fn slash_commands_come_from_the_agent_and_run_terra_interfaces() {
         Some(&Entry::Info(
             "/compact ainda não tem interface no terra.".into()
         ))
+    );
+}
+
+/// Abre o `/model` num chat com o catálogo carregado, escrevendo.
+fn chat_with_model_menu() -> (Chat, Sent) {
+    let (mut chat, sent) = fake_chat(true, vec![done(1)]);
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/model");
+    press(&mut chat, KeyCode::Enter);
+    assert!(chat.model_menu.is_some(), "/model abre o menu");
+    (chat, sent)
+}
+
+#[test]
+fn model_menu_chooses_model_and_effort_for_this_conversation() {
+    let (mut chat, sent) = chat_with_model_menu();
+    assert_eq!(chat.help(), HELP_MODEL);
+    press(&mut chat, KeyCode::Down); // 1. opus
+    press(&mut chat, KeyCode::Right); // high -> xhigh
+    press(&mut chat, KeyCode::Enter);
+    assert!(chat.model_menu.is_none());
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info(
+            "Modelo desta conversa: modelo claude-opus-5-5 · esforço muito alto.".into()
+        ))
+    );
+    assert_eq!(chat.take_default_choice(), None, "não mexe no padrão");
+
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    let sent = sent.borrow();
+    assert_eq!(sent[0].3.as_deref(), Some("opus"));
+    assert_eq!(chat.session_effort.as_deref(), Some("xhigh"));
+}
+
+#[test]
+fn model_menu_default_saves_a_new_default() {
+    let (mut chat, _) = chat_with_model_menu();
+    press(&mut chat, KeyCode::Enter); // Default -> menu do default, no opus
+    press(&mut chat, KeyCode::Down); // haiku
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(chat.take_default_choice(), Some(("haiku".into(), None)));
+    assert_eq!(chat.session_model, None, "a conversa segue o novo padrão");
+}
+
+#[test]
+fn model_menu_esc_closes_without_changes() {
+    let (mut chat, _) = chat_with_model_menu();
+    press(&mut chat, KeyCode::Esc);
+    assert!(chat.model_menu.is_none());
+    assert_eq!(chat.session_model, None);
+    assert_eq!(
+        chat.model_options().len(),
+        2,
+        "a Config vê os modelos do catálogo"
     );
 }
 

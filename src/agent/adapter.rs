@@ -24,6 +24,8 @@ pub struct Request<'a> {
     /// Conta escolhida na Config (um [`AccountOption::id`]); `None` usa a
     /// conta padrão do provedor.
     pub account: Option<&'a str>,
+    /// Nível de esforço (um dos [`ModelInfo::efforts`]); `None` usa o padrão.
+    pub effort: Option<&'a str>,
 }
 
 /// Uma conta do provedor que pode ser escolhida na Config.

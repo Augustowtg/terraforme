@@ -35,15 +35,6 @@ pub struct Choices {
     pub models: Vec<ModelOption>,
 }
 
-impl Choices {
-    pub fn of(adapter: Option<&dyn ChatAdapter>) -> Self {
-        adapter.map_or_else(Self::default, |a| Self {
-            accounts: a.accounts(),
-            models: a.models(),
-        })
-    }
-}
-
 /// O que a Config fez com uma tecla.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -89,8 +80,8 @@ impl ConfigView {
         area: Rect,
         settings: &AgentSettings,
         adapter: Option<&dyn ChatAdapter>,
+        choices: &Choices,
     ) {
-        let choices = Choices::of(adapter);
         let provider = match adapter {
             Some(a) if a.is_available() => Span::styled(
                 format!("{} · disponível", a.name()),
@@ -105,7 +96,7 @@ impl ConfigView {
             info_row("Provedor", provider),
         ];
         for (i, field) in FIELDS.into_iter().enumerate() {
-            let value = value_label(field, settings, &choices);
+            let value = value_label(field, settings, choices);
             lines.push(field_row(field_label(field), value, i == self.focus));
         }
         frame.render_widget(
@@ -336,10 +327,11 @@ mod tests {
             start_mode: StartMode::Provider,
             model: Some("haiku".into()),
             account: None,
+            effort: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(50, 7)).unwrap();
         terminal
-            .draw(|frame| view.draw(frame, frame.area(), &settings, None))
+            .draw(|frame| view.draw(frame, frame.area(), &settings, None, &Choices::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let row = |y: u16| {

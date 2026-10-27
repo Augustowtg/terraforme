@@ -8,6 +8,7 @@ use crate::db::Db;
 const START_MODE: &str = "agent.start_mode";
 const MODEL: &str = "agent.model";
 const ACCOUNT: &str = "agent.account";
+const EFFORT: &str = "agent.effort";
 const PROVIDER: &str = "provider";
 
 /// Modo de permissão com que o chat começa.
@@ -59,6 +60,8 @@ pub struct AgentSettings {
     pub model: Option<String>,
     /// Conta escolhida (um id das contas do provedor); `None` é a Default.
     pub account: Option<String>,
+    /// Esforço padrão (escolhido no `/model`); `None` é o do provedor.
+    pub effort: Option<String>,
 }
 
 impl AgentSettings {
@@ -71,6 +74,7 @@ impl AgentSettings {
                 .unwrap_or_default(),
             model: get(MODEL),
             account: get(ACCOUNT),
+            effort: get(EFFORT),
         }
     }
 
@@ -78,6 +82,7 @@ impl AgentSettings {
         db.set_setting(START_MODE, Some(self.start_mode.key()))?;
         db.set_setting(MODEL, self.model.as_deref())?;
         db.set_setting(ACCOUNT, self.account.as_deref())?;
+        db.set_setting(EFFORT, self.effort.as_deref())?;
         Ok(())
     }
 }
@@ -100,6 +105,7 @@ mod tests {
                 start_mode,
                 model: Some("haiku".into()),
                 account: Some(".claude-trabalho".into()),
+                effort: Some("max".into()),
             };
             settings.save(&db).unwrap();
             assert_eq!(AgentSettings::load(&db), settings);
