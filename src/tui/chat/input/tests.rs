@@ -83,6 +83,20 @@ fn insert_mode_edits_buffer_and_esc_returns_to_normal() {
 }
 
 #[test]
+fn uppercase_i_also_enters_insert_mode() {
+    // Com Shift ou Caps Lock, o terminal manda `I` (com ou sem o Shift).
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+        let mut input = InputBox::default();
+        let key = KeyEvent::new(KeyCode::Char('I'), modifiers);
+        assert_eq!(input.handle_key(key), Outcome::Handled);
+        assert_eq!(input.mode(), InputMode::Insert);
+        // Já escrevendo, o `I` é texto.
+        input.handle_key(key);
+        assert_eq!(input.text(), "I");
+    }
+}
+
+#[test]
 fn enter_submits_and_clear_empties() {
     let mut input = InputBox::default();
     press(&mut input, KeyCode::Char('i'));

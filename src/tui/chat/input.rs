@@ -182,7 +182,8 @@ impl InputBox {
 
     fn handle_normal(&mut self, key: KeyEvent) -> Outcome {
         match key.code {
-            KeyCode::Char('i') => {}
+            // Com Caps Lock ou Shift, o `i` chega maiúsculo.
+            KeyCode::Char('i' | 'I') => {}
             KeyCode::Char('a') => self.move_to(self.cursor + 1),
             _ => return Outcome::Ignored,
         }

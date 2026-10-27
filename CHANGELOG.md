@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.11] - 2026-10-27
+
+### Corrigido
+
+- O input aceita o `I` maiúsculo (Caps Lock ou Shift) para entrar no modo de escrita, como o `i`.
+
 ## [0.4.10] - 2026-10-27
 
 ### Adicionado
