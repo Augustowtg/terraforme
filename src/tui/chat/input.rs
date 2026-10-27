@@ -1,7 +1,7 @@
 //! Caixa de input do chat: edição estilo Vim (NORMAL/INSERT), cursor em barra
 //! piscando, sobrescrever com a tecla Insert, seleção com o mouse, várias
-//! linhas (Shift+Enter, Alt+Enter, Ctrl+J ou `\` + Enter) e menções de
-//! arquivo com `@` ([`super::mention`]).
+//! linhas (Shift+Enter, Alt+Enter, Ctrl+J ou `\` + Enter), menções de
+//! arquivo com `@` ([`super::mention`]) e as mensagens já enviadas com ↑/↓.
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use unicode_width::UnicodeWidthChar;
 
 use super::commands;
-use super::mention::{self, Picker};
+use super::mention::{self, Mention, Picker};
 use crate::agent::CommandInfo;
 use crate::files::{FileEntry, FileIndex};
 use crate::theme::{self, Variant};
@@ -76,8 +76,9 @@ pub struct InputBox {
     cursor_visible: bool,
     /// Ticks desde a última troca do cursor piscante.
     blink_ticks: u32,
-    /// Caminhos das menções; no texto, cada uma é um [`mention::token`].
-    mentions: Vec<String>,
+    /// As menções (arquivos e skills); no texto, cada uma é um
+    /// [`mention::token`].
+    mentions: Vec<Mention>,
     /// Lista de arquivos aberta pelo `@`.
     picker: Option<Picker>,
     /// Arquivos do diretório, observados a partir do primeiro `@`.
@@ -86,6 +87,18 @@ pub struct InputBox {
     command_picker: Option<Picker>,
     /// Comandos do agente; `None` enquanto carregam.
     commands: Option<Vec<CommandInfo>>,
+    /// Mensagens enviadas nesta execução, a mais antiga primeiro.
+    sent: Vec<Draft>,
+    /// A mensagem enviada mostrada com ↑/↓ e o texto que estava sendo
+    /// escrito antes, para voltar a ele.
+    browsing: Option<(usize, Draft)>,
+}
+
+/// O texto da caixa com as menções dele.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Draft {
+    buffer: String,
+    mentions: Vec<Mention>,
 }
 
 impl Default for InputBox {
@@ -106,6 +119,8 @@ impl Default for InputBox {
             files: None,
             command_picker: None,
             commands: None,
+            sent: Vec::new(),
+            browsing: None,
         }
     }
 }
@@ -115,19 +130,29 @@ impl InputBox {
         self.mode
     }
 
-    /// O texto para enviar: cada menção vira `@caminho`.
+    /// O texto para enviar: cada menção vira `@caminho` (ou `/skill`).
     pub fn text(&self) -> String {
         self.buffer
             .chars()
             .map(|c| match self.mention(c) {
-                Some(path) => mention::prompt_text(path),
+                Some(mention) => mention::prompt_text(mention),
                 None => c.to_string(),
             })
             .collect()
     }
 
+    /// Guarda o texto da caixa entre as mensagens enviadas, para voltar a
+    /// ele com ↑ (sem repetir a última).
+    pub fn remember(&mut self) {
+        let draft = self.draft();
+        if !draft.buffer.trim().is_empty() && self.sent.last() != Some(&draft) {
+            self.sent.push(draft);
+        }
+    }
+
     /// Esvazia a caixa (depois de enviar), sem sair do modo atual.
     pub fn clear(&mut self) {
+        self.browsing = None;
         self.buffer.clear();
         self.cursor = 0;
         self.anchor = None;
@@ -156,15 +181,15 @@ impl InputBox {
         self.files = Some(files);
     }
 
-    /// O caminho da menção, se `c` for o token de uma.
-    fn mention(&self, c: char) -> Option<&String> {
+    /// A menção, se `c` for o token de uma.
+    fn mention(&self, c: char) -> Option<&Mention> {
         mention::token_index(c).and_then(|i| self.mentions.get(i))
     }
 
     /// Colunas que `c` ocupa na tela (um badge ocupa o caminho inteiro).
     fn width_of(&self, c: char) -> usize {
         match self.mention(c) {
-            Some(path) => mention::badge_width(path),
+            Some(mention) => mention::badge_width(mention),
             None => c.width().unwrap_or(0),
         }
     }
@@ -182,7 +207,8 @@ impl InputBox {
 
     fn handle_normal(&mut self, key: KeyEvent) -> Outcome {
         match key.code {
-            KeyCode::Char('i') => {}
+            // Com Caps Lock ou Shift, o `i` chega maiúsculo.
+            KeyCode::Char('i' | 'I') => {}
             KeyCode::Char('a') => self.move_to(self.cursor + 1),
             _ => return Outcome::Ignored,
         }
@@ -253,6 +279,8 @@ impl InputBox {
                     self.buffer.remove(at);
                 }
             }
+            KeyCode::Up => self.up(),
+            KeyCode::Down => self.down(),
             KeyCode::Left => self.move_to(self.cursor.saturating_sub(1)),
             KeyCode::Right => self.move_to(self.cursor + 1),
             KeyCode::Home => self.move_to(0),
@@ -269,9 +297,93 @@ impl InputBox {
             KeyCode::Enter => outcome = Outcome::Submit,
             _ => {}
         }
+        if edited {
+            // O texto mudou: ele passa a ser o que está sendo escrito.
+            self.browsing = None;
+        }
         self.refresh_picker(edited);
         self.show_cursor();
         outcome
+    }
+
+    /// ↑: sobe uma linha do texto; na primeira, mostra a mensagem enviada
+    /// anterior.
+    fn up(&mut self) {
+        let (line, column) = self.line_and_column();
+        if line > 0 {
+            self.move_to_line(line - 1, column);
+            return;
+        }
+        let index = match &self.browsing {
+            Some((0, _)) => return,
+            Some((index, _)) => index - 1,
+            None if self.sent.is_empty() => return,
+            None => self.sent.len() - 1,
+        };
+        let draft = match self.browsing.take() {
+            Some((_, draft)) => draft,
+            None => self.draft(),
+        };
+        self.load(self.sent[index].clone());
+        self.browsing = Some((index, draft));
+    }
+
+    /// ↓: desce uma linha do texto; na última, mostra a mensagem enviada
+    /// seguinte e, depois da mais nova, o texto que estava sendo escrito.
+    fn down(&mut self) {
+        let (line, column) = self.line_and_column();
+        if line + 1 < self.buffer.split('\n').count() {
+            self.move_to_line(line + 1, column);
+            return;
+        }
+        let Some((index, draft)) = self.browsing.take() else {
+            return;
+        };
+        match self.sent.get(index + 1) {
+            Some(next) => {
+                self.load(next.clone());
+                self.browsing = Some((index + 1, draft));
+            }
+            None => self.load(draft),
+        }
+    }
+
+    fn draft(&self) -> Draft {
+        Draft {
+            buffer: self.buffer.clone(),
+            mentions: self.mentions.clone(),
+        }
+    }
+
+    /// Põe `draft` na caixa, com o cursor no fim.
+    fn load(&mut self, draft: Draft) {
+        self.buffer = draft.buffer;
+        self.mentions = draft.mentions;
+        self.picker = None;
+        self.command_picker = None;
+        self.move_to(self.len());
+    }
+
+    /// Linha do cursor e a coluna dele nela, em caracteres.
+    fn line_and_column(&self) -> (usize, usize) {
+        let before: Vec<char> = self.buffer.chars().take(self.cursor).collect();
+        let line = before.iter().filter(|&&c| c == '\n').count();
+        let column = before.iter().rev().take_while(|&&c| c != '\n').count();
+        (line, column)
+    }
+
+    /// Leva o cursor à `column` da linha `line` (ou ao fim dela, se for mais
+    /// curta).
+    fn move_to_line(&mut self, line: usize, column: usize) {
+        let mut start = 0;
+        for (i, text) in self.buffer.split('\n').enumerate() {
+            let len = text.chars().count();
+            if i == line {
+                self.move_to(start + column.min(len));
+                return;
+            }
+            start += len + 1;
+        }
     }
 
     /// Teclas da lista de arquivos, enquanto ela está aberta: ↑/↓ (ou
@@ -298,7 +410,9 @@ impl InputBox {
     }
 
     /// Teclas da lista de comandos, como as da lista de arquivos; Tab/Enter
-    /// tiram a `/consulta` do texto e devolvem o comando para o chat.
+    /// tiram a `/consulta` do texto e devolvem o comando para o chat. Num
+    /// comando do padrão do router, o Tab completa o texto (`/config `) para
+    /// receber argumentos, e o Enter roda ele sem argumentos.
     fn handle_command_picker(&mut self, key: KeyEvent) -> Option<Outcome> {
         let mut picker = self.command_picker?;
         let found = self.found_commands();
@@ -313,6 +427,13 @@ impl InputBox {
                 if key.modifiers.is_empty() || key.code == KeyCode::Tab =>
             {
                 let chosen = found.and_then(|f| f.into_iter().nth(picker.selected));
+                let complete = key.code == KeyCode::Tab
+                    && chosen
+                        .as_ref()
+                        .is_some_and(|c| !c.skill && !commands::has_interface(&c.name));
+                if complete {
+                    return Some(self.complete_command(chosen));
+                }
                 return Some(self.accept_command(chosen));
             }
             KeyCode::Esc => self.command_picker = None,
@@ -337,7 +458,9 @@ impl InputBox {
         )
     }
 
-    /// Tira a `/consulta` do texto e devolve o comando. Sem item, só fecha.
+    /// Tira a `/consulta` do texto e devolve o comando; uma skill vira um
+    /// badge (e um espaço), como o `@`, para escrever o pedido depois dela.
+    /// Sem item, só fecha.
     fn accept_command(&mut self, command: Option<CommandInfo>) -> Outcome {
         let Some(picker) = self.command_picker.take() else {
             return Outcome::Handled;
@@ -346,10 +469,35 @@ impl InputBox {
             return Outcome::Handled;
         };
         let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
+        if command.skill {
+            let token = mention::token(self.mentions.len());
+            self.mentions.push(Mention::Skill(command.name));
+            self.buffer.replace_range(bytes, &format!("{token} "));
+            self.cursor = picker.start + 2;
+            self.anchor = None;
+            return Outcome::Handled;
+        }
         self.buffer.replace_range(bytes, "");
         self.cursor = picker.start;
         self.anchor = None;
         Outcome::Command(command.name)
+    }
+
+    /// Troca a `/consulta` pelo nome do comando e um espaço, para escrever os
+    /// argumentos (ex.: `/config model=opus`). Sem item, só fecha.
+    fn complete_command(&mut self, command: Option<CommandInfo>) -> Outcome {
+        let Some(picker) = self.command_picker.take() else {
+            return Outcome::Handled;
+        };
+        let Some(command) = command else {
+            return Outcome::Handled;
+        };
+        let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
+        let text = format!("/{} ", command.name);
+        self.buffer.replace_range(bytes, &text);
+        self.cursor = picker.start + text.chars().count();
+        self.anchor = None;
+        Outcome::Handled
     }
 
     /// Abre a lista com o `@` na posição `start`. Os arquivos começam a ser
@@ -433,7 +581,7 @@ impl InputBox {
         };
         let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
         let token = mention::token(self.mentions.len());
-        self.mentions.push(entry.path.clone());
+        self.mentions.push(Mention::File(entry.path.clone()));
         self.buffer.replace_range(bytes, &format!("{token} "));
         self.cursor = picker.start + 2;
         self.anchor = None;
@@ -666,9 +814,9 @@ impl InputBox {
             .skip(row.start)
         {
             let selected = selection.contains(&i);
-            if let Some(path) = self.mention(c) {
+            if let Some(mention) = self.mention(c) {
                 push_run(&mut spans, &mut run, run_selected);
-                spans.push(mention::badge_span(path, selected));
+                spans.push(mention::badge_span(mention, selected));
                 continue;
             }
             if selected != run_selected {

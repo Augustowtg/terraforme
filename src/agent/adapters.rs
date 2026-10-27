@@ -13,9 +13,12 @@ pub fn all() -> Vec<Box<dyn ChatAdapter>> {
 }
 
 /// O primeiro provedor disponível; sem nenhum, o primeiro da lista (o chat
-/// mostra Desconectado com a dica de instalação dele).
+/// mostra Desconectado com a dica de instalação dele). Protegido pela
+/// [`guard`](super::guard): um provedor quebrado não impede o terra de abrir.
 pub fn default() -> Box<dyn ChatAdapter> {
-    let mut adapters = all();
-    let index = adapters.iter().position(|a| a.is_available()).unwrap_or(0);
-    adapters.swap_remove(index)
+    super::guard::guarded(|| {
+        let mut adapters = all();
+        let index = adapters.iter().position(|a| a.is_available()).unwrap_or(0);
+        adapters.swap_remove(index)
+    })
 }

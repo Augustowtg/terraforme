@@ -9,6 +9,9 @@
 //! As linhas são quebradas aqui (e não pelo `Paragraph`) para o mouse saber
 //! exatamente qual caractere está em cada célula.
 
+mod code;
+mod markdown;
+
 use std::cell::{Cell, RefCell};
 
 use ratatui::Frame;
@@ -109,7 +112,6 @@ impl History {
         }
     }
 
-    #[cfg(test)]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
@@ -332,6 +334,10 @@ impl History {
             // ferramenta.
             if !rows.is_empty() && !matches!(entry, Entry::ToolResult { .. }) {
                 rows.push(Row::default());
+            }
+            if let Entry::Assistant(text) = entry {
+                rows.extend(markdown::layout(text.trim(), width, Some(i)));
+                continue;
             }
             for (prefix, body) in logical_lines(entry) {
                 rows.extend(wrap(prefix, body, width, Some(i)));

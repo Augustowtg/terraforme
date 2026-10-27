@@ -2,8 +2,11 @@
 //! Agent SDK: o `claude` responde em ~1 s com o que tem, sem chamar a API
 //! (não gasta tokens).
 //!
-//! Só entram os comandos embutidos do Claude Code (`builtin`); os de plugins
-//! e skills ficam de fora, porque o chat roda o `claude` sem eles.
+//! Entram todos os comandos que o `claude` informa (os embutidos, as skills
+//! e os plugins) e os do modo interativo que o `-p` não informa
+//! ([`interactive::COMMANDS`], ex.: `/help`, `/status`), para a lista da `/`
+//! mostrar todos os comandos do Claude, menos os de pagamento e plano
+//! ([`interactive::BILLING`]).
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -13,7 +16,7 @@ use std::thread;
 
 use serde_json::Value;
 
-use super::{command, text};
+use super::{command, interactive, text};
 use crate::agent::{Catalog, CommandInfo, ModelInfo};
 
 const REQUEST_ID: &str = "terra-catalog";
@@ -78,15 +81,26 @@ fn fetch(bin: PathBuf, config_dir: Option<PathBuf>) -> Result<Catalog, String> {
 /// Lê a resposta do `initialize`.
 fn parse(response: &Value) -> Catalog {
     let list = |key: &str| response[key].as_array().cloned().unwrap_or_default();
-    let commands = list("commands")
+    let mut commands: Vec<CommandInfo> = list("commands")
         .iter()
-        .filter(|c| c["builtin"] == true)
         .map(|c| CommandInfo {
             name: text(&c["name"]),
             description: text(&c["description"]),
+            skill: c["builtin"] != true,
         })
         .filter(|c| !c.name.is_empty() && !c.name.starts_with("__"))
+        .filter(|c| !interactive::BILLING.contains(&c.name.as_str()))
         .collect();
+    // Os do modo interativo, quando o `claude` não informou (o dele vence).
+    for (name, description) in interactive::COMMANDS {
+        if !commands.iter().any(|c| c.name == *name) {
+            commands.push(CommandInfo {
+                name: name.to_string(),
+                description: description.to_string(),
+                skill: false,
+            });
+        }
+    }
 
     let models: Vec<Value> = list("models");
     let default_model = models
@@ -123,7 +137,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_builtin_commands_and_models() {
+    fn parses_all_commands_and_models() {
         let response: Value = serde_json::from_str(
             r#"{
             "commands": [
@@ -141,13 +155,17 @@ mod tests {
         )
         .unwrap();
         let catalog = parse(&response);
-        assert_eq!(
-            catalog.commands,
-            [CommandInfo {
-                name: "model".into(),
-                description: "Set the AI model".into()
-            }]
-        );
+        let names: Vec<_> = catalog.commands.iter().map(|c| c.name.as_str()).collect();
+        // Os do `claude` primeiro (embutidos e skills; os internos `__` não),
+        // depois os do modo interativo.
+        assert_eq!(names[..2], ["model", "graphify"]);
+        assert!(!catalog.commands[0].skill);
+        assert!(catalog.commands[1].skill);
+        assert!(!names.contains(&"__remote-workflow"));
+        for name in ["help", "status", "resume", "login", "logout", "permissions"] {
+            assert!(names.contains(&name), "/{name}");
+        }
+        assert_eq!(names.len(), 2 + interactive::COMMANDS.len());
         assert_eq!(catalog.default_model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(
             catalog.models.len(),

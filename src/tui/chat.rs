@@ -17,24 +17,30 @@ mod model_menu;
 mod tests;
 
 use std::borrow::Cow;
+use std::process::Command;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use jiff::tz::TimeZone;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Gauge, Paragraph};
 
 use self::history::{Entry, History};
 use self::input::{InputBox, InputMode, Outcome};
 use self::mode::{AgentStatus, mode_variant};
 use self::model_menu::{ModelMenu, Target, effort_label};
+use super::usage;
 use super::widgets::badge;
 use crate::agent::{
-    self, AgentEvent, Catalog, ChatAdapter, PermissionMode, ReportedMode, Request, Session,
+    self, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, PermissionMode,
+    ReportedMode, Request, Session, UsageWindow,
 };
+use crate::extension::Contribution;
+use crate::mcp;
 use crate::platform::clipboard;
-use crate::settings::{AgentSettings, StartMode};
+use crate::settings::{AgentSettings, ContextSettings, StartMode, UsageSettings};
 use crate::theme::{self, Variant};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -46,6 +52,14 @@ const PAGE_LINES: usize = 10;
 const WHEEL_LINES: usize = 3;
 /// Ticks que o aviso "Copiado" fica no rodapé (~2 s).
 const NOTICE_TICKS: u32 = 20;
+/// Limite de contexto enquanto o agente não informa o do modelo.
+const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+/// Largura da barra de contexto, com as bordas.
+const CONTEXT_WIDTH: u16 = 26;
+/// Texto da barra de contexto quando ele chega no ponto de compactar.
+/// Largura da barra de consumo, ao lado da de contexto.
+const USAGE_WIDTH: u16 = 24;
+const COMPACT_HINT: &str = "Compacte a conversa";
 
 const HELP_NORMAL: &str =
     "i escrever · Shift+Tab modo · PgUp/PgDn rolar · Tab trocar aba · Esc ir para Sair";
@@ -70,12 +84,24 @@ pub struct Chat {
     session_effort: Option<String>,
     /// Menu do `/model`, quando aberto.
     model_menu: Option<ModelMenu>,
+    /// Comando do `/login`, para a tela principal rodar fora da tela.
+    pending_login: Option<Command>,
+    /// A interface original do provedor com um comando que só existe nela
+    /// (ex.: `/hooks`), para a tela principal rodar fora da tela.
+    pending_original: Option<(Command, String)>,
+    /// O `/usage` pediu a aba Consumo, para a tela principal abrir.
+    open_usage: bool,
     /// Novo modelo padrão escolhido no `/model`, para a tela principal salvar.
     default_choice: Option<(String, Option<String>)>,
     /// Conta escolhida na Config (`None` é a Default do provedor).
     account: Option<String>,
+    /// O que as extensões ativas no workspace acrescentam ao agente.
+    extensions: Contribution,
     /// Sessão do agente, para continuar a conversa.
     session_id: Option<String>,
+    /// A delegação ([`mcp::ChatRequest::id`]) de um chat aberto por um
+    /// agente pelo orquestrador.
+    delegation: Option<u64>,
     /// Resposta em andamento.
     run: Option<Box<dyn Session>>,
     /// Modo pedido ao agente na resposta em andamento.
@@ -92,6 +118,22 @@ pub struct Chat {
     permission_mode: PermissionMode,
     spinner_frame: usize,
     tokens_used: u64,
+    /// Os tokens de cache gastos neste chat.
+    cache_tokens_used: u64,
+    /// Tamanho do contexto da sessão, depois da primeira chamada ao modelo.
+    context: Option<u64>,
+    /// Limite de contexto do modelo, quando o agente informa.
+    context_window: Option<u64>,
+    /// Display da barra, auto compactação e ponto de compactar (Config).
+    context_settings: ContextSettings,
+    /// Display da barra de consumo (Config).
+    usage_settings: UsageSettings,
+    /// O consumo da sessão (as 5 horas), quando o provedor informa.
+    session_usage: Option<UsageWindow>,
+    /// A resposta em andamento é a de uma mensagem do usuário que ainda pode
+    /// ser auto compactada: a auto compactação roda no máximo uma vez por
+    /// mensagem enviada (nunca no fim de um `/compact`, mesmo se ele falhou).
+    auto_compact_armed: bool,
     /// Comandos e modelos do agente, depois de carregados.
     catalog: Option<Catalog>,
     /// Carregamento do catálogo em andamento.
@@ -110,9 +152,14 @@ impl Default for Chat {
             session_model: None,
             session_effort: None,
             model_menu: None,
+            pending_login: None,
+            pending_original: None,
+            open_usage: false,
             default_choice: None,
             account: None,
+            extensions: Contribution::default(),
             session_id: None,
+            delegation: None,
             run: None,
             requested_mode: None,
             agent_mode: None,
@@ -124,6 +171,13 @@ impl Default for Chat {
             permission_mode: PermissionMode::default(),
             spinner_frame: 0,
             tokens_used: 0,
+            cache_tokens_used: 0,
+            context: None,
+            context_window: None,
+            context_settings: ContextSettings::default(),
+            usage_settings: UsageSettings::default(),
+            session_usage: None,
+            auto_compact_armed: false,
             catalog: None,
             catalog_loading: None,
         }
@@ -171,6 +225,7 @@ impl Chat {
             self.session_id = None;
             self.agent_mode = None;
             self.model = None;
+            self.context = None;
             let label = self.account_label();
             self.history.push(Entry::Info(format!(
                 "Conta: {label}. A próxima mensagem começa uma conversa nova."
@@ -184,10 +239,17 @@ impl Chat {
         }
         self.chosen_model = settings.model.clone();
         self.default_effort = settings.effort.clone();
+        self.context_settings = settings.context;
+        self.usage_settings = settings.usage;
+    }
+
+    /// O consumo da sessão (as 5 horas) para a barra de consumo.
+    pub fn set_session_usage(&mut self, window: Option<UsageWindow>) {
+        self.session_usage = window;
     }
 
     /// Nome da conta escolhida, como o provedor a mostra.
-    fn account_label(&self) -> String {
+    pub fn account_label(&self) -> String {
         let accounts = self
             .adapter
             .as_ref()
@@ -206,6 +268,34 @@ impl Chat {
             )
     }
 
+    /// Começa no modo `start` (ex.: o dos chats abertos pelo orquestrador),
+    /// no lugar do modo inicial da Config.
+    pub fn set_start_mode(&mut self, start: StartMode) {
+        self.permission_mode = self.start_mode(start);
+    }
+
+    /// Marca o chat como delegado (`id` é a delegação no orquestrador): os
+    /// pedidos de permissão do agente vão para quem delegou.
+    pub fn set_delegation(&mut self, id: u64) {
+        self.delegation = Some(id);
+    }
+
+    pub fn delegation(&self) -> Option<u64> {
+        self.delegation
+    }
+
+    /// A última resposta do agente, para voltar a quem delegou.
+    pub fn last_reply(&self) -> Option<String> {
+        self.history
+            .entries()
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::Assistant(text) => Some(text.clone()),
+                _ => None,
+            })
+    }
+
     /// O modo de um modo inicial. "Do provedor" segue a configuração dele,
     /// para os dois estarem em sincronia desde o início; o Yolo nunca vem do
     /// provedor, então lá o padrão é Agente.
@@ -222,6 +312,36 @@ impl Chat {
     }
 
     /// O provedor do chat, para a Config mostrar e oferecer as opções dele.
+    /// As extensões ativas mudaram: valem a partir da próxima mensagem.
+    pub fn set_extensions(&mut self, extensions: Contribution) {
+        self.extensions = extensions;
+    }
+
+    /// O que as extensões ativas acrescentam ao agente.
+    /// Há uma conversa com o agente (o MCP mostra a sessão ativa).
+    /// Os tokens gastos neste chat (entrada e saída, sem os de cache).
+    pub fn tokens_used(&self) -> u64 {
+        self.tokens_used
+    }
+
+    /// Os tokens de cache gastos neste chat (criação e leitura).
+    pub fn cache_tokens_used(&self) -> u64 {
+        self.cache_tokens_used
+    }
+
+    /// O agente está respondendo.
+    pub fn is_busy(&self) -> bool {
+        self.run.is_some()
+    }
+
+    pub fn has_session(&self) -> bool {
+        self.session_id.is_some()
+    }
+
+    pub fn extensions(&self) -> &Contribution {
+        &self.extensions
+    }
+
     pub fn adapter(&self) -> Option<&dyn ChatAdapter> {
         self.adapter.as_deref()
     }
@@ -306,7 +426,8 @@ impl Chat {
             Ok(Err(_)) | Err(TryRecvError::Disconnected) => Catalog::default(),
         };
         self.catalog_loading = None;
-        self.input.set_commands(Some(catalog.commands.clone()));
+        self.input
+            .set_commands(Some(commands::with_terra(catalog.commands.clone())));
         self.catalog = Some(catalog);
         if let Some(menu) = &mut self.model_menu {
             menu.sync(self.catalog.as_ref());
@@ -318,6 +439,10 @@ impl Chat {
     fn run_command(&mut self, name: &str) {
         match name {
             "clear" => self.clear_conversation(),
+            "compact" => self.compact(),
+            "login" => self.start_login(),
+            // O consumo é a aba Consumo do terra.
+            "usage" => self.open_usage = true,
             "model" => {
                 // O Default do menu é o modelo padrão salvo ou o do agente.
                 let default = self
@@ -329,11 +454,152 @@ impl Chat {
                 menu.sync(self.catalog.as_ref());
                 self.model_menu = Some(menu);
             }
-            _ => self.history.push(Entry::Info(format!(
-                "/{name} ainda não tem interface no terra."
+            // Sem interface no terra, fica o padrão do router: o comando vai
+            // para o agente, que responde no chat.
+            _ if self.run.is_some() => self.history.push(Entry::Info(format!(
+                "Espere o agente terminar para rodar /{name}."
+            ))),
+            _ => {
+                let command = format!("/{name}");
+                if !self.route_to_provider(&command) {
+                    self.start(&command, Entry::User(command.clone()));
+                }
+            }
+        }
+        self.history.follow();
+    }
+
+    /// O comando `command` (com a `/` e os argumentos) que só existe na
+    /// interface original abre nela, na sessão do chat; um de pagamento ou
+    /// plano não roda. Retorna se o comando foi tratado aqui.
+    fn route_to_provider(&mut self, command: &str) -> bool {
+        let name = command
+            .trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .unwrap_or_default();
+        let Some(adapter) = self.available_adapter() else {
+            return false;
+        };
+        match adapter.command_route(name) {
+            CommandRoute::Agent => false,
+            CommandRoute::Blocked => {
+                self.history.push(Entry::Info(format!(
+                    "O terra não roda /{name}: pagamento e plano ficam no {}.",
+                    adapter.name()
+                )));
+                true
+            }
+            CommandRoute::Original => {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                let options = Interactive {
+                    account: self.account.as_deref(),
+                    model: self
+                        .session_model
+                        .as_deref()
+                        .or(self.chosen_model.as_deref()),
+                    effort: self
+                        .session_effort
+                        .as_deref()
+                        .or(self.default_effort.as_deref()),
+                    mode: Some(self.permission_mode),
+                    extensions: Some(&self.extensions),
+                    session_id: self.session_id.as_deref(),
+                    command: Some(command),
+                };
+                match adapter.interactive(&cwd, options) {
+                    Some(cmd) => self.pending_original = Some((cmd, command.to_string())),
+                    None => self.history.push(Entry::Info(format!(
+                        "{} não tem uma interface original para {command}.",
+                        adapter.name()
+                    ))),
+                }
+                true
+            }
+        }
+    }
+
+    /// A interface original pedida por um comando e o comando, para a tela
+    /// principal rodar fora da tela.
+    pub fn take_original(&mut self) -> Option<(Command, String)> {
+        self.pending_original.take()
+    }
+
+    /// Volta da interface original: avisa no histórico e recarrega os
+    /// comandos (ex.: um `/plugin` pode ter instalado skills).
+    pub fn finish_original(&mut self, command: &str, result: Result<(), String>) {
+        match result {
+            Ok(()) => self.history.push(Entry::Info(format!(
+                "{command} rodou na interface original."
+            ))),
+            Err(reason) => self
+                .history
+                .push(Entry::Error(format!("{command} não rodou: {reason}"))),
+        }
+        self.load_catalog();
+        self.history.follow();
+    }
+
+    /// O `/login`: pede à tela principal para rodar o login do provedor na
+    /// conta escolhida (ele é interativo, fora da tela do terra).
+    fn start_login(&mut self) {
+        let login = self
+            .available_adapter()
+            .and_then(|adapter| adapter.login(self.account.as_deref()));
+        match login {
+            Some(command) => self.pending_login = Some(command),
+            None => self.history.push(Entry::Info(
+                "Este provedor não tem login pelo terra.".to_string(),
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn open_usage_for_test(&mut self) {
+        self.open_usage = true;
+    }
+
+    /// O `/usage` pediu a aba Consumo desde a última chamada.
+    pub fn take_open_usage(&mut self) -> bool {
+        std::mem::take(&mut self.open_usage)
+    }
+
+    /// O comando de login pedido pelo `/login` e o nome da conta, para a
+    /// tela principal rodar.
+    pub fn take_login(&mut self) -> Option<(Command, String)> {
+        let login = self.pending_login.take()?;
+        Some((login, self.account_label()))
+    }
+
+    /// Volta do login: avisa no histórico e recarrega os comandos e modelos
+    /// (que dependem do login).
+    pub fn finish_login(&mut self, result: Result<(), String>) {
+        let label = self.account_label();
+        match result {
+            Ok(()) => {
+                self.history
+                    .push(Entry::Info(format!("Login feito na conta {label}.")));
+                self.load_catalog();
+            }
+            Err(reason) => self.history.push(Entry::Error(format!(
+                "O login na conta {label} não terminou: {reason}"
             ))),
         }
         self.history.follow();
+    }
+
+    /// Um erro de autenticação do agente: sugere o `/login`.
+    fn hint_login(&mut self, message: &str) {
+        let lower = message.to_lowercase();
+        let auth = ["authenticate", "oauth", "log in again"]
+            .iter()
+            .any(|word| lower.contains(word));
+        if auth {
+            let label = self.account_label();
+            self.history.push(Entry::Info(format!(
+                "Use /login para entrar de novo na conta {label}."
+            )));
+        }
     }
 
     /// Aplica a escolha do menu do `/model`.
@@ -367,7 +633,7 @@ impl Chat {
             }
             Target::Default => {
                 self.history.push(Entry::Info(format!(
-                    "Modelo default: {label}{effort_text} (salvo na Config)."
+                    "Modelo default: {label}{effort_text} (salvo nas Configurações)."
                 )));
                 // A conversa passa a usar o novo padrão.
                 self.session_model = None;
@@ -447,8 +713,29 @@ impl Chat {
         if self.agent_status != AgentStatus::Desconectado {
             self.agent_status = AgentStatus::Ocioso;
         }
+        self.context = None;
         self.history = History::default();
         self.history.push(Entry::Info("Nova conversa.".to_string()));
+    }
+
+    /// `/compact`: pede ao agente para resumir a conversa, liberando o
+    /// contexto.
+    fn compact(&mut self) {
+        if self.session_id.is_none() {
+            self.history.push(Entry::Info(
+                "Ainda não há conversa para compactar.".to_string(),
+            ));
+        } else if self.run.is_some() {
+            self.history.push(Entry::Info(
+                "Espere o agente terminar para compactar a conversa.".to_string(),
+            ));
+        } else {
+            self.start_compact(Entry::Info("Compactando a conversa...".to_string()));
+        }
+    }
+
+    fn start_compact(&mut self, entry: Entry) {
+        self.start("/compact", entry);
     }
 
     /// A roda rola a conversa em qualquer ponto da aba; arrastar no
@@ -478,18 +765,54 @@ impl Chat {
     }
 
     /// Envia o texto do input ao agente. Ignora texto vazio e, enquanto o
-    /// agente ainda responde, mantém o texto para enviar depois.
+    /// agente ainda responde, mantém o texto para enviar depois. Um comando
+    /// com `/` e argumentos (ex.: `/config model=opus`) vai como está: é o
+    /// padrão do router; sem argumentos, um comando com interface no terra
+    /// (ex.: `/clear`) roda a interface.
     fn send(&mut self) {
         let prompt = self.input.text().trim().to_string();
         if prompt.is_empty() || self.run.is_some() {
             return;
         }
+        if let Some(name) = prompt.strip_prefix('/')
+            && commands::has_interface(name)
+        {
+            self.input.remember();
+            self.input.clear();
+            self.run_command(name);
+            return;
+        }
+        if prompt.starts_with('/') && self.route_to_provider(&prompt) {
+            self.input.remember();
+            self.input.clear();
+            self.history.follow();
+            return;
+        }
+        if self.start(&prompt, Entry::User(prompt.clone())) {
+            self.input.remember();
+            self.input.clear();
+            // A auto compactação é para as mensagens, não para os comandos.
+            self.auto_compact_armed = !prompt.starts_with('/');
+        }
+    }
+
+    /// Manda `prompt` ao agente como uma mensagem do usuário (ex.: a
+    /// primeira de um chat aberto pelo orquestrador).
+    pub fn submit(&mut self, prompt: &str) {
+        if self.run.is_none() && self.start(prompt, Entry::User(prompt.to_string())) {
+            self.auto_compact_armed = true;
+        }
+    }
+
+    /// Manda `prompt` ao agente na sessão atual e, se ele começou, põe
+    /// `entry` no histórico. Retorna se a resposta começou.
+    fn start(&mut self, prompt: &str, entry: Entry) -> bool {
         let Some(adapter) = self.available_adapter() else {
             self.history.push(Entry::Error(self.unavailable_hint()));
-            return;
+            return false;
         };
         let started = adapter.start(Request {
-            prompt: &prompt,
+            prompt,
             mode: self.permission_mode,
             session_id: self.session_id.as_deref(),
             model: self
@@ -501,13 +824,25 @@ impl Chat {
                 .session_effort
                 .as_deref()
                 .or(self.default_effort.as_deref()),
+            extensions: &self.extensions,
+            // Num chat delegado, quem delegou decide os pedidos de permissão
+            // (pelo MCP do terra, quando ele está ligado ao chat).
+            permission_tool: self
+                .delegation
+                .filter(|_| {
+                    self.extensions
+                        .mcp_servers
+                        .iter()
+                        .any(|s| s.name == mcp::SERVER_NAME)
+                })
+                .map(|_| (mcp::SERVER_NAME, mcp::PERMISSION_TOOL)),
         });
+        let ok = started.is_ok();
         match started {
             Ok(run) => {
                 self.run = Some(run);
                 self.requested_mode = Some(self.permission_mode);
-                self.history.push(Entry::User(prompt));
-                self.input.clear();
+                self.history.push(entry);
                 self.agent_status = AgentStatus::Pensando;
                 self.agent_activity = Some("Pensando...".to_string());
             }
@@ -517,11 +852,13 @@ impl Chat {
             }
         }
         self.history.follow();
+        ok
     }
 
     /// Interrompe a resposta em andamento (soltar a sessão a encerra).
     fn cancel(&mut self) {
         self.run = None;
+        self.auto_compact_armed = false;
         self.history.push(Entry::Info("Interrompido.".to_string()));
         self.agent_status = AgentStatus::Ocioso;
         self.agent_activity = None;
@@ -553,13 +890,31 @@ impl Chat {
                 self.agent_activity = Some("Pensando...".to_string());
                 self.history.push(Entry::ToolResult { is_error, summary });
             }
+            AgentEvent::Context { tokens, window } => {
+                self.context = Some(tokens);
+                // O limite só vem no fim da resposta: fica o último informado.
+                if window.is_some() {
+                    self.context_window = window;
+                }
+            }
+            AgentEvent::Compacted { tokens } => {
+                // O tamanho depois da compactação mantém a barra; sem ele, o
+                // novo vem na próxima chamada ao modelo. A mensagem já foi
+                // compactada (pelo próprio agente): não compacta de novo.
+                self.context = tokens;
+                self.auto_compact_armed = false;
+                self.history
+                    .push(Entry::Info("Conversa compactada.".to_string()));
+            }
             AgentEvent::Done {
                 is_error,
                 message,
                 tokens,
+                cache_tokens,
                 denied,
             } => {
                 self.tokens_used += tokens;
+                self.cache_tokens_used += cache_tokens;
                 if denied > 0 {
                     // TODO: aprovar ferramentas pela interface no modo Manual.
                     self.history.push(Entry::Info(format!(
@@ -568,12 +923,18 @@ impl Chat {
                     )));
                 }
                 if let Some(message) = message {
-                    self.history.push(Entry::Error(message));
+                    self.history.push(Entry::Error(message.clone()));
+                    self.hint_login(&message);
                 }
+                let armed = std::mem::take(&mut self.auto_compact_armed);
                 self.finish(is_error);
+                if !is_error && armed {
+                    self.auto_compact();
+                }
             }
             AgentEvent::Failed(message) => {
-                self.history.push(Entry::Error(message));
+                self.history.push(Entry::Error(message.clone()));
+                self.hint_login(&message);
                 self.finish(true);
             }
         }
@@ -619,6 +980,7 @@ impl Chat {
 
     fn finish(&mut self, is_error: bool) {
         self.run = None;
+        self.auto_compact_armed = false;
         self.agent_activity = None;
         self.agent_status = if is_error {
             AgentStatus::Erro
@@ -638,6 +1000,23 @@ impl Chat {
 
     /// Avança o spinner, o cursor piscante e os avisos, e lê o que o agente
     /// mandou; chamado a cada tick do loop.
+    /// Um panic numa thread de fundo do provedor: vira um erro no histórico
+    /// e encerra a resposta em andamento, que não vai mais terminar.
+    pub fn provider_failed(&mut self, reason: &str) {
+        let name = self.adapter.as_ref().map_or("O provedor", |a| a.name());
+        let message = format!("{name} falhou: {reason}");
+        if self.run.is_some() {
+            self.apply(AgentEvent::Failed(message));
+        } else {
+            self.history.push(Entry::Error(message));
+        }
+    }
+
+    /// Um aviso de fora do chat (ex.: o terra abriu sem o banco).
+    pub fn warn(&mut self, message: String) {
+        self.history.push(Entry::Error(message));
+    }
+
     pub fn tick(&mut self) {
         self.poll_catalog();
         let events = self
@@ -699,7 +1078,7 @@ impl Chat {
     /// Altura do painel: sem badges para mostrar, a linha deles some e o
     /// espaço fica para a conversa.
     pub fn height(&self) -> u16 {
-        if self.badges().is_empty() {
+        if self.badges().is_empty() && self.context_bar().is_none() && self.usage_bar().is_none() {
             HEIGHT - badge::HEIGHT
         } else {
             HEIGHT
@@ -731,6 +1110,62 @@ impl Chat {
             ));
         }
         badges
+    }
+
+    /// Limite de contexto do modelo: o informado pelo agente ou o padrão.
+    pub fn context_window(&self) -> u64 {
+        self.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW)
+    }
+
+    /// Tokens em que a conversa deve ser compactada (o ponto da Config).
+    fn compact_tokens(&self) -> u64 {
+        self.context_settings
+            .compact_tokens(self.context_window())
+            .max(1)
+    }
+
+    /// Com a auto compactação ligada, compacta a conversa quando o contexto
+    /// chega no ponto de compactar. Só no fim da resposta a uma mensagem do
+    /// usuário, e uma vez por mensagem.
+    fn auto_compact(&mut self) {
+        let full = self.context.is_some_and(|t| t >= self.compact_tokens());
+        if self.context_settings.auto_compact && full {
+            self.start_compact(Entry::Info(format!(
+                "O contexto chegou em {}% do limite: compactando a conversa...",
+                self.context_settings.compact_at
+            )));
+        }
+    }
+
+    /// A barra de contexto, quando ela está visível e o agente já informou o
+    /// tamanho dele: o texto e quanto do ponto de compactar está ocupado (de
+    /// 0 a 1).
+    fn context_bar(&self) -> Option<(String, f64)> {
+        let tokens = self.context.filter(|_| self.context_settings.visible)?;
+        let limit = self.compact_tokens();
+        let ratio = tokens as f64 / limit as f64;
+        let label = if ratio >= 1.0 {
+            COMPACT_HINT.to_string()
+        } else {
+            format!(
+                "{} / {} ({:.0}%)",
+                compact_count(tokens),
+                compact_count(limit),
+                (ratio * 100.0).floor()
+            )
+        };
+        Some((label, ratio.min(1.0)))
+    }
+
+    /// A barra de consumo, quando ela está visível e o provedor já informou o
+    /// consumo da sessão: o texto e quanto dela resta (de 0 a 100).
+    fn usage_bar(&self) -> Option<(String, f64)> {
+        let window = self
+            .session_usage
+            .as_ref()
+            .filter(|_| self.usage_settings.visible)?;
+        let left = (100.0 - window.percent).clamp(0.0, 100.0);
+        Some((usage::session_label(window, &TimeZone::system()), left))
     }
 
     /// Painel: atividade do agente, caixa de input e badges.
@@ -779,7 +1214,44 @@ impl Chat {
         ])
     }
 
+    /// Os badges à esquerda e, no canto direito, embaixo do status, a barra
+    /// de contexto, com a de consumo à esquerda dela.
     fn draw_badges(&self, frame: &mut Frame, area: Rect) {
+        let mut area = area;
+        if let Some((label, ratio)) = self.context_bar() {
+            let [badges, context] =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Length(CONTEXT_WIDTH)])
+                    .spacing(1)
+                    .areas(area);
+            area = badges;
+            let gauge = Gauge::default()
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(theme::context_border(ratio)),
+                )
+                .gauge_style(theme::context_bar(ratio))
+                .ratio(ratio)
+                .label(label);
+            frame.render_widget(gauge, context);
+        }
+        if let Some((label, left)) = self.usage_bar() {
+            let [badges, usage] =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Length(USAGE_WIDTH)])
+                    .spacing(1)
+                    .areas(area);
+            area = badges;
+            let gauge = Gauge::default()
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(theme::usage_border(left)),
+                )
+                .gauge_style(theme::usage_bar(left))
+                .ratio(left / 100.0)
+                .label(label);
+            frame.render_widget(gauge, usage);
+        }
         let badges = self.badges();
         let areas = Layout::horizontal(
             badges
@@ -796,7 +1268,7 @@ impl Chat {
 }
 
 /// Formata contagens de forma compacta: 950, 12.3K, 1M.
-fn compact_count(n: u64) -> String {
+pub(crate) fn compact_count(n: u64) -> String {
     let (value, suffix) = match n {
         0..1_000 => return n.to_string(),
         1_000..1_000_000 => (n as f64 / 1_000.0, "K"),

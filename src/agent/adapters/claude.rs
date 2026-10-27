@@ -9,7 +9,12 @@
 
 mod accounts;
 mod catalog;
+mod daily;
+mod interactive;
+mod mcp;
+mod skills;
 mod stream;
+mod usage;
 
 use std::env;
 use std::fs;
@@ -23,8 +28,10 @@ use serde_json::Value;
 
 use self::stream::{StreamParser, text};
 use crate::agent::{
-    AccountOption, AgentEvent, Catalog, ChatAdapter, ModelOption, PermissionMode, Request, Session,
+    AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
+    ModelOption, PermissionMode, ProviderMcp, ProviderSkill, Request, Session, Usage,
 };
+use crate::extension::{Contribution, Hook};
 
 const NOT_FOUND: &str =
     "Claude CLI não encontrado no PATH. Instale em https://claude.com/claude-code";
@@ -82,10 +89,104 @@ impl ChatAdapter for ClaudeAdapter {
         let Some(home) = &self.home else {
             return Vec::new();
         };
-        let default_json = env::var_os("CLAUDE_CONFIG_DIR")
-            .map(|dir| PathBuf::from(dir).join(".claude.json"))
-            .unwrap_or_else(|| home.join(".claude.json"));
-        accounts::discover(home, &default_json)
+        accounts::discover(home, &default_json(home))
+    }
+
+    /// Os MCP do `.claude.json` da conta (do usuário e, do `cwd`, os
+    /// locais) e os do `.mcp.json` do `cwd` (do projeto).
+    fn mcp_servers(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderMcp> {
+        let json = match self.account_dir(account) {
+            Ok(Some(dir)) => dir.join(".claude.json"),
+            Ok(None) => match &self.home {
+                Some(home) => default_json(home),
+                None => return Vec::new(),
+            },
+            Err(_) => return Vec::new(),
+        };
+        mcp::configured(&json, cwd)
+    }
+
+    /// As skills da pasta da conta (do usuário e dos plugins) e as do
+    /// `.claude/skills` do `cwd` (do projeto).
+    fn skills(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderSkill> {
+        let dir = match self.account_dir(account) {
+            Ok(Some(dir)) => Some(dir),
+            Ok(None) => default_config_dir(),
+            Err(_) => None,
+        };
+        dir.map_or_else(Vec::new, |dir| skills::installed(&dir, cwd))
+    }
+
+    /// `claude auth login` na pasta da conta, com o e-mail dela já
+    /// preenchido na página de login.
+    fn login(&self, account: Option<&str>) -> Option<Command> {
+        let bin = self.bin.as_ref()?;
+        let dir = self.account_dir(account).ok()?;
+        let json = match &dir {
+            Some(dir) => dir.join(".claude.json"),
+            None => default_json(self.home.as_deref()?),
+        };
+        let mut cmd = command(bin);
+        cmd.args(["auth", "login"]);
+        if let Some(email) = accounts::email(&json) {
+            cmd.args(["--email", &email]);
+        }
+        if let Some(dir) = dir {
+            cmd.env("CLAUDE_CONFIG_DIR", dir);
+        }
+        Some(cmd)
+    }
+
+    /// Os comandos só do modo interativo abrem o `claude` original; os de
+    /// pagamento e plano não rodam.
+    fn command_route(&self, name: &str) -> CommandRoute {
+        if interactive::BILLING.contains(&name) {
+            CommandRoute::Blocked
+        } else if interactive::opens_original(name) {
+            CommandRoute::Original
+        } else {
+            CommandRoute::Agent
+        }
+    }
+
+    /// O `claude` interativo, com o ambiente do usuário (MCP, skills e
+    /// hooks) e o que as extensões acrescentam. No Yolo,
+    /// `bypassPermissions`: fora da tela, o terra não tem como aprovar os
+    /// pedidos.
+    fn interactive(&self, cwd: &Path, options: Interactive<'_>) -> Option<Command> {
+        let bin = self.bin.as_ref()?;
+        let dir = self.account_dir(options.account).ok()?;
+        let mut cmd = command(bin);
+        cmd.current_dir(cwd);
+        if let Some(mode) = options.mode {
+            let name = match mode {
+                PermissionMode::Yolo => "bypassPermissions",
+                mode => cli_mode(mode),
+            };
+            cmd.args(["--permission-mode", name]);
+        }
+        if let Some(model) = options.model {
+            cmd.args(["--model", model]);
+        }
+        if let Some(effort) = options.effort {
+            cmd.args(["--effort", effort]);
+        }
+        if let Some(extensions) = options.extensions {
+            if !extensions.hooks.is_empty() {
+                cmd.args(["--settings", &hook_settings(&extensions.hooks)]);
+            }
+            cmd.args(mcp_args(extensions));
+        }
+        if let Some(session) = options.session_id {
+            cmd.args(["--resume", session]);
+        }
+        if let Some(command) = options.command {
+            cmd.arg(command);
+        }
+        if let Some(dir) = dir {
+            cmd.env("CLAUDE_CONFIG_DIR", dir);
+        }
+        Some(cmd)
     }
 
     /// O `claude` responde ao `initialize` do protocolo do Agent SDK com os
@@ -94,6 +195,28 @@ impl ChatAdapter for ClaudeAdapter {
         let bin = self.bin.clone()?;
         let dir = self.account_dir(account).ok().flatten();
         Some(catalog::load(bin, dir))
+    }
+
+    /// O consumo da conta, do endpoint de uso do Claude (sem gastar tokens).
+    fn load_usage(&self, account: Option<&str>) -> Option<Receiver<Result<Usage, String>>> {
+        let dir = match self.account_dir(account).ok()? {
+            Some(dir) => dir,
+            None => default_config_dir()?,
+        };
+        Some(usage::load(dir))
+    }
+
+    /// Os tokens por dia, dos transcripts do Claude Code na pasta da conta.
+    fn load_daily(
+        &self,
+        account: Option<&str>,
+        days: usize,
+    ) -> Option<Receiver<Result<Vec<DailyTokens>, String>>> {
+        let dir = match self.account_dir(account).ok()? {
+            Some(dir) => dir,
+            None => default_config_dir()?,
+        };
+        Some(daily::load(dir, days))
     }
 
     /// Os apelidos que o `claude --model` aceita.
@@ -159,19 +282,22 @@ fn find_claude() -> Option<PathBuf> {
 
 /// Argumentos do `claude` para uma mensagem.
 ///
-/// Sem MCP, skills e hooks: são o ambiente do Claude Code do usuário (ex.:
-/// servidores MCP e plugins instalados) e entram no contexto de toda chamada.
-/// Num "oi" isso caía de ~26k para ~13k tokens; as ferramentas embutidas do
-/// Claude Code continuam disponíveis.
+/// Com o ambiente do Claude Code do usuário: os servidores MCP dele (do
+/// usuário, os locais e os do projeto) e as skills e os comandos ficam
+/// ligados, como no `claude` interativo.
 ///
 /// Com `auto_allow`, os pedidos de permissão do agente chegam pelo stdin/stdout
 /// (`--permission-prompt-tool stdio`) e são aprovados por [`control_response`].
+///
+/// `settings` vai no `--settings` (ver [`hook_settings`]); os servidores MCP
+/// das extensões, em [`mcp_args`], somam aos do usuário.
 fn cli_args<'a>(
     mode: &'a str,
     session: Option<&'a str>,
     auto_allow: bool,
     model: Option<&'a str>,
     effort: Option<&'a str>,
+    settings: &'a str,
 ) -> Vec<&'a str> {
     let mut args = vec![
         "-p",
@@ -183,10 +309,8 @@ fn cli_args<'a>(
         "--include-partial-messages",
         "--permission-mode",
         mode,
-        "--strict-mcp-config",
-        "--disable-slash-commands",
         "--settings",
-        r#"{"disableAllHooks":true}"#,
+        settings,
     ];
     if auto_allow {
         args.extend(["--permission-prompt-tool", "stdio"]);
@@ -201,6 +325,54 @@ fn cli_args<'a>(
         args.extend(["--resume", id]);
     }
     args
+}
+
+/// Os settings de uma mensagem: sem hooks das extensões, todos os hooks
+/// ficam desligados (`disableAllHooks`, que vale até para os do
+/// `--settings`); com eles, os hooks ficam ligados — inclusive os do
+/// usuário — e os das extensões entram por aqui.
+fn hook_settings(hooks: &[Hook]) -> String {
+    if hooks.is_empty() {
+        return r#"{"disableAllHooks":true}"#.to_string();
+    }
+    let mut events = serde_json::Map::new();
+    for hook in hooks {
+        let groups = events
+            .entry(hook.event.clone())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Value::Array(groups) = groups {
+            groups.push(serde_json::json!({
+                "matcher": hook.matcher,
+                "hooks": [{ "type": "command", "command": hook.command }],
+            }));
+        }
+    }
+    serde_json::json!({ "hooks": events }).to_string()
+}
+
+/// `--mcp-config` com os servidores MCP das extensões (vazio sem nenhum),
+/// somados aos do usuário.
+fn mcp_args(extensions: &Contribution) -> Vec<String> {
+    if extensions.mcp_servers.is_empty() {
+        return Vec::new();
+    }
+    let servers: serde_json::Map<String, Value> = extensions
+        .mcp_servers
+        .iter()
+        .map(|server| {
+            let config = match &server.url {
+                Some(url) => serde_json::json!({ "type": "http", "url": url }),
+                None => serde_json::json!({
+                    "type": "stdio",
+                    "command": server.command,
+                    "args": server.args,
+                }),
+            };
+            (server.name.clone(), config)
+        })
+        .collect();
+    let config = serde_json::json!({ "mcpServers": servers }).to_string();
+    vec!["--mcp-config".to_string(), config]
 }
 
 /// A mensagem do usuário no formato do `--input-format stream-json`.
@@ -245,9 +417,22 @@ fn control_response(line: &str, auto_allow: bool) -> Option<String> {
 fn configured_mode(cwd: &Path, account_dir: Option<&Path>) -> Option<String> {
     let config_dir = account_dir
         .map(Path::to_path_buf)
-        .or_else(|| env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
-        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))?;
+        .or_else(default_config_dir)?;
     configured_mode_in(&config_dir, cwd)
+}
+
+/// O `.claude.json` da conta Default (com o e-mail dela).
+fn default_json(home: &Path) -> PathBuf {
+    env::var_os("CLAUDE_CONFIG_DIR")
+        .map(|dir| PathBuf::from(dir).join(".claude.json"))
+        .unwrap_or_else(|| home.join(".claude.json"))
+}
+
+/// A pasta que o `claude` usa sem conta escolhida.
+fn default_config_dir() -> Option<PathBuf> {
+    env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
 }
 
 /// O arquivo mais específico que define o modo vence: local, projeto,
@@ -282,6 +467,7 @@ impl Run {
         config_dir: Option<&Path>,
     ) -> Result<Run, String> {
         let auto_allow = request.mode == PermissionMode::Yolo;
+        let settings = hook_settings(&request.extensions.hooks);
         let mut cmd = command(claude);
         cmd.args(cli_args(
             cli_mode(request.mode),
@@ -289,7 +475,15 @@ impl Run {
             auto_allow,
             request.model,
             request.effort,
+            &settings,
         ));
+        cmd.args(mcp_args(request.extensions));
+        if let (false, Some((server, tool))) = (auto_allow, request.permission_tool) {
+            cmd.args([
+                "--permission-prompt-tool",
+                &format!("mcp__{server}__{tool}"),
+            ]);
+        }
         // A conta escolhida: o `claude` lê credenciais e settings dessa pasta.
         if let Some(dir) = config_dir {
             cmd.env("CLAUDE_CONFIG_DIR", dir);
@@ -411,23 +605,29 @@ fn display_model(id: &str) -> String {
 mod tests {
     use super::*;
 
+    const NO_HOOKS: &str = r#"{"disableAllHooks":true}"#;
+
     #[test]
-    fn cli_args_skip_user_environment_and_resume_session() {
-        let args = cli_args("plan", None, false, None, None);
-        for flag in [
-            "--strict-mcp-config",
-            "--disable-slash-commands",
-            r#"{"disableAllHooks":true}"#,
-        ] {
-            assert!(args.contains(&flag), "faltou {flag}");
-        }
+    fn cli_args_keep_user_environment_and_resume_session() {
+        let args = cli_args("plan", None, false, None, None, NO_HOOKS);
+        assert!(args.contains(&r#"{"disableAllHooks":true}"#));
+        // Os MCP e as skills do usuário ficam ligados.
+        assert!(!args.contains(&"--strict-mcp-config"));
+        assert!(!args.contains(&"--disable-slash-commands"));
         assert!(!args.contains(&"--resume"));
         assert!(!args.contains(&"--permission-prompt-tool"));
         assert!(!args.contains(&"--model"));
         assert!(!args.contains(&"--effort"));
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
 
-        let args = cli_args("manual", Some("s1"), true, Some("haiku"), Some("max"));
+        let args = cli_args(
+            "manual",
+            Some("s1"),
+            true,
+            Some("haiku"),
+            Some("max"),
+            NO_HOOKS,
+        );
         assert!(args.windows(2).any(|w| w == ["--model", "haiku"]));
         assert!(args.windows(2).any(|w| w == ["--effort", "max"]));
         assert!(args.ends_with(&["--resume", "s1"]));
@@ -435,6 +635,97 @@ mod tests {
             args.windows(2)
                 .any(|w| w == ["--permission-prompt-tool", "stdio"])
         );
+    }
+
+    #[test]
+    fn extensions_become_hook_settings_and_mcp_config() {
+        assert_eq!(hook_settings(&[]), NO_HOOKS);
+        assert!(mcp_args(&Contribution::default()).is_empty());
+
+        let hook = |event: &str, matcher: &str, command: &str| Hook {
+            event: event.into(),
+            matcher: matcher.into(),
+            command: command.into(),
+        };
+        let extensions = Contribution {
+            hooks: vec![
+                hook("PreToolUse", "Bash", "rtk hook claude"),
+                hook("PreToolUse", "", "memoria pre"),
+                hook("Stop", "", "memoria stop"),
+            ],
+            mcp_servers: vec![crate::extension::McpServer {
+                name: "ai-memory".into(),
+                command: "ai-memory".into(),
+                args: vec!["mcp-bridge".into()],
+                ..Default::default()
+            }],
+        };
+        let settings: Value = serde_json::from_str(&hook_settings(&extensions.hooks)).unwrap();
+        assert_eq!(settings.get("disableAllHooks"), None);
+        assert_eq!(
+            settings["hooks"]["PreToolUse"],
+            serde_json::json!([
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]},
+                {"matcher": "", "hooks": [{"type": "command", "command": "memoria pre"}]},
+            ])
+        );
+        assert_eq!(
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"],
+            "memoria stop"
+        );
+
+        let args = mcp_args(&extensions);
+        assert_eq!(args[0], "--mcp-config");
+        let config: Value = serde_json::from_str(&args[1]).unwrap();
+        assert_eq!(
+            config["mcpServers"]["ai-memory"],
+            serde_json::json!({"type": "stdio", "command": "ai-memory", "args": ["mcp-bridge"]})
+        );
+
+        let http = Contribution {
+            mcp_servers: vec![crate::extension::McpServer {
+                name: "terra".into(),
+                url: Some("http://127.0.0.1:30303/mcp".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let config: Value = serde_json::from_str(&mcp_args(&http)[1]).unwrap();
+        assert_eq!(
+            config["mcpServers"]["terra"],
+            serde_json::json!({"type": "http", "url": "http://127.0.0.1:30303/mcp"})
+        );
+    }
+
+    #[test]
+    fn interactive_gets_the_extensions_without_disabling_user_hooks() {
+        let adapter = ClaudeAdapter {
+            bin: Some(PathBuf::from("claude")),
+            home: None,
+        };
+        let extensions = Contribution {
+            hooks: vec![Hook {
+                event: "PreToolUse".into(),
+                matcher: "Bash".into(),
+                command: "rtk hook claude".into(),
+            }],
+            mcp_servers: Vec::new(),
+        };
+        let options = Interactive {
+            extensions: Some(&extensions),
+            ..Interactive::default()
+        };
+        let cmd = adapter.interactive(Path::new("."), options).unwrap();
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
+        assert_eq!(args[0], "--settings");
+        assert!(args[1].contains("rtk hook claude"));
+        assert!(!args.iter().any(|a| a.contains("disableAllHooks")));
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
+
+        let cmd = adapter
+            .interactive(Path::new("."), Interactive::default())
+            .unwrap();
+        assert_eq!(cmd.get_args().count(), 0);
     }
 
     #[test]
@@ -532,6 +823,8 @@ mod tests {
             model: None,
             account: None,
             effort: None,
+            extensions: &Contribution::default(),
+            permission_tool: None,
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
         assert!(adapter.accounts().is_empty());
@@ -547,5 +840,29 @@ mod tests {
         assert_eq!(display_model("claude-opus-4-1-20250805"), "Opus - 4.1");
         assert_eq!(display_model("claude-fable-5-1"), "Fable - 5.1");
         assert_eq!(display_model("gpt-x"), "gpt-x");
+    }
+
+    #[test]
+    fn login_runs_auth_login_in_the_account_folder_with_its_email() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".claude-trabalho");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(".claude.json"),
+            r#"{"oauthAccount":{"emailAddress":"eu@empresa.com"}}"#,
+        )
+        .unwrap();
+        let adapter = ClaudeAdapter {
+            bin: Some(PathBuf::from("claude")),
+            home: Some(home.path().to_path_buf()),
+        };
+
+        let login = adapter.login(Some(".claude-trabalho")).unwrap();
+        let args: Vec<_> = login.get_args().collect();
+        assert_eq!(args, ["auth", "login", "--email", "eu@empresa.com"]);
+        let env: Vec<_> = login.get_envs().collect();
+        assert_eq!(env, [("CLAUDE_CONFIG_DIR".as_ref(), Some(dir.as_os_str()))]);
+
+        assert!(adapter.login(Some(".claude-inexistente")).is_none());
     }
 }
