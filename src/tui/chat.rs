@@ -602,6 +602,7 @@ impl Chat {
             return;
         }
         if self.start(&prompt, Entry::User(prompt.clone())) {
+            self.input.remember();
             self.input.clear();
             self.auto_compact_armed = true;
         }

@@ -532,3 +532,62 @@ fn lock_indicators_show_only_when_active() {
     input.set_caps_lock(false);
     assert!(border(&input).0.ends_with(" ● Insert ╯"));
 }
+
+/// Caixa no modo INSERT que já enviou `messages`.
+fn input_after_sending(messages: &[&str]) -> InputBox {
+    let mut input = InputBox::default();
+    press(&mut input, KeyCode::Char('i'));
+    for message in messages {
+        type_text(&mut input, message);
+        input.remember();
+        input.clear();
+    }
+    input
+}
+
+#[test]
+fn up_and_down_browse_the_sent_messages() {
+    let mut input = input_after_sending(&["primeira", "segunda", "segunda"]);
+    type_text(&mut input, "rascunho");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "segunda", "sem repetir a última");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "primeira");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "primeira", "para na mais antiga");
+    assert_eq!(input.cursor, input.len(), "cursor no fim");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "segunda");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "rascunho", "volta ao que estava escrito");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "rascunho");
+}
+
+#[test]
+fn up_and_down_move_between_lines_before_browsing() {
+    let mut input = input_after_sending(&["antes"]);
+    type_text(&mut input, "abc");
+    press_with(&mut input, KeyCode::Enter, KeyModifiers::SHIFT);
+    type_text(&mut input, "de");
+    press(&mut input, KeyCode::Up);
+    assert_eq!((input.text().as_str(), input.cursor), ("abc\nde", 2));
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.cursor, 6);
+    press(&mut input, KeyCode::Up);
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "antes");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "abc\nde");
+}
+
+#[test]
+fn editing_a_sent_message_makes_it_the_draft() {
+    let mut input = input_after_sending(&["primeira", "segunda"]);
+    press(&mut input, KeyCode::Up);
+    type_text(&mut input, "!");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "segunda");
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "segunda!");
+}

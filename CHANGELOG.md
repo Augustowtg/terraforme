@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.7] - 2026-10-27
+
+### Adicionado
+
+- **`↑`/`↓` no input do chat** (escrevendo) mostram as mensagens já enviadas, da mais nova para a mais antiga, como num terminal. Valem as de todas as sessões desde que o terra abriu, inclusive depois do `/clear`, e as menções de arquivo voltam como badges. O `↓` depois da mais nova volta ao texto que estava sendo escrito, e editar uma mensagem recuperada a transforma no texto em edição. A mesma mensagem enviada duas vezes seguidas aparece uma vez só.
+- Com o texto em várias linhas, `↑`/`↓` primeiro andam entre as linhas, mantendo a coluna do cursor, e só mudam de mensagem na primeira ou na última linha.
+
 ## [0.5.6] - 2026-10-27
 
 ### Alterado
