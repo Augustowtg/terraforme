@@ -7,7 +7,8 @@
 #   ui_confirm "Pergunta?" || exit 0
 #   ui_step <função> [args...]                     (roda o próximo passo)
 #   ui_ask "Pergunta?"                             (passo com SIM/NÃO; NÃO segue)
-#   ui_select "Pergunta?" "Opção 1" "Opção 2" ...  (marca as opções em UI_SELECTED)
+#   ui_select "Pergunta?" "Opção 1" "Opção 2" ...  (marca as opções em UI_SELECTED;
+#                                                  as com UI_INSTALLED[i]=1 ficam fora)
 #   ui_add_step "Passo" "Resumo"                   (acrescenta um passo no fim)
 #   ui_note "mensagem"                             (mostrada no resumo final)
 #   ui_finish "mensagem final"
@@ -34,6 +35,7 @@ UI_STEPS=()
 UI_SUMMARIES=()
 UI_SELECTED=()
 UI_OPTIONS=()
+UI_INSTALLED=()
 UI_CURRENT=0
 UI_FAILED=0
 UI_NOTES=()
@@ -194,10 +196,15 @@ ui_ask() {
 }
 
 # As linhas do menu do ui_select, como a lista de extensões da Config:
-# "[x] 1. Opção", com o ▌ e em negrito na opção em foco.
+# "[x] 1. Opção", com o ▌ e em negrito na opção em foco. As já instaladas
+# têm uma bola verde no lugar da caixa.
 ui_select_lines() {
   local current="$1" i check
   for i in "${!UI_SELECTED[@]}"; do
+    if [ "${UI_INSTALLED[$i]:-0}" -eq 1 ]; then
+      printf '\r\033[K    %s ● %s %d. %s %s(instalada)%s\n' "$C_GREEN" "$C_RESET" $((i + 1)) "${UI_OPTIONS[$i]}" "$C_DIM" "$C_RESET"
+      continue
+    fi
     if [ "${UI_SELECTED[$i]}" -eq 1 ]; then check="[x]"; else check="[ ]"; fi
     if [ "$i" -eq "$current" ]; then
       printf '\r\033[K  %s▌ %s %d. %s%s\n' "$C_GREEN$C_BOLD" "$check" $((i + 1)) "${UI_OPTIONS[$i]}" "$C_RESET"
@@ -209,17 +216,36 @@ ui_select_lines() {
   done
 }
 
+# A próxima opção do ui_select que não está instalada, andando de `step`
+# (-1 ou 1) a partir de `from`; fica em `from` se não houver.
+ui_select_next() {
+  local from="$1" step="$2" n="$3" i=$(($1 + $2))
+  while [ "$i" -ge 0 ] && [ "$i" -lt "$n" ]; do
+    if [ "${UI_INSTALLED[$i]:-0}" -ne 1 ]; then
+      echo "$i"
+      return
+    fi
+    i=$((i + step))
+  done
+  echo "$from"
+}
+
 # Menu com várias opções, todas marcadas no começo: ↑/↓ andam, Espaço marca
 # ou desmarca e Enter confirma. Deixa em UI_SELECTED[i] 1 para as marcadas.
-# Com -y, marca todas sem perguntar; sem terminal interativo, exige o -y.
+# As opções com UI_INSTALLED[i]=1 aparecem com uma bola verde, sem caixa, e
+# não podem ser marcadas. Com -y, marca todas sem perguntar; sem terminal
+# interativo, exige o -y.
 ui_select() {
-  local question="$1" current=0 key rest n i
+  local question="$1" current key rest n i
   shift
   UI_OPTIONS=("$@")
   n=$#
   UI_SELECTED=()
-  for ((i = 0; i < n; i++)); do UI_SELECTED[i]=1; done
-  if [ "${UI_ASSUME_YES:-0}" -eq 1 ]; then
+  for ((i = 0; i < n; i++)); do
+    if [ "${UI_INSTALLED[$i]:-0}" -eq 1 ]; then UI_SELECTED[i]=0; else UI_SELECTED[i]=1; fi
+  done
+  current=$(ui_select_next -1 1 "$n")
+  if [ "${UI_ASSUME_YES:-0}" -eq 1 ] || [ "$current" -eq -1 ]; then
     return 0
   fi
   if [ "$UI_INTERACTIVE" -ne 1 ]; then
@@ -240,8 +266,8 @@ ui_select() {
       key+="$rest"
     fi
     case "$key" in
-      $'\e[A' | k) [ "$current" -gt 0 ] && current=$((current - 1)) ;;
-      $'\e[B' | j | $'\t') [ "$current" -lt $((n - 1)) ] && current=$((current + 1)) ;;
+      $'\e[A' | k) current=$(ui_select_next "$current" -1 "$n") ;;
+      $'\e[B' | j | $'\t') current=$(ui_select_next "$current" 1 "$n") ;;
       " ") UI_SELECTED[current]=$((1 - UI_SELECTED[current])) ;;
       "") break ;;
     esac
