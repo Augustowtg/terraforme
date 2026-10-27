@@ -8,6 +8,7 @@
 //! pedidos de permissão do agente.
 
 mod accounts;
+mod catalog;
 mod stream;
 
 use std::env;
@@ -22,7 +23,7 @@ use serde_json::Value;
 
 use self::stream::{StreamParser, text};
 use crate::agent::{
-    AccountOption, AgentEvent, ChatAdapter, ModelOption, PermissionMode, Request, Session,
+    AccountOption, AgentEvent, Catalog, ChatAdapter, ModelOption, PermissionMode, Request, Session,
 };
 
 const NOT_FOUND: &str =
@@ -85,6 +86,14 @@ impl ChatAdapter for ClaudeAdapter {
             .map(|dir| PathBuf::from(dir).join(".claude.json"))
             .unwrap_or_else(|| home.join(".claude.json"));
         accounts::discover(home, &default_json)
+    }
+
+    /// O `claude` responde ao `initialize` do protocolo do Agent SDK com os
+    /// comandos e modelos, sem chamar a API.
+    fn load_catalog(&self, account: Option<&str>) -> Option<Receiver<Result<Catalog, String>>> {
+        let bin = self.bin.clone()?;
+        let dir = self.account_dir(account).ok().flatten();
+        Some(catalog::load(bin, dir))
     }
 
     /// Os apelidos que o `claude --model` aceita.
@@ -272,7 +281,7 @@ impl Run {
     /// Inicia o `claude` com a mensagem. `mode` é o `--permission-mode`; com
     /// `auto_allow`, o terra aprova tudo o que o agente pedir.
     fn start(
-        claude: &PathBuf,
+        claude: &Path,
         prompt: &str,
         mode: &str,
         session: Option<&str>,
@@ -280,14 +289,7 @@ impl Run {
         model: Option<&str>,
         config_dir: Option<&Path>,
     ) -> Result<Run, String> {
-        let mut cmd = if claude.extension().is_some_and(|ext| ext == "cmd") {
-            // Instalação via npm no Windows: o .cmd precisa do cmd.exe.
-            let mut cmd = Command::new("cmd");
-            cmd.arg("/C").arg(claude);
-            cmd
-        } else {
-            Command::new(claude)
-        };
+        let mut cmd = command(claude);
         cmd.args(cli_args(mode, session, auto_allow, model));
         // A conta escolhida: o `claude` lê credenciais e settings dessa pasta.
         if let Some(dir) = config_dir {
@@ -348,6 +350,18 @@ impl Run {
 impl Session for Run {
     fn poll(&mut self) -> Vec<AgentEvent> {
         self.events.try_iter().collect()
+    }
+}
+
+/// O processo do `claude`. Instalado pelo npm no Windows, ele é um `.cmd`,
+/// que precisa do `cmd.exe`.
+fn command(claude: &Path) -> Command {
+    if claude.extension().is_some_and(|ext| ext == "cmd") {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(claude);
+        cmd
+    } else {
+        Command::new(claude)
     }
 }
 

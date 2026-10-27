@@ -7,6 +7,7 @@
 //! [`input`] (caixa de texto), [`history`] (conversa) e [`mode`] (como status
 //! e modo aparecem).
 
+mod commands;
 mod history;
 mod input;
 mod mention;
@@ -15,6 +16,7 @@ mod mode;
 mod tests;
 
 use std::borrow::Cow;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
@@ -26,7 +28,9 @@ use self::history::{Entry, History};
 use self::input::{InputBox, InputMode, Outcome};
 use self::mode::{AgentStatus, mode_variant};
 use super::widgets::badge;
-use crate::agent::{self, AgentEvent, ChatAdapter, PermissionMode, ReportedMode, Request, Session};
+use crate::agent::{
+    self, AgentEvent, Catalog, ChatAdapter, PermissionMode, ReportedMode, Request, Session,
+};
 use crate::platform::clipboard;
 use crate::settings::{AgentSettings, StartMode};
 use crate::theme::{self, Variant};
@@ -44,9 +48,9 @@ const NOTICE_TICKS: u32 = 20;
 const HELP_NORMAL: &str =
     "i escrever · Shift+Tab modo · PgUp/PgDn rolar · Tab trocar aba · Esc ir para Sair";
 const HELP_RUNNING: &str = "Esc interromper · i escrever · Shift+Tab modo · PgUp/PgDn rolar";
-const HELP_INSERT: &str =
-    "Enter enviar · Esc parar · Shift+Enter ou \\+Enter nova linha · @ arquivo";
+const HELP_INSERT: &str = "Enter enviar · Esc parar · \\+Enter nova linha · @ arquivo · / comando";
 const HELP_PICKER: &str = "↑/↓ escolher · Tab/Enter inserir · Esc fechar · digite para filtrar";
+const HELP_COMMANDS: &str = "↑/↓ escolher · Tab/Enter executar · Esc fechar · digite para filtrar";
 
 pub struct Chat {
     /// Provedor do agente (route); o nome vira um botão no título.
@@ -75,6 +79,10 @@ pub struct Chat {
     permission_mode: PermissionMode,
     spinner_frame: usize,
     tokens_used: u64,
+    /// Comandos e modelos do agente, depois de carregados.
+    catalog: Option<Catalog>,
+    /// Carregamento do catálogo em andamento.
+    catalog_loading: Option<Receiver<Result<Catalog, String>>>,
 }
 
 /// Sem agente (Desconectado). Use [`Chat::connect`] para usar o provedor
@@ -98,6 +106,8 @@ impl Default for Chat {
             permission_mode: PermissionMode::default(),
             spinner_frame: 0,
             tokens_used: 0,
+            catalog: None,
+            catalog_loading: None,
         }
     }
 }
@@ -121,6 +131,7 @@ impl Chat {
             ..Self::default()
         };
         chat.apply_settings(settings, None);
+        chat.load_catalog();
         chat
     }
 
@@ -134,6 +145,10 @@ impl Chat {
     pub fn apply_settings(&mut self, settings: &AgentSettings, previous: Option<&AgentSettings>) {
         let account_changed = previous.is_some_and(|p| p.account != settings.account);
         self.account = settings.account.clone();
+        if account_changed {
+            // Cada conta tem os seus comandos e modelos.
+            self.load_catalog();
+        }
         if account_changed && self.session_id.is_some() {
             self.session_id = None;
             self.agent_mode = None;
@@ -236,7 +251,64 @@ impl Chat {
                 self.send();
                 true
             }
+            Outcome::Command(name) => {
+                self.run_command(&name);
+                true
+            }
         }
+    }
+
+    /// Começa a carregar os comandos e modelos do agente (da conta atual).
+    /// Sem provedor disponível, não há comandos.
+    fn load_catalog(&mut self) {
+        self.catalog = None;
+        self.catalog_loading = self
+            .available_adapter()
+            .and_then(|adapter| adapter.load_catalog(self.account.as_deref()));
+        let loading = self.catalog_loading.is_some();
+        self.input.set_commands((!loading).then(Vec::new));
+    }
+
+    /// Recebe o catálogo, quando ele chega.
+    fn poll_catalog(&mut self) {
+        let Some(loading) = &self.catalog_loading else {
+            return;
+        };
+        let catalog = match loading.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Ok(Ok(catalog)) => catalog,
+            // Sem o catálogo, a lista fica vazia (o chat continua funcionando).
+            Ok(Err(_)) | Err(TryRecvError::Disconnected) => Catalog::default(),
+        };
+        self.catalog_loading = None;
+        self.input.set_commands(Some(catalog.commands.clone()));
+        self.catalog = Some(catalog);
+    }
+
+    /// Executa um comando da `/`. A função de cada um é uma interface do
+    /// terra (veja [`commands`]); os que ainda não têm avisam no histórico.
+    fn run_command(&mut self, name: &str) {
+        match name {
+            "clear" => self.clear_conversation(),
+            _ => self.history.push(Entry::Info(format!(
+                "/{name} ainda não tem interface no terra."
+            ))),
+        }
+        self.history.follow();
+    }
+
+    /// `/clear`: começa uma conversa nova, com o histórico limpo.
+    fn clear_conversation(&mut self) {
+        self.run = None;
+        self.session_id = None;
+        self.agent_mode = None;
+        self.model = None;
+        self.agent_activity = None;
+        if self.agent_status != AgentStatus::Desconectado {
+            self.agent_status = AgentStatus::Ocioso;
+        }
+        self.history = History::default();
+        self.history.push(Entry::Info("Nova conversa.".to_string()));
     }
 
     /// A roda rola a conversa em qualquer ponto da aba; arrastar no
@@ -420,6 +492,7 @@ impl Chat {
     /// Avança o spinner, o cursor piscante e os avisos, e lê o que o agente
     /// mandou; chamado a cada tick do loop.
     pub fn tick(&mut self) {
+        self.poll_catalog();
         let events = self
             .run
             .as_mut()
@@ -451,6 +524,7 @@ impl Chat {
             return Cow::Owned(message.clone());
         }
         Cow::Borrowed(match self.input.mode() {
+            _ if self.input.command_picker_open() => HELP_COMMANDS,
             _ if self.input.picker_open() => HELP_PICKER,
             InputMode::Normal if self.run.is_some() => HELP_RUNNING,
             InputMode::Normal => HELP_NORMAL,

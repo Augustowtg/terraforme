@@ -58,6 +58,7 @@ Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta v
 | `Tab` | Troca de aba (Chat, Consumo, Config) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
+| `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Tab`/`Enter` executam; cada comando é uma interface do terra (hoje, `/clear`: conversa nova), e os que ainda não têm aparecem esmaecidos |
 | `@` (escrevendo) | Abre a lista de arquivos e pastas do diretório, filtrada pelo que vier depois do `@` e atualizada em tempo real. `↑`/`↓` escolhem, `Tab`/`Enter` inserem o caminho como um badge cinza (`@/src/main.rs`), `Esc` fecha |
 | `Esc` no modo NORMAL, com o Claude respondendo | Interrompe a resposta |
 | `PageUp` / `PageDown`, roda do mouse | Rola o histórico do chat (a barra de rolagem aparece ao rolar e some 2 s depois) |
@@ -165,6 +166,7 @@ src/
 │   └── adapters.rs       # registro dos provedores (routes)
 │       └── claude.rs     # ClaudeAdapter: o Claude CLI no contrato
 │           ├── accounts.rs # contas do Claude (pastas ~/.claude*)
+│           ├── catalog.rs  # comandos e modelos (pedido initialize)
 │           └── stream.rs # parser do stream-json
 ├── platform.rs           # integração com o sistema
 │   ├── clipboard.rs      # área de transferência (wl-copy, xclip, xsel ou OSC 52)
@@ -173,12 +175,13 @@ src/
     ├── app.rs            # tela principal: abas, Sair e confirmação
     ├── workspace.rs      # navegador de workspaces
     ├── config.rs         # aba Config: seção Agente
-    ├── widgets.rs → widgets/badge.rs
+    ├── widgets.rs → widgets/badge.rs, widgets/popup.rs
     └── chat.rs           # aba Chat: liga o adapter, histórico, input e badges
         ├── mode.rs       # como status e modo aparecem
         ├── input.rs      # caixa de input: edição, cursor, seleção, Insert
         │   └── tests.rs
         ├── mention.rs    # menções de arquivo com @: lista, filtro e badge
+        ├── commands.rs   # comandos com /: lista do agente e interfaces do terra
         ├── history.rs    # histórico: quebra de linha, rolagem, seleção
         └── tests.rs      # testes do Chat (com um adapter de mentira)
 ```
