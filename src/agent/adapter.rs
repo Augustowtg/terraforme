@@ -7,6 +7,7 @@
 //! registrá-lo em [`super::adapters::all`].
 
 use std::path::Path;
+use std::sync::mpsc::Receiver;
 
 use super::{AgentEvent, PermissionMode};
 
@@ -43,6 +44,38 @@ pub struct ModelOption {
     pub label: String,
 }
 
+/// Um comando que o agente informa (ex.: `/model`). A função de cada um é
+/// uma interface do terra; o agente só diz quais existem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandInfo {
+    /// Sem a `/` (ex.: `model`).
+    pub name: String,
+    pub description: String,
+}
+
+/// Um modelo que o agente informa, com o que ele aceita.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelInfo {
+    /// O que vai para o provedor (ex.: `opus`).
+    pub id: String,
+    /// Nome para a tela (ex.: `Opus 5.5`).
+    pub label: String,
+    pub description: String,
+    /// O modelo de fato (ex.: `claude-opus-5-5`), quando o id é um apelido.
+    pub resolved: Option<String>,
+    /// Níveis de esforço aceitos, do menor para o maior (vazio: não tem).
+    pub efforts: Vec<String>,
+}
+
+/// Comandos e modelos do agente, carregados uma vez por conta.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalog {
+    pub commands: Vec<CommandInfo>,
+    pub models: Vec<ModelInfo>,
+    /// O modelo que o provedor usa quando nenhum é escolhido.
+    pub default_model: Option<String>,
+}
+
 /// Um provedor de agente para o chat.
 pub trait ChatAdapter {
     /// Nome no botão do título do input (ex.: "Claude").
@@ -77,6 +110,12 @@ pub trait ChatAdapter {
     /// Nome do modelo para a tela (ex.: `claude-opus-5-5` → `Opus - 5.5`).
     fn model_label(&self, id: &str) -> String {
         id.to_string()
+    }
+
+    /// Começa a carregar, em segundo plano, os comandos e modelos do agente
+    /// para a conta `account`. `None` quando o provedor não informa nada.
+    fn load_catalog(&self, _account: Option<&str>) -> Option<Receiver<Result<Catalog, String>>> {
+        None
     }
 
     /// Começa uma resposta. No [`PermissionMode::Yolo`], o adapter deve

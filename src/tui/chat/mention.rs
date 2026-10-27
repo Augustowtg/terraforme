@@ -8,17 +8,14 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
 use crate::files::FileEntry;
 use crate::theme;
+use crate::tui::widgets::popup;
 
 /// Primeiro caractere usado para menções (área de uso privado suplementar A).
 const TOKEN_BASE: u32 = 0xF0000;
-/// Itens visíveis na lista de cada vez.
-const VISIBLE: usize = 8;
 /// Máximo de resultados considerados no filtro.
 const MAX_RESULTS: usize = 200;
 
@@ -131,59 +128,40 @@ fn is_subsequence(needle: &str, haystack: &str) -> bool {
 
 /// Desenha a lista logo acima de `input` (a caixa de texto).
 pub fn draw(frame: &mut Frame, input: Rect, found: &[&FileEntry], selected: usize) {
-    let rows = found.len().clamp(1, VISIBLE) as u16;
-    let height = (rows + 2).min(input.y);
-    if height < 3 {
-        return;
-    }
-    let area = Rect {
-        y: input.y - height,
-        height,
-        ..input
-    };
-    // Rola para manter o selecionado visível.
-    let first = selected.saturating_sub(VISIBLE - 1);
-    let lines: Vec<Line> = if found.is_empty() {
-        vec![Line::styled(" Nenhum arquivo encontrado", theme::muted())]
-    } else {
-        found
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(VISIBLE)
-            .map(|(i, entry)| item(entry, i == selected))
-            .collect()
-    };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(theme::border())
-        .title(Span::styled(
-            format!(" Arquivos ({}) ", found.len()),
-            theme::muted(),
-        ))
-        .style(theme::screen());
-    frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let items = found
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| item(entry, i == selected))
+        .collect();
+    popup::draw_above(
+        frame,
+        input,
+        format!("Arquivos ({})", found.len()),
+        items,
+        selected,
+        "Nenhum arquivo encontrado",
+    );
 }
 
 fn item(entry: &FileEntry, selected: bool) -> Line<'static> {
-    let (marker, style) = if selected {
-        (format!("{} ", theme::FOCUS_MARKER), theme::focused())
+    let style = if selected {
+        theme::focused()
     } else if entry.is_dir {
-        ("  ".to_string(), theme::path())
+        theme::path()
     } else {
-        ("  ".to_string(), theme::text())
+        theme::text()
     };
     let name = if entry.is_dir {
         format!("{}/", entry.path)
     } else {
         entry.path.clone()
     };
-    Line::from(vec![Span::raw(marker), Span::styled(name, style)]).style(if selected {
-        theme::focused()
+    let line = Line::from(vec![popup::marker(selected), Span::styled(name, style)]);
+    if selected {
+        line.style(theme::focused())
     } else {
-        Style::new()
-    })
+        line
+    }
 }
 
 #[cfg(test)]
