@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.3] - 2026-10-27
+
+### Alterado
+
+- Novo padrão da seção Contexto (para workspaces sem a configuração no `config.json`): **Display Oculto**, **Auto compactação Não**, **Limite de tokens 200K** e **Compactar em 75%** (150K tokens). Antes, a barra vinha visível e o limite era o do modelo.
+- No `config.json`, `agent.context` sem a chave `limit` fica no padrão (200K); `"limit": null` continua sendo **Do modelo**. Workspaces já salvos mantêm o que está gravado neles.
+
 ## [0.5.2] - 2026-10-27
 
 ### Adicionado

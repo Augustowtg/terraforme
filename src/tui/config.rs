@@ -427,12 +427,16 @@ mod tests {
         };
         let mut settings = AgentSettings::default();
         press(&mut view, &mut settings, KeyCode::Enter);
-        assert!(!settings.context.visible, "Visível → Oculto");
+        assert!(settings.context.visible, "Oculto → Visível");
         press(&mut view, &mut settings, KeyCode::Down);
         press(&mut view, &mut settings, KeyCode::Right);
         assert!(settings.context.auto_compact, "Não → Sim");
 
         press(&mut view, &mut settings, KeyCode::Down);
+        assert_eq!(value_label(Field::Limit, &settings, &choices()), "200K");
+        for _ in 0..4 {
+            press(&mut view, &mut settings, KeyCode::Left);
+        }
         assert_eq!(
             value_label(Field::Limit, &settings, &choices()),
             "Do modelo · 200K"
@@ -495,9 +499,9 @@ mod tests {
         assert!(row(7).starts_with("  ─"));
         assert_eq!(row(7).chars().count(), row(3).chars().count());
         assert_eq!(row(8), "  Contexto");
-        assert_eq!(row(9), "   Display             Visível");
+        assert_eq!(row(9), "   Display             Oculto");
         assert_eq!(row(10), "   Auto compactação    Não");
-        assert_eq!(row(11), "   Limite de tokens    Do modelo · 200K");
+        assert_eq!(row(11), "   Limite de tokens    200K");
         assert_eq!(row(12), "   Compactar em        75% · 150K tokens");
     }
 }

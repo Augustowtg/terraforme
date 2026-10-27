@@ -13,7 +13,7 @@
 //!     "account": ".claude-trabalho",
 //!     "effort": "high",
 //!     "interface": "terraforme",
-//!     "context": { "display": "visible", "auto_compact": false, "limit": null, "compact_at": 75 }
+//!     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 }
 //!   }
 //! }
 //! ```
@@ -143,8 +143,12 @@ impl ContextSettings {
             auto_compact: json["auto_compact"]
                 .as_bool()
                 .unwrap_or(default.auto_compact),
-            // Qualquer valor positivo vale, mesmo fora das opções da Config.
-            limit: json["limit"].as_u64().filter(|l| *l > 0),
+            // Sem a chave, o padrão; `null` é o do modelo. Qualquer valor
+            // positivo vale, mesmo fora das opções da Config.
+            limit: match json.get("limit") {
+                None => default.limit,
+                Some(limit) => limit.as_u64().filter(|l| *l > 0),
+            },
             compact_at: json["compact_at"]
                 .as_u64()
                 .and_then(|p| u8::try_from(p).ok())
@@ -163,13 +167,14 @@ impl ContextSettings {
     }
 }
 
-/// Visível, sem compactar sozinho, com o ponto de compactar em 75%.
+/// Oculto, sem compactar sozinho, com o limite em 200K tokens e o ponto de
+/// compactar em 75% dele.
 impl Default for ContextSettings {
     fn default() -> Self {
         Self {
-            visible: true,
+            visible: false,
             auto_compact: false,
-            limit: None,
+            limit: Some(200_000),
             compact_at: 75,
         }
     }
@@ -350,13 +355,16 @@ mod tests {
     }
 
     #[test]
-    fn context_defaults_to_visible_without_auto_compact_at_75() {
+    fn context_defaults_to_hidden_without_auto_compact_at_75_of_200k() {
         let context = ContextSettings::default();
-        assert!(context.visible);
+        assert!(!context.visible);
         assert!(!context.auto_compact);
         assert_eq!(context.compact_at, 75);
-        assert_eq!(context.limit, None, "o limite do modelo");
-        assert_eq!(context.compact_tokens(200_000), 150_000);
+        assert_eq!(context.limit, Some(200_000));
+        // O limite padrão vale mesmo com o modelo informando outro.
+        assert_eq!(context.compact_tokens(1_000_000), 150_000);
+        // Um arquivo sem as chaves fica no padrão.
+        assert_eq!(ContextSettings::load(&json!({})), context);
     }
 
     #[test]
@@ -370,7 +378,7 @@ mod tests {
         let load = |text: &str| ContextSettings::load(&serde_json::from_str(text).unwrap());
         assert_eq!(load(r#"{"limit": 123456}"#).limit, Some(123_456));
         assert_eq!(load(r#"{"limit": 0}"#).limit, None);
-        assert_eq!(load(r#"{"limit": null}"#).limit, None);
+        assert_eq!(load(r#"{"limit": null}"#).limit, None, "o do modelo");
     }
 
     #[test]

@@ -735,7 +735,14 @@ fn badge_row(chat: &Chat) -> String {
 
 #[test]
 fn context_bar_sits_on_the_right_below_the_status() {
-    let mut chat = Chat::default();
+    // Visível e com o limite do modelo.
+    let mut chat = Chat {
+        context_settings: ContextSettings {
+            limit: None,
+            ..visible()
+        },
+        ..Chat::default()
+    };
     assert_eq!(
         chat.height(),
         HEIGHT - badge::HEIGHT,
@@ -834,6 +841,14 @@ fn clear_resets_the_context() {
     assert_eq!(chat.context, None);
 }
 
+/// As configurações padrão do contexto, com a barra visível.
+fn visible() -> ContextSettings {
+    ContextSettings {
+        visible: true,
+        ..ContextSettings::default()
+    }
+}
+
 /// Um chat com a conversa "s1" e o contexto em `tokens` de um limite de 200K.
 fn chat_with_context(tokens: u64, context: ContextSettings) -> (Chat, Sent) {
     let settings = AgentSettings {
@@ -859,11 +874,11 @@ fn chat_with_context(tokens: u64, context: ContextSettings) -> (Chat, Sent) {
 #[test]
 fn context_bar_is_relative_to_the_compact_point() {
     // Ponto de compactar padrão: 75% de 200K = 150K.
-    let (chat, _) = chat_with_context(75_000, ContextSettings::default());
+    let (chat, _) = chat_with_context(75_000, visible());
     assert!(badge_row(&chat).contains("75K / 150K (50%)"));
     assert_eq!(chat.context_bar().unwrap().1, 0.5, "metade: laranja");
 
-    let (chat, sent) = chat_with_context(150_000, ContextSettings::default());
+    let (chat, sent) = chat_with_context(150_000, visible());
     assert!(badge_row(&chat).contains("Compacte a conversa"));
     // Sem a auto compactação (o padrão), só avisa.
     assert_eq!(sent.borrow().len(), 1);
@@ -871,11 +886,8 @@ fn context_bar_is_relative_to_the_compact_point() {
 
 #[test]
 fn hidden_context_bar_does_not_take_the_badge_row() {
-    let hidden = ContextSettings {
-        visible: false,
-        ..ContextSettings::default()
-    };
-    let (chat, _) = chat_with_context(75_000, hidden);
+    // O padrão é oculto.
+    let (chat, _) = chat_with_context(75_000, ContextSettings::default());
     assert_eq!(chat.context_bar(), None);
     // Fica só o badge de consumo, sem a barra no canto.
     assert_eq!(badge_row(&chat), "│ Modo: Agente │ │ Consumo: 1 Tokens │");
@@ -914,7 +926,7 @@ fn auto_compact_runs_once_at_the_compact_point() {
 fn custom_limit_replaces_the_model_window_in_the_bar() {
     let custom = ContextSettings {
         limit: Some(100_000),
-        ..ContextSettings::default()
+        ..visible()
     };
     // O modelo informa 200K, mas vale o limite da Config: 75% de 100K.
     let (chat, _) = chat_with_context(60_000, custom);
