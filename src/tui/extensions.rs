@@ -29,7 +29,7 @@ use ratatui::widgets::{Block, Padding, Paragraph};
 use super::chat::compact_count;
 use super::usage::{ChartBar, draw_bars};
 use crate::extension::{Extension, Registry, Report, StatValue, Status};
-use crate::settings::ExtensionSettings;
+use crate::settings::{ExtensionMode, ExtensionSettings};
 use crate::theme::{self, Variant};
 
 pub const HELP: &str =
@@ -185,10 +185,12 @@ impl ExtensionsView {
             _ => format!(" {}", extension.name()),
         };
         let (state, style) = state(extension, settings);
-        let state = if settings.is_enabled(extension.id()) && status.is_installed() {
-            "ativa neste workspace".to_string()
-        } else {
-            state
+        let state = match settings.mode(extension.id()) {
+            ExtensionMode::Account if status.is_installed() => "ativa nesta conta".to_string(),
+            ExtensionMode::Always if status.is_installed() => {
+                "usar sempre (em todas as contas)".to_string()
+            }
+            _ => state,
         };
         let mut lines = vec![
             Line::from(vec![
@@ -454,6 +456,7 @@ mod tests {
         let registry = registry();
         let settings = ExtensionSettings {
             enabled: vec!["rtk".into()],
+            ..ExtensionSettings::default()
         };
         let mut view = ExtensionsView::default();
         view.refresh_if_stale(&registry);
@@ -464,7 +467,7 @@ mod tests {
         let rows = rows(&view, &registry, &settings);
         assert_eq!(
             rows[1],
-            "  Extensões                    rtk 1.2 · ativa neste workspace"
+            "  Extensões                    rtk 1.2 · ativa nesta conta"
         );
         assert!(rows[2].starts_with(" ▌ rtk         ativa"), "{}", rows[2]);
         assert!(rows[3].starts_with("   memoria     inativa"), "{}", rows[3]);

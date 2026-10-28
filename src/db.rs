@@ -12,11 +12,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::settings::{ExtensionMode, ExtensionSettings};
+
 /// No Windows a comparação de paths não diferencia maiúsculas/minúsculas.
 #[cfg(windows)]
 const PATH_COLLATE: &str = "COLLATE NOCASE";
 #[cfg(not(windows))]
 const PATH_COLLATE: &str = "";
+
+/// A "conta" das extensões "usar sempre", que valem em todas.
+const ALL_ACCOUNTS: &str = "*";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recent {
@@ -108,6 +113,15 @@ impl Db {
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS extensions (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                account   TEXT NOT NULL,
+                extension TEXT NOT NULL,
+                UNIQUE (account, extension)
+            );
+            CREATE TABLE IF NOT EXISTS extension_accounts (
+                account TEXT PRIMARY KEY
             );"
         ))
         .context("não foi possível criar as tabelas")?;
@@ -239,6 +253,59 @@ impl Db {
                 |row| row.get(0),
             )
             .optional()
+    }
+
+    /// As extensões da conta `account` (ex.: `claude:.claude-trabalho`),
+    /// mais as "usar sempre". Na primeira vez da conta, ela começa com as
+    /// `legacy` (as do `config.json` do workspace, de antes do banco).
+    pub fn extension_settings(
+        &self,
+        account: &str,
+        legacy: &[String],
+    ) -> Result<ExtensionSettings> {
+        let known = self.conn.execute(
+            "INSERT OR IGNORE INTO extension_accounts (account) VALUES (?1)",
+            [account],
+        )? == 0;
+        if !known {
+            for id in legacy {
+                self.set_extension(account, id, ExtensionMode::Account)?;
+            }
+        }
+        Ok(ExtensionSettings {
+            enabled: self.extensions_of(account)?,
+            always: self.extensions_of(ALL_ACCOUNTS)?,
+        })
+    }
+
+    /// Grava o modo de uma extensão na conta `account`: inativa sai da conta
+    /// e das "usar sempre"; "usar sempre" vale para todas as contas.
+    pub fn set_extension(&self, account: &str, id: &str, mode: ExtensionMode) -> Result<()> {
+        let keep = match mode {
+            ExtensionMode::Off => None,
+            ExtensionMode::Account => Some(account),
+            ExtensionMode::Always => Some(ALL_ACCOUNTS),
+        };
+        self.conn.execute(
+            "DELETE FROM extensions
+             WHERE extension = ?1 AND account IN (?2, ?3) AND account IS NOT ?4",
+            params![id, account, ALL_ACCOUNTS, keep],
+        )?;
+        if let Some(keep) = keep {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO extensions (account, extension) VALUES (?1, ?2)",
+                params![keep, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn extensions_of(&self, account: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT extension FROM extensions WHERE account = ?1 ORDER BY id")?;
+        let rows = stmt.query_map([account], |row| row.get(0))?;
+        rows.collect()
     }
 }
 
@@ -414,5 +481,52 @@ mod tests {
             .map(|w| w.name)
             .collect();
         assert_eq!(names, ["Alpha", "beta", "charlie"]);
+    }
+
+    #[test]
+    fn extensions_are_per_account_and_always_ones_follow_every_account() {
+        let db = db();
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // Na primeira vez, a conta começa com as do workspace; depois, não.
+        let work = db
+            .extension_settings("claude:.claude-trabalho", &ids(&["rtk"]))
+            .unwrap();
+        assert_eq!(work.enabled, ["rtk"]);
+        db.set_extension("claude:.claude-trabalho", "rtk", ExtensionMode::Off)
+            .unwrap();
+        let work = db
+            .extension_settings("claude:.claude-trabalho", &ids(&["rtk"]))
+            .unwrap();
+        assert_eq!(work, ExtensionSettings::default());
+
+        db.set_extension("claude:", "rtk", ExtensionMode::Account)
+            .unwrap();
+        db.set_extension("claude:", "ai-memory", ExtensionMode::Always)
+            .unwrap();
+        let personal = db.extension_settings("claude:", &[]).unwrap();
+        assert_eq!(personal.enabled, ["rtk"]);
+        assert_eq!(personal.always, ["ai-memory"]);
+
+        // Trocando de conta, só a "usar sempre" continua.
+        let work = db
+            .extension_settings("claude:.claude-trabalho", &[])
+            .unwrap();
+        assert_eq!(work.active(), ["ai-memory"]);
+
+        // De "usar sempre" para só a conta, e desligada em todas.
+        db.set_extension(
+            "claude:.claude-trabalho",
+            "ai-memory",
+            ExtensionMode::Account,
+        )
+        .unwrap();
+        assert_eq!(
+            db.extension_settings("claude:", &[]).unwrap().active(),
+            ["rtk"]
+        );
+        db.set_extension("claude:.claude-trabalho", "ai-memory", ExtensionMode::Off)
+            .unwrap();
+        assert_eq!(count(&db, "extensions"), 1);
     }
 }
