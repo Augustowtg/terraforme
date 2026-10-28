@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.26] - 2026-10-28
+
+### Adicionado
+
+- Aba **Atualização**, ao lado do Chat e do Consumo: ao abrir, o terra lê o CHANGELOG.md da `main` do GitHub numa thread (o `curl`, com limite de 15 s; no Windows, o `curl.exe`) e, se há versão mais nova que a dele, a aba aparece com a versão nova e as notas de todas as versões desde a atual (`↑/↓`, `PgUp/PgDn` e `Home` rolam). O `Enter` sai da tela, roda o `terra upgrade` (instala sem perguntar e mostra o que mudou), espera o Enter e volta; a aba diz se instalou (e que é preciso abrir o terra de novo) ou o erro. Sem rede ou sem versão nova, a aba não aparece.
+- CI (`.github/workflows/ci.yml`): `cargo test` no Linux e no Windows a cada PR e push na `main`; no Windows, confere que o `curl.exe` baixa o CHANGELOG.
+
 ## [0.8.25] - 2026-10-28
 
 ### Alterado
