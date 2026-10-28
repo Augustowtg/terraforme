@@ -1,7 +1,8 @@
 # Instala o terraforme no Windows direto do GitHub:
 #   irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
-# O terra roda no Git Bash: este script acha o bash do Git for Windows e roda
-# nele o install.sh, que baixa o código e chama o install-win.sh. Instala a
+# O instalador roda no Git Bash: este script acha o bash do Git for Windows e
+# roda nele o install.sh, que baixa o código e chama o install-win.sh (que põe
+# o terra também no PowerShell e no CMD). Instala a
 # última release; para outra branch ou tag, defina $env:TERRAFORME_REF.
 $ErrorActionPreference = 'Stop'
 
@@ -44,4 +45,13 @@ try {
 } finally {
     $env:TERRAFORME_REF = $previousRef
     Remove-Item $script -ErrorAction SilentlyContinue
+}
+
+# O instalador pôs o terra no PATH do usuário, que só vale para os terminais
+# abertos depois; nesta sessão, ele entra no PATH já. A pasta é a do
+# ~/.terraforme/bin do Git Bash, que usa o HOME (se definido) ou o perfil.
+$home_ = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+$bin = Join-Path $home_ '.terraforme\bin'
+if ((Test-Path (Join-Path $bin 'terra.exe')) -and -not (($env:Path -split ';') -contains $bin)) {
+    $env:Path = "$bin;$env:Path"
 }
