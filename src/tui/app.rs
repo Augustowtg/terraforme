@@ -24,6 +24,7 @@ use super::config::{self, ConfigView};
 use super::extensions::{self, ExtensionsView};
 use super::mcp::{self as mcp_tab, McpView};
 use super::term::Term;
+use super::update::{self, UpdateView};
 use super::usage::{SessionUsage, UsageView};
 use crate::agent::Interactive;
 use crate::agent::adapters::ProviderOption;
@@ -58,6 +59,8 @@ const SAVE_LABELS: [&str; 3] = ["  Sim  ", "  Não  ", "  Não (não perguntar n
 pub enum Tab {
     #[default]
     Chat,
+    /// Só com uma versão nova do terra no GitHub.
+    Atualizacao,
     Consumo,
     Extensoes,
     /// O orquestrador: só com o MCP online.
@@ -66,8 +69,9 @@ pub enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [
+    const ALL: [Tab; 6] = [
         Tab::Chat,
+        Tab::Atualizacao,
         Tab::Consumo,
         Tab::Extensoes,
         Tab::Mcp,
@@ -77,6 +81,7 @@ impl Tab {
     fn title(self) -> &'static str {
         match self {
             Tab::Chat => "Chat",
+            Tab::Atualizacao => "Atualização",
             Tab::Consumo => "Consumo",
             Tab::Extensoes => "Extensões",
             Tab::Config => "Configurações",
@@ -85,13 +90,22 @@ impl Tab {
     }
 
     /// Próxima aba, voltando para a primeira depois da última. A aba MCP
-    /// só entra com o MCP online (`mcp`).
-    fn next(self, mcp: bool) -> Tab {
+    /// só entra com o MCP online (`mcp`); a Atualização, com versão nova
+    /// (`update`).
+    fn next(self, mcp: bool, update: bool) -> Tab {
         let next = Self::ALL[(self as usize + 1) % Self::ALL.len()];
-        if next == Tab::Mcp && !mcp {
-            return next.next(mcp);
+        if !next.visible(mcp, update) {
+            return next.next(mcp, update);
         }
         next
+    }
+
+    fn visible(self, mcp: bool, update: bool) -> bool {
+        match self {
+            Tab::Mcp => mcp,
+            Tab::Atualizacao => update,
+            _ => true,
+        }
     }
 }
 
@@ -165,6 +179,8 @@ pub struct App {
     /// O consumo da sessão, para a barra de consumo do chat.
     session_usage: SessionUsage,
     extensions_view: ExtensionsView,
+    /// A aba Atualização, com a versão nova do terra.
+    update_view: UpdateView,
     settings: AgentSettings,
     /// As extensões conhecidas (estratégias), já detectadas.
     registry: Registry,
@@ -227,6 +243,7 @@ impl App {
             ..Self::default()
         };
         app.apply_extensions();
+        app.update_view.check();
         if app.mcp.enabled {
             app.start_mcp();
         }
@@ -649,6 +666,15 @@ impl App {
         self.chat.take_login()
     }
 
+    /// O `Enter` da aba Atualização, para o loop instalar fora da tela.
+    pub fn take_update_install(&mut self) -> bool {
+        self.update_view.take_install()
+    }
+
+    pub fn update_finished(&mut self, result: Result<(), String>) {
+        self.update_view.finish_install(result);
+    }
+
     /// A interface original pedida por um comando da `/` do chat.
     pub fn take_original(&mut self) -> Option<(Command, String)> {
         self.current_chat_mut().take_original()
@@ -818,6 +844,12 @@ impl App {
                 }
             }
         }
+        if self.tab == Tab::Atualizacao
+            && self.focus == Focus::Tabs
+            && self.update_view.handle_key(key)
+        {
+            return false;
+        }
         if self.tab == Tab::Consumo
             && self.focus == Focus::Tabs
             && self
@@ -827,7 +859,9 @@ impl App {
             return false;
         }
         match (self.focus, key.code) {
-            (Focus::Tabs, KeyCode::Tab) => self.tab = self.tab.next(self.mcp_online()),
+            (Focus::Tabs, KeyCode::Tab) => {
+                self.tab = self.tab.next(self.mcp_online(), self.update_view.available())
+            }
             (Focus::Tabs, KeyCode::Esc) => self.focus = Focus::Quit,
             (Focus::Quit, KeyCode::Enter) => self.focus = Focus::Confirm(true),
             (Focus::Quit, KeyCode::Tab | KeyCode::Esc) => self.focus = Focus::Tabs,
@@ -904,7 +938,7 @@ impl App {
             Tab::Chat if self.uses_provider() => {}
             Tab::Chat => self.current_chat_mut().handle_mouse(mouse),
             Tab::Consumo => self.usage.handle_mouse(mouse),
-            Tab::Extensoes | Tab::Config | Tab::Mcp => {}
+            Tab::Extensoes | Tab::Config | Tab::Mcp | Tab::Atualizacao => {}
         }
     }
 
@@ -942,6 +976,7 @@ impl App {
             self.extensions_view.refresh_if_stale(&self.registry);
         }
         self.extensions_view.tick();
+        self.update_view.tick();
         self.tick_mcp();
     }
 
@@ -1021,6 +1056,7 @@ impl App {
             Focus::Tabs if self.tab == Tab::Extensoes => extensions::HELP.into(),
             Focus::Tabs if self.tab == Tab::Mcp => self.mcp_view.help().into(),
             Focus::Tabs if self.tab == Tab::Consumo => self.usage.help().into(),
+            Focus::Tabs if self.tab == Tab::Atualizacao => update::HELP.into(),
             Focus::Tabs => HELP.into(),
             Focus::Quit => HELP_QUIT.into(),
             Focus::Confirm(_) | Focus::SaveAsk(_) => HELP_CONFIRM.into(),
@@ -1061,7 +1097,7 @@ impl App {
         let mut spans = Vec::new();
         let tabs = Tab::ALL
             .into_iter()
-            .filter(|tab| *tab != Tab::Mcp || self.mcp_online());
+            .filter(|tab| tab.visible(self.mcp_online(), self.update_view.available()));
         for (i, tab) in tabs.enumerate() {
             if i > 0 {
                 spans.push(Span::raw(TAB_GAP));
@@ -1166,6 +1202,10 @@ impl App {
             let label = |id: &str| delegated_label(&self.chat, delegated, &self.mcp, id);
             let agent = delegated_agent(&self.chat, &self.mcp, &self.providers, delegated, &label);
             self.mcp_view.draw(frame, area, &self.mcp, &agent);
+            return;
+        }
+        if self.tab == Tab::Atualizacao {
+            self.update_view.draw(frame, area);
             return;
         }
         if self.tab == Tab::Extensoes {
@@ -1412,6 +1452,21 @@ mod tests {
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Chat);
     }
 
+    #[test]
+    fn aba_atualizacao_so_com_versao_nova_e_enter_pede_instalar() {
+        let mut app = App::default();
+        app.update_view.set_update(Some(crate::upgrade::Update {
+            version: "9.9.9".into(),
+            notes: "## [9.9.9] - 2099-01-01\n\n- novo".into(),
+        }));
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Atualizacao);
+        assert!(!app.take_update_install());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.take_update_install());
+        assert!(!app.take_update_install());
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Consumo);
+    }
+
     fn key(app: &mut App, code: KeyCode) -> bool {
         app.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -1419,10 +1474,13 @@ mod tests {
     #[test]
     fn mcp_tab_only_shows_with_the_mcp_online() {
         // O Orquestrador fica entre Extensões e Configurações.
-        assert_eq!(Tab::Extensoes.next(false), Tab::Config);
-        assert_eq!(Tab::Extensoes.next(true), Tab::Mcp);
-        assert_eq!(Tab::Mcp.next(true), Tab::Config);
-        assert_eq!(Tab::Config.next(true), Tab::Chat);
+        assert_eq!(Tab::Extensoes.next(false, false), Tab::Config);
+        assert_eq!(Tab::Extensoes.next(true, false), Tab::Mcp);
+        assert_eq!(Tab::Mcp.next(true, false), Tab::Config);
+        assert_eq!(Tab::Config.next(true, false), Tab::Chat);
+        assert_eq!(Tab::Chat.next(false, false), Tab::Consumo);
+        assert_eq!(Tab::Chat.next(false, true), Tab::Atualizacao);
+        assert_eq!(Tab::Atualizacao.next(false, true), Tab::Consumo);
     }
 
     #[test]

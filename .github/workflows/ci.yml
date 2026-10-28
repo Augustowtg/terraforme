@@ -1,0 +1,25 @@
+# Testa o terra no Linux e no Windows a cada PR e push na main.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked
+      # O terra upgrade e a aba Atualização leem o CHANGELOG com o curl
+      # (no Windows, o curl.exe do sistema).
+      - name: curl do CHANGELOG
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: curl.exe -fsSL --max-time 15 https://raw.githubusercontent.com/Augustowtg/terraforme/main/CHANGELOG.md -o NUL

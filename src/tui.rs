@@ -8,6 +8,7 @@ mod extensions;
 mod login;
 mod mcp;
 mod term;
+mod update;
 mod usage;
 mod widgets;
 mod workspace;
@@ -124,6 +125,19 @@ fn run_original(mut original: std::process::Command) -> std::result::Result<(), 
         })
 }
 
+/// O `terra upgrade` no terminal normal; espera o Enter para voltar, para o
+/// usuário ler a saída do instalador e o que mudou.
+fn run_upgrade() -> std::result::Result<(), String> {
+    let result = crate::upgrade::run(false, &[]).map_err(|err| format!("{err:#}"));
+    if let Err(err) = &result {
+        eprintln!("\n{err}");
+    }
+    println!("\nEnter para voltar ao terra.");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    result
+}
+
 /// Sai da tela do terra, roda `f` no terminal normal e volta.
 fn outside_screen<T>(
     terminal: &mut DefaultTerminal,
@@ -178,6 +192,10 @@ fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) 
                     if let Some((login, account)) = app.take_login() {
                         let result = run_login(terminal, login, &account, enhanced)?;
                         app.login_finished(result);
+                    }
+                    if app.take_update_install() {
+                        let result = outside_screen(terminal, enhanced, run_upgrade)?;
+                        app.update_finished(result);
                     }
                     if let Some((original, command)) = app.take_original() {
                         let result = outside_screen(terminal, enhanced, || run_original(original))?;
