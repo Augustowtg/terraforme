@@ -75,11 +75,39 @@ pub fn run(repo: bool, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Uma versão mais nova que a atual: a mais nova do CHANGELOG e as notas de
+/// todas as que vieram depois da atual.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Update {
+    pub version: String,
+    pub notes: String,
+}
+
+/// A versão atual do terra.
+pub fn current() -> &'static str {
+    CURRENT
+}
+
+/// Lê o CHANGELOG do GitHub; `None` se o terra já está na última versão.
+pub fn check() -> Result<Option<Update>> {
+    Ok(update_from(&fetch_changelog()?, CURRENT))
+}
+
+fn update_from(changelog: &str, current: &str) -> Option<Update> {
+    let notes = newer_notes(changelog, current);
+    let version = notes
+        .strip_prefix("## [")?
+        .split(']')
+        .next()?
+        .to_string();
+    Some(Update { version, notes })
+}
+
 /// O CHANGELOG.md da `main`, pelo `curl` (no Windows 10+, o `curl.exe`).
 fn fetch_changelog() -> Result<String> {
     let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
     let output = Command::new(curl)
-        .args(["-fsSL", &format!("{RAW}/CHANGELOG.md")])
+        .args(["-fsSL", "--max-time", "15", &format!("{RAW}/CHANGELOG.md")])
         .output()
         .with_context(|| format!("não foi possível rodar o {curl}"))?;
     if !output.status.success() {
@@ -216,5 +244,7 @@ mod tests {
             "## [0.9.0] - 2026-11-01\n\n- b\n\n## [0.8.25] - 2026-10-28\n\n- a"
         );
         assert_eq!(newer_notes(changelog, "0.9.0"), "");
+        assert_eq!(update_from(changelog, "0.8.24").unwrap().version, "0.9.0");
+        assert_eq!(update_from(changelog, "0.9.0"), None);
     }
 }
