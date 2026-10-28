@@ -88,6 +88,20 @@ setup_shell() {
   fi
 }
 
+# O terra no PowerShell e no CMD: a pasta do binário no PATH do usuário e a
+# função `terra` nos perfis do PowerShell. Cada linha da saída do script vira
+# uma nota.
+setup_powershell() {
+  local out line
+  out="$(powershell.exe -NoProfile -ExecutionPolicy Bypass \
+    -File "$(cygpath -w "$SCRIPT_DIR/install-powershell.ps1")" \
+    -BinDir "$(cygpath -w "$BIN_DIR")")"
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [ -n "$line" ] && ui_note "$line"
+  done <<<"$out"
+}
+
 # As extensões do agente (aba Extensões). O terra passa os hooks e o MCP
 # delas ao agente; o RTK só precisa do binário, e o ai-memory, do servidor
 # que o `ai-memory setup` deixa rodando ao fazer login.
@@ -181,13 +195,15 @@ ui_init "$SCRIPT_DIR" \
   "Confirmar instalação" \
   "$BUILD_LABEL" \
   "Instalar o binário em $BIN_DIR" \
-  "Adicionar a função 'terra' ao Git Bash"
+  "Adicionar a função 'terra' ao Git Bash" \
+  "Adicionar o terra ao PowerShell e ao CMD"
 
 ui_summaries \
   "" \
   "$BUILD_SUMMARY" \
   "copia o binário.exe e remove o antigo terraforme.exe" \
-  "~/.bashrc e ~/.bash_profile"
+  "~/.bashrc e ~/.bash_profile" \
+  "PATH do usuário e perfis do PowerShell"
 
 # O passo do terraforme antigo só aparece se ele estiver na máquina.
 if [ "${#OLD_PATHS[@]}" -gt 0 ]; then
@@ -202,6 +218,7 @@ ui_confirm "Instalar o terraforme CLI?" || exit 0
 ui_step build
 ui_step install_bin
 ui_step setup_shell
+ui_step setup_powershell
 if [ "${#OLD_PATHS[@]}" -gt 0 ]; then
   ui_ask_step "Desinstalar o terraforme antigo (a config fica guardada como .antigo)?" uninstall_old_terraforme
 fi
@@ -223,4 +240,4 @@ elif ui_ask "Instalar as extensões (RTK e ai-memory)?"; then
   if [ "${UI_SELECTED[0]}" -eq 1 ]; then ui_step install_rtk; fi
   if [ "${UI_SELECTED[1]}" -eq 1 ]; then ui_step install_ai_memory; fi
 fi
-ui_finish "Pronto! Feche e reabra o Git Bash para usar: terra workspace"
+ui_finish "Pronto! Abra um terminal novo (Git Bash, PowerShell ou CMD) para usar: terra workspace"
