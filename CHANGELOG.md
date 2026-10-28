@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.25] - 2026-10-28
+
+### Alterado
+
+- `terra upgrade`: antes de instalar, lê o CHANGELOG.md da `main` do GitHub. Se não há versão mais nova que a atual, avisa que o terra já está na última versão e não roda o instalador; se há, instala sem perguntar (passa o `-y` ao instalador, se ainda não veio) e, no fim, mostra as notas de cada versão nova. Sem conseguir ler o CHANGELOG, avisa e instala do mesmo jeito. O `--repo` segue igual.
+
 ## [0.8.24] - 2026-10-28
 
 ### Adicionado
