@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.
 irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
 ```
 
-Para instalar sem a pergunta, use `curl ... | bash -s -- -y`. Para outra branch ou tag, defina `TERRAFORME_REF` (ex.: `TERRAFORME_REF=v0.8.17`). Numa tag sem binário compilado (as anteriores à v0.8.17), numa branch (como a `main`) ou em outro processador, o instalador compila com o `cargo`, como os instaladores abaixo. O RTK das extensões é compilado com o `cargo`: sem o Rust, o instalador pula o RTK e avisa no fim. Os passos são os mesmos dos instaladores abaixo.
+Para instalar sem a pergunta, use `curl ... | bash -s -- -y`. Para outra branch ou tag, defina `TERRAFORME_REF` (ex.: `TERRAFORME_REF=v0.8.17`; no PowerShell, `$env:TERRAFORME_REF='v0.8.17'` antes do `irm`). Numa tag sem binário compilado (as anteriores à v0.8.17), numa branch (como a `main`) ou em outro processador, o instalador compila com o `cargo`, como os instaladores abaixo. O RTK das extensões é compilado com o `cargo`: sem o Rust, o instalador pula o RTK e avisa no fim. Os passos são os mesmos dos instaladores abaixo.
 
 Os binários vêm do workflow `release` do GitHub Actions: a cada tag `vX.Y.Z`, ele compila o `terra` para Linux (`terra-x86_64-unknown-linux-gnu`) e Windows (`terra-x86_64-pc-windows-msvc.exe`) e anexa os dois à release da tag, criando a release com as notas do CHANGELOG se ela ainda não existir. Para uma tag já publicada, rode o workflow pelo Actions com a tag.
 
