@@ -84,6 +84,7 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
 | `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório, e mostra o que mudou |
+| `terra status` | Mostra os terminais do terra abertos na máquina, separados por workspace (pelo daemon orquestrador); `--json` para scripts |
 | `terra upgrade --repo` | Atualiza pelo instalador do repositório do diretório atual (`install-linux.sh` no Linux, `install.ps1` no Windows). Os argumentos passam para o instalador (ex.: `terra upgrade --repo --dev`) |
 
 ### Navegação no `terra cli`
@@ -207,10 +208,17 @@ Embaixo do Contexto, também separada por uma linha, fica a seção **Consumo**,
 
 ### Aba Orquestrador
 
-A aba **Orquestrador**, entre Extensões e Configurações, mostra as configurações dos chats delegados (os sub agentes): o provedor, o modelo, o modo e o que fazer ao abrir e ao terminar.
+A aba **Orquestrador**, entre Extensões e Configurações, mostra os terminais do terra abertos na máquina, separados por workspace, e as configurações dos chats delegados (os sub agentes): o provedor, o modelo, o modo e o que fazer ao abrir e ao terminar.
+
+A lista vem do **daemon orquestrador** (o hub): um processo só por usuário que o primeiro `terra cli` inicia e que fecha sozinho quando o último fecha. Cada terminal conta a ele se está parado ou rodando, o que o agente está fazendo e quantos chats estão abertos (os além do principal são os sub agentes). Uma instância sem sinal por 6 s fica `stale`; uma que fechou fica `gone` por 30 s. O protocolo e o ciclo de vida estão em [`docs/infra/orquestrador.md`](docs/infra/orquestrador.md).
 
 ```
  Orquestrador
+
+ Workspaces
+   terraforme-cli  ·  3 instâncias ativas + 2 sub agentes
+     7f3a12bc  pid 4812    alive  Pensando...   3 chats  aberto há 5m  sinal há 1s  ← este
+     …
 
  Configurações
    Provedor            Claude
@@ -313,6 +321,12 @@ src/
 ├── upgrade.rs            # terra upgrade: roda o instalador do GitHub ou do repositório
 ├── settings.rs           # configurações da aba Configurações, salvas no banco
 ├── files.rs              # índice dos arquivos do diretório, atualizado em tempo real
+├── hub.rs                # daemon orquestrador: um por usuário, acompanha os terras abertos
+│   ├── endpoint.rs       # socket/pipe, hub.lock e hub.log
+│   ├── daemon.rs         # o processo do hub (terra __hub)
+│   ├── client.rs         # Reporter (a instância), Monitor (a aba) e snapshot (terra status)
+│   ├── protocol.rs       # mensagens NDJSON
+│   └── view.rs           # a lista por workspace, para a tela
 ├── extension.rs          # extensões do agente (Strategy + Registry)
 │   ├── contract.rs       # Extension (a estratégia), Contribution e Report
 │   ├── registry.rs       # Registry: as extensões e o que as ativas acrescentam
@@ -335,7 +349,7 @@ src/
     ├── app.rs            # tela principal: abas, Sair e confirmação
     ├── workspace.rs      # navegador de workspaces
     ├── config.rs         # aba Configurações: seções Agente, Consumo, Extensões
-    ├── orchestrator.rs   # aba Orquestrador: as configurações dos chats delegados
+    ├── orchestrator.rs   # aba Orquestrador: terminais por workspace e configurações dos chats delegados
     ├── extensions.rs     # aba Extensões: relatório de cada extensão
     ├── widgets.rs → widgets/badge.rs, widgets/popup.rs
     └── chat.rs           # aba Chat: liga o adapter, histórico, input e badges
@@ -353,6 +367,7 @@ src/
 | Módulo | Responsabilidade |
 | --- | --- |
 | `src/cli.rs` | Argumentos (clap) e execução dos comandos |
+| `src/hub/` | Daemon orquestrador: endpoint, processo do hub, clientes e protocolo (veja `docs/infra/orquestrador.md`) |
 | `src/upgrade.rs` | `terra upgrade`: roda o instalador do GitHub ou, com `--repo`, o do repositório |
 | `src/db.rs` | SQLite, canonicalização de paths e regras de nome |
 | `src/agent/` | Agente do chat: eventos e integração com o Claude CLI |

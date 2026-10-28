@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use crate::db::{self, Db, SaveOutcome};
+use crate::hub;
 use crate::settings;
 use crate::theme;
 use crate::tui;
@@ -37,6 +38,13 @@ enum Command {
     Workspace(WorkspaceArgs),
     /// Atualiza o terra pelo instalador do GitHub (a última release)
     Upgrade(UpgradeArgs),
+    /// Mostra os terminais do terra abertos, por workspace (pelo orquestrador)
+    Status(StatusArgs),
+
+    /// O daemon orquestrador: um por usuário, iniciado pelo primeiro terra e
+    /// fechado com o último (uso interno)
+    #[command(name = "__hub", hide = true)]
+    Hub,
 
     /// O gancho de permissão do Antigravity (`agy`): o `agy` o roda antes de
     /// cada ferramenta e ele leva o pedido ao usuário (uso interno)
@@ -53,6 +61,13 @@ struct AgyHookArgs {
     /// Edições de arquivo passam sem perguntar (modo Accept Edits)
     #[arg(long)]
     accept_edits: bool,
+}
+
+#[derive(Args)]
+struct StatusArgs {
+    /// Imprime a lista do orquestrador em JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -89,6 +104,8 @@ pub fn run() -> Result<()> {
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,
         Command::Upgrade(args) => crate::upgrade::run(args.repo, &args.args)?,
+        Command::Status(args) => status(args.json)?,
+        Command::Hub => hub::daemon::run()?,
         Command::AgyPermissionHook(args) => {
             use crate::agent::adapters::antigravity::permission;
             permission::hook(&args.channel, args.accept_edits);
@@ -133,6 +150,34 @@ fn open_app() -> Result<()> {
         global: settings::global_file(&root),
     };
     tui::run_app(db, dir, name, files, warnings)
+}
+
+/// O `terra status`: os terminais abertos, por workspace. Sem o
+/// orquestrador, ele inicia (e, sem terminais, fecha logo depois).
+fn status(as_json: bool) -> Result<()> {
+    let instances = hub::client::snapshot().context("não foi possível falar com o orquestrador")?;
+    if as_json {
+        println!("{:#}", serde_json::json!({ "instances": instances }));
+        return Ok(());
+    }
+    let instances: Vec<_> = instances
+        .iter()
+        .filter_map(hub::protocol::Instance::from_json)
+        .collect();
+    if instances.is_empty() {
+        println!("Nenhuma instância ativa.");
+        return Ok(());
+    }
+    for (i, workspace) in hub::view::by_workspace(&instances).iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("{}  ·  {}", workspace.name, workspace.summary());
+        for instance in &workspace.instances {
+            println!("  {}", hub::view::instance_line(instance));
+        }
+    }
+    Ok(())
 }
 
 fn save_workspace(name: Option<&str>) -> Result<()> {

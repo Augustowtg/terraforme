@@ -351,6 +351,11 @@ impl Chat {
     /// O que as extensões ativas acrescentam ao agente.
     /// Há uma conversa com o agente (o MCP mostra a sessão ativa).
     /// Os tokens gastos neste chat (entrada e saída, sem os de cache).
+    /// O que o agente está fazendo agora (`None` com o chat parado).
+    pub fn activity(&self) -> Option<&str> {
+        self.agent_activity.as_deref()
+    }
+
     pub fn tokens_used(&self) -> u64 {
         self.tokens_used
     }

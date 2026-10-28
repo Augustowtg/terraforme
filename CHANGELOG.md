@@ -4,6 +4,20 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.9.0] - 2026-10-28
+
+### Adicionado
+
+- **Daemon orquestrador** (o hub): um processo só por usuário que acompanha todos os terminais do terra abertos na máquina. O primeiro `terra cli` o inicia desacoplado (`terra __hub`, numa sessão nova no Unix e sem console no Windows) e ele fecha sozinho 5 s depois que o último terminal fecha. Ele escuta em `$XDG_RUNTIME_DIR/terraforme/hub.sock` (Linux; sem ele, `/tmp/terraforme-<uid>/hub.sock`), `/tmp/terraforme-<uid>/hub.sock` (macOS) ou `\\.\pipe\terraforme-<usuario>-hub` (Windows), grava o `hub.lock` (pid, endereço, protocolo e versão) e loga em `hub.log`. Dois hubs subindo juntos se resolvem sozinhos: só um consegue o endereço; um socket órfão é apagado.
+- Cada `terra cli` conta ao hub, sem nunca esperar por ele, se está parado ou rodando, o que o agente está fazendo e quantos chats estão abertos (os além do principal são os sub agentes), com um `heartbeat` a cada 2 s sem novidade. Sem sinal por 6 s, a instância fica `stale`; quando a conexão fecha, fica `gone` (`exit` com o `bye`, `crash` sem ele) por 30 s.
+- A aba **Orquestrador** mostra os terminais separados por workspace (ex.: `terraforme-cli · 3 instâncias ativas + 2 sub agentes`), com o id curto, o PID, o estado, a tarefa, os chats, há quanto tempo estão abertos e o último sinal; o próprio terminal tem `← este`.
+- `terra status [--json]`: a mesma lista, uma vez, no terminal.
+- O protocolo (NDJSON, versão 1), o ciclo de vida e os tempos estão em `docs/infra/orquestrador.md`.
+
+### Alterado
+
+- Na aba Orquestrador, as configurações dos chats delegados ficam embaixo da lista de workspaces.
+
 ## [0.8.29] - 2026-10-28
 
 ### Alterado
