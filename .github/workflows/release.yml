@@ -76,14 +76,16 @@ jobs:
               echo "Linux ou Git Bash:"
               echo
               echo '```sh'
-              echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/$TAG/install.sh | TERRAFORME_REF=$TAG bash"
+              echo "curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash"
               echo '```'
               echo
               echo "PowerShell (roda o instalador no Git Bash):"
               echo
               echo '```powershell'
-              echo "\$env:TERRAFORME_REF='$TAG'; irm https://raw.githubusercontent.com/${{ github.repository }}/$TAG/install.ps1 | iex"
+              echo "irm https://raw.githubusercontent.com/${{ github.repository }}/main/install.ps1 | iex"
               echo '```'
+              echo
+              printf '%s\n' "Os comandos instalam a última release. Para esta versão quando já houver outra mais nova, defina \`TERRAFORME_REF=$TAG\` (no PowerShell, \`\$env:TERRAFORME_REF='$TAG'\`)."
               echo
               echo "O instalador baixa o binário compilado desta release; não precisa do Rust."
               echo

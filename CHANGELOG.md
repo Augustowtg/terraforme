@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.19] - 2026-10-27
+
+### Corrigido
+
+- Instalação pelo PowerShell: o `install.ps1` baixava o `install.sh` da `main` quando o `TERRAFORME_REF` não estava definido, e as notas da release pediam `$env:TERRAFORME_REF='vX.Y.Z'` para instalar a versão certa. Agora ele busca a última release, como o `install.sh`, e passa a mesma tag para ele; o `TERRAFORME_REF` só é preciso para outra branch ou tag, e volta ao valor de antes no fim.
+
+### Alterado
+
+- Notas da release: os comandos de instalação são os da `main` (`curl ... | bash` e `irm ... | iex`), que instalam a última release, sem o `TERRAFORME_REF`; uma linha diz como fixar a versão da release.
+
 ## [0.8.18] - 2026-10-27
 
 ### Corrigido
