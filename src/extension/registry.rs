@@ -87,6 +87,7 @@ mod tests {
                 command: command.into(),
             }],
             mcp_servers: Vec::new(),
+            env: Vec::new(),
         }
     }
 
@@ -99,6 +100,7 @@ mod tests {
                 args: Vec::new(),
                 ..Default::default()
             }],
+            env: Vec::new(),
         };
         Registry::new(vec![
             Box::new(Fake {

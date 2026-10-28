@@ -1,6 +1,6 @@
 [package]
 name = "terraforme"
-version = "0.8.20"
+version = "0.8.24"
 edition = "2024"
 
 [[bin]]
@@ -14,6 +14,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29.0"
 dirs = "7.0.0"
 dunce = "1.0.5"
+getrandom = "0.3.4"
 ignore = "0.4.33"
 jiff = "0.2.38"
 notify = "8.2.1"

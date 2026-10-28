@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "terraforme"
-version = "0.8.20"
+version = "0.8.24"
 dependencies = [
  "anyhow",
  "catppuccin",
@@ -2041,6 +2041,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "dunce",
+ "getrandom 0.3.4",
  "ignore",
  "jiff",
  "notify",

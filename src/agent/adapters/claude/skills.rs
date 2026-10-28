@@ -1,10 +1,17 @@
-//! As skills instaladas no Claude: as do usuário (`<config>/skills`), as do
-//! projeto (`<cwd>/.claude/skills`) e as dos plugins (do
-//! `plugins/installed_plugins.json`, as do usuário e as do projeto `cwd`).
+//! As skills instaladas no Claude, de todas as pastas que ele lê:
+//!
+//! - as do usuário (`<config>/skills`);
+//! - as do projeto (o `.claude/skills` do `cwd` e das pastas acima dele);
+//! - as compartilhadas entre agentes (`~/.agents/skills`);
+//! - as sincronizadas do claude.ai (`<config>/skills/synced/<org>_<conta>`);
+//! - as dos plugins (do `plugins/installed_plugins.json`, as do usuário e as
+//!   do projeto `cwd`, e dos plugins sincronizados do claude.ai).
 //!
 //! Cada skill é uma pasta com um `SKILL.md`, cujo cabeçalho (frontmatter)
-//! traz o `name` e a `description`.
+//! traz o `name` e a `description`. Uma skill com o nome de outra já listada
+//! (ex.: a mesma no `~/.claude/skills` e no `~/.agents/skills`) aparece uma vez.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,14 +19,72 @@ use serde_json::Value;
 
 use crate::agent::ProviderSkill;
 
-/// As skills de `config_dir` e de `cwd`: as do usuário, as do projeto e as
+/// As skills de `config_dir` (cuja conta está em `json`), de `home` e de
+/// `cwd`: as do usuário, as do projeto, as dos agentes, as do claude.ai e as
 /// dos plugins, nessa ordem, cada grupo em ordem alfabética.
-pub fn installed(config_dir: &Path, cwd: &Path) -> Vec<ProviderSkill> {
+pub fn installed(
+    config_dir: &Path,
+    json: &Path,
+    home: Option<&Path>,
+    cwd: &Path,
+) -> Vec<ProviderSkill> {
     let mut found = folder(&config_dir.join("skills"), "usuário", None);
-    found.extend(folder(&cwd.join(".claude").join("skills"), "projeto", None));
-    for (plugin, path) in plugins(config_dir, cwd) {
+    for dir in cwd.ancestors().take_while(|dir| Some(*dir) != home) {
+        found.extend(folder(&dir.join(".claude").join("skills"), "projeto", None));
+    }
+    if let Some(home) = home {
+        found.extend(folder(
+            &home.join(".agents").join("skills"),
+            "agentes",
+            None,
+        ));
+    }
+    let bucket = bucket(json);
+    if let Some(bucket) = &bucket {
+        let dir = config_dir.join("skills").join("synced").join(bucket);
+        found.extend(folder(&dir, "claude.ai", None));
+    }
+    let mut plugins = plugins(config_dir, cwd);
+    if let Some(bucket) = &bucket {
+        plugins.extend(synced_plugins(
+            &config_dir.join("plugins").join("synced").join(bucket),
+        ));
+    }
+    for (plugin, path) in plugins {
         found.extend(folder(&path.join("skills"), "plugin", Some(&plugin)));
     }
+    let mut seen = HashSet::new();
+    found.retain(|skill| seen.insert(skill.name.clone()));
+    found
+}
+
+/// A pasta das coisas sincronizadas do claude.ai para a conta do `json`:
+/// `<organizationUuid>_<accountUuid>`.
+fn bucket(json: &Path) -> Option<String> {
+    let json: Value = serde_json::from_str(&fs::read_to_string(json).ok()?).ok()?;
+    let account = &json["oauthAccount"];
+    let org = account["organizationUuid"].as_str()?;
+    let id = account["accountUuid"].as_str()?;
+    Some(format!("{org}_{id}"))
+}
+
+/// Os plugins sincronizados do claude.ai em `dir`: o nome (do
+/// `.claude-plugin/plugin.json`) e a pasta.
+fn synced_plugins(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| {
+            let manifest = path.join(".claude-plugin").join("plugin.json");
+            let json: Value = serde_json::from_str(&fs::read_to_string(manifest).ok()?).ok()?;
+            Some((json["name"].as_str()?.to_string(), path))
+        })
+        .collect();
+    found.sort();
     found
 }
 
@@ -52,7 +117,11 @@ fn plugins(config_dir: &Path, cwd: &Path) -> Vec<(String, PathBuf)> {
 }
 
 /// As skills das pastas de `dir`; as de plugin ficam `plugin:nome`.
-fn folder(dir: &Path, scope: &'static str, plugin: Option<&str>) -> Vec<ProviderSkill> {
+pub(in crate::agent::adapters) fn folder(
+    dir: &Path,
+    scope: &'static str,
+    plugin: Option<&str>,
+) -> Vec<ProviderSkill> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -146,7 +215,12 @@ mod tests {
         )
         .unwrap();
 
-        let skills = installed(&config, &cwd);
+        let skills = installed(
+            &config,
+            &dir.path().join(".claude.json"),
+            Some(dir.path()),
+            &cwd,
+        );
         let names: Vec<_> = skills.iter().map(|s| (s.name.as_str(), s.scope)).collect();
         assert_eq!(
             names,
@@ -163,6 +237,64 @@ mod tests {
     #[test]
     fn without_folders_there_is_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(installed(&dir.path().join("x"), dir.path()).is_empty());
+        let x = dir.path().join("x");
+        assert!(installed(&x, &x.join(".claude.json"), Some(dir.path()), dir.path()).is_empty());
+    }
+
+    #[test]
+    fn reads_agents_parent_and_synced_skills_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let config = home.join(".claude");
+        let cwd = home.join("repo/crate");
+        let bucket = "org_conta";
+        let json = home.join(".claude.json");
+        let account = serde_json::json!({
+            "oauthAccount": {"organizationUuid": "org", "accountUuid": "conta"}
+        });
+        fs::write(&json, account.to_string()).unwrap();
+        skill(&config.join("skills"), "docs", "---\nname: docs\n---");
+        skill(
+            &home.join("repo/.claude/skills"),
+            "deploy",
+            "---\nname: deploy\n---",
+        );
+        skill(&home.join(".agents/skills"), "docs", "---\nname: docs\n---");
+        skill(
+            &home.join(".agents/skills"),
+            "memoria",
+            "---\nname: memoria\n---",
+        );
+        skill(
+            &config.join("skills/synced").join(bucket),
+            "pdf",
+            "---\nname: pdf\n---",
+        );
+        skill(
+            &config.join("skills/synced/outra_conta"),
+            "xlsx",
+            "---\nname: xlsx\n---",
+        );
+        let plugin = config.join("plugins/synced").join(bucket).join("uuid");
+        fs::create_dir_all(plugin.join(".claude-plugin")).unwrap();
+        fs::write(
+            plugin.join(".claude-plugin/plugin.json"),
+            r#"{"name": "postman"}"#,
+        )
+        .unwrap();
+        skill(&plugin.join("skills"), "flows", "---\nname: flows\n---");
+
+        let skills = installed(&config, &json, Some(home), &cwd);
+        let names: Vec<_> = skills.iter().map(|s| (s.name.as_str(), s.scope)).collect();
+        assert_eq!(
+            names,
+            [
+                ("docs", "usuário"),
+                ("deploy", "projeto"),
+                ("memoria", "agentes"),
+                ("pdf", "claude.ai"),
+                ("postman:flows", "plugin")
+            ]
+        );
     }
 }

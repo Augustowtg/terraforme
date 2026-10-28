@@ -1,8 +1,11 @@
-//! Copia texto para a área de transferência do sistema.
+//! Copia texto para a área de transferência do sistema e lê dela.
 //!
 //! No Linux usa `wl-copy` (Wayland), `xclip` ou `xsel`. Sem nenhum deles (e no
 //! Windows), manda a sequência OSC 52, que o próprio terminal transforma em
 //! cópia (Windows Terminal, kitty, WezTerm, iTerm2...).
+//!
+//! Para colar ([`paste`]): `wl-paste`, `xclip` ou `xsel` no Linux, `pbpaste`
+//! no macOS e o `Get-Clipboard` do PowerShell no Windows.
 
 use std::env;
 use std::io::{Write, stdout};
@@ -36,6 +39,55 @@ fn native_tool() -> Option<(&'static str, &'static [&'static str])> {
     tools
         .into_iter()
         .filter(|(bin, _)| wayland || *bin != "wl-copy")
+        .find(|(bin, _)| in_path(bin))
+}
+
+/// O texto da área de transferência; `None` se ela está vazia ou não há
+/// como ler.
+pub fn paste() -> Option<String> {
+    // Nos testes, não lê a área de transferência de quem roda.
+    if cfg!(test) {
+        return None;
+    }
+    let (bin, args) = paste_tool()?;
+    let output = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    // O PowerShell põe uma quebra de linha no fim da saída.
+    if cfg!(windows) && text.ends_with("\r\n") {
+        text.truncate(text.len() - 2);
+    }
+    (output.status.success() && !text.is_empty()).then_some(text)
+}
+
+fn paste_tool() -> Option<(&'static str, &'static [&'static str])> {
+    if cfg!(target_os = "macos") {
+        return Some(("pbpaste", &[]));
+    }
+    if cfg!(windows) {
+        return Some((
+            "powershell",
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-Clipboard -Raw",
+            ],
+        ));
+    }
+    let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
+    let tools: [(&str, &[&str]); 3] = [
+        ("wl-paste", &["--no-newline"]),
+        ("xclip", &["-selection", "clipboard", "-o"]),
+        ("xsel", &["--clipboard", "--output"]),
+    ];
+    tools
+        .into_iter()
+        .filter(|(bin, _)| wayland || *bin != "wl-paste")
         .find(|(bin, _)| in_path(bin))
 }
 

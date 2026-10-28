@@ -21,6 +21,22 @@ pub fn configured(json: &Path, cwd: &Path) -> Vec<ProviderMcp> {
     found
 }
 
+/// Os MCP de [`configured`] como estão nos arquivos (com `env`, `type` e o
+/// que mais houver), pelo nome. No nome repetido, vale o mais específico:
+/// local, projeto, usuário.
+pub fn raw(json: &Path, cwd: &Path) -> serde_json::Map<String, Value> {
+    let config = read(json);
+    let project = read(&cwd.join(".mcp.json"));
+    let local = &config["projects"][cwd.to_string_lossy().as_ref()]["mcpServers"];
+    let mut found = serde_json::Map::new();
+    for servers in [&config["mcpServers"], &project["mcpServers"], local] {
+        if let Some(servers) = servers.as_object() {
+            found.extend(servers.clone());
+        }
+    }
+    found
+}
+
 fn read(path: &Path) -> Value {
     fs::read_to_string(path)
         .ok()
@@ -29,7 +45,7 @@ fn read(path: &Path) -> Value {
 }
 
 /// Os servidores de um objeto `mcpServers`.
-fn servers(value: &Value, scope: &'static str) -> Vec<ProviderMcp> {
+pub(in crate::agent::adapters) fn servers(value: &Value, scope: &'static str) -> Vec<ProviderMcp> {
     let Some(map) = value.as_object() else {
         return Vec::new();
     };
@@ -47,6 +63,15 @@ fn servers(value: &Value, scope: &'static str) -> Vec<ProviderMcp> {
                     })
                     .unwrap_or_default(),
                 url: server["url"].as_str().map(str::to_string),
+                headers: server["headers"]
+                    .as_object()
+                    .map(|headers| {
+                        headers
+                            .iter()
+                            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             },
             scope,
         })
@@ -95,6 +120,33 @@ mod tests {
         );
         assert_eq!(servers[0].server.args, ["mcp-bridge"]);
         assert_eq!(servers[1].server.url.as_deref(), Some("http://x/mcp"));
+    }
+
+    #[test]
+    fn raw_keeps_every_field_and_the_most_specific_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("repo");
+        fs::create_dir(&cwd).unwrap();
+        let json = dir.path().join(".claude.json");
+        let config = serde_json::json!({
+            "mcpServers": {
+                "git": {"command": "git-mcp", "env": {"TOKEN": "x"}},
+                "docs": {"command": "user-docs"}
+            },
+            "projects": {
+                cwd.to_string_lossy(): {"mcpServers": {"docs": {"command": "local-docs"}}}
+            }
+        });
+        fs::write(&json, config.to_string()).unwrap();
+        fs::write(
+            cwd.join(".mcp.json"),
+            r#"{"mcpServers": {"docs": {"command": "project-docs"}}}"#,
+        )
+        .unwrap();
+
+        let servers = raw(&json, &cwd);
+        assert_eq!(servers["git"]["env"]["TOKEN"], "x");
+        assert_eq!(servers["docs"]["command"], "local-docs");
     }
 
     #[test]

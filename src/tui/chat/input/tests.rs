@@ -637,3 +637,42 @@ fn editing_a_sent_message_makes_it_the_draft() {
     press(&mut input, KeyCode::Down);
     assert_eq!(input.text(), "segunda!");
 }
+
+#[test]
+fn short_paste_goes_in_as_text_without_submitting() {
+    let mut input = InputBox::default();
+    input.paste("um\r\ndois\tfim\x07");
+    assert_eq!(input.mode(), InputMode::Insert);
+    assert_eq!(input.text(), "um\ndois    fim");
+    assert_eq!(input.cursor, input.len());
+}
+
+#[test]
+fn long_paste_becomes_a_badge_like_claude() {
+    let mut input = InputBox::default();
+    press(&mut input, KeyCode::Char('i'));
+    type_text(&mut input, "veja ");
+    let long = format!("{}\nb\nc", "a".repeat(120));
+    input.paste(&long);
+    input.paste(&"x".repeat(101));
+    // Cada colagem é um caractere só no input.
+    assert_eq!(input.len(), 7);
+    let terminal = render(&input);
+    let buffer = terminal.backend().buffer();
+    let row: String = (0..60).map(|x| buffer[(x, 2)].symbol()).collect();
+    assert!(row.contains("[Pasted text #1 +2 lines]"), "{row}");
+    assert!(row.contains("[Pasted text #2]"), "{row}");
+    // Na mensagem, vai o texto inteiro.
+    assert_eq!(input.text(), format!("veja {long}{}", "x".repeat(101)));
+    // O Backspace apaga a colagem inteira.
+    press(&mut input, KeyCode::Backspace);
+    assert_eq!(input.text(), format!("veja {long}"));
+}
+
+#[test]
+fn paste_of_exactly_the_limit_stays_text() {
+    let mut input = InputBox::default();
+    input.paste(&"y".repeat(mention::PASTE_LIMIT));
+    assert_eq!(input.len(), mention::PASTE_LIMIT);
+    assert!(input.mentions.is_empty());
+}

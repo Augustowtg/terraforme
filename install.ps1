@@ -4,18 +4,9 @@
 # roda nele o install.sh, que baixa o código e chama o install-win.sh (que põe
 # o terra também no PowerShell e no CMD). Instala a
 # última release; para outra branch ou tag, defina $env:TERRAFORME_REF.
+# Rodado como arquivo de um clone (ex.: `terra upgrade --repo`), roda o
+# install-win.sh do próprio clone, sem baixar nada.
 $ErrorActionPreference = 'Stop'
-
-$repo = 'Augustowtg/terraforme'
-$ref = $env:TERRAFORME_REF
-if (-not $ref) {
-    # Sem release (ou sem acesso à API), fica a main.
-    try {
-        $ref = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
-    } catch {}
-    if (-not $ref) { $ref = 'main' }
-}
-$url = "https://raw.githubusercontent.com/$repo/$ref/install.sh"
 
 $bash = @(
     "$env:ProgramFiles\Git\bin\bash.exe",
@@ -34,17 +25,35 @@ if (-not $bash) {
     return
 }
 
-$script = Join-Path $env:TEMP "terraforme-install-$PID.sh"
-Invoke-RestMethod $url -OutFile $script
-# O install.sh baixa a mesma ref. Com `irm | iex`, o script roda na sessão de
-# quem chamou: a variável volta ao valor de antes no fim.
-$previousRef = $env:TERRAFORME_REF
-$env:TERRAFORME_REF = $ref
-try {
-    & $bash $script @args
-} finally {
-    $env:TERRAFORME_REF = $previousRef
-    Remove-Item $script -ErrorAction SilentlyContinue
+$local = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'install-win.sh' }
+if ($local -and (Test-Path $local)) {
+    & $bash $local @args
+    # Rodado como arquivo: quem chamou (ex.: o terra upgrade) vê o erro.
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+} else {
+    $repo = 'Augustowtg/terraforme'
+    $ref = $env:TERRAFORME_REF
+    if (-not $ref) {
+        # Sem release (ou sem acesso à API), fica a main.
+        try {
+            $ref = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
+        } catch {}
+        if (-not $ref) { $ref = 'main' }
+    }
+    $url = "https://raw.githubusercontent.com/$repo/$ref/install.sh"
+
+    $script = Join-Path $env:TEMP "terraforme-install-$PID.sh"
+    Invoke-RestMethod $url -OutFile $script
+    # O install.sh baixa a mesma ref. Com `irm | iex`, o script roda na sessão de
+    # quem chamou: a variável volta ao valor de antes no fim.
+    $previousRef = $env:TERRAFORME_REF
+    $env:TERRAFORME_REF = $ref
+    try {
+        & $bash $script @args
+    } finally {
+        $env:TERRAFORME_REF = $previousRef
+        Remove-Item $script -ErrorAction SilentlyContinue
+    }
 }
 
 # O instalador pôs o terra no PATH do usuário, que só vale para os terminais

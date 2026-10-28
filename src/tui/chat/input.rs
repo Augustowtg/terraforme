@@ -1,7 +1,8 @@
 //! Caixa de input do chat: edição estilo Vim (NORMAL/INSERT), cursor em barra
 //! piscando, sobrescrever com a tecla Insert, seleção com o mouse, várias
 //! linhas (Shift+Enter, Alt+Enter, Ctrl+J ou `\` + Enter), menções de
-//! arquivo com `@` ([`super::mention`]) e as mensagens já enviadas com ↑/↓.
+//! arquivo com `@` ([`super::mention`]), colar texto (`Ctrl+V` ou o colar do
+//! terminal) e as mensagens já enviadas com ↑/↓.
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -17,6 +18,7 @@ use super::commands;
 use super::mention::{self, Mention, Picker};
 use crate::agent::CommandInfo;
 use crate::files::{FileEntry, FileIndex};
+use crate::platform::clipboard;
 use crate::theme::{self, Variant};
 
 /// Altura da caixa: bordas e três linhas de texto.
@@ -251,6 +253,13 @@ impl InputBox {
                 self.insert_char('\n')
             }
             KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => self.insert_char('\n'),
+            // Nos terminais em que o Ctrl+V chega como tecla (ex.: GNOME
+            // Terminal), cola a área de transferência do sistema.
+            KeyCode::Char('v' | 'V') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(text) = clipboard::paste() {
+                    self.insert_paste(&text);
+                }
+            }
             KeyCode::Char(c) if typed => {
                 // `@` abre a lista de arquivos, menos no meio de uma palavra
                 // (ex.: um e-mail).
@@ -304,6 +313,39 @@ impl InputBox {
         self.refresh_picker(edited);
         self.show_cursor();
         outcome
+    }
+
+    /// Cola `text` no cursor (entrando no modo INSERT). Com mais de
+    /// [`mention::PASTE_LIMIT`] caracteres, vira um badge
+    /// `[Pasted text #1 +12 lines]`, como no Claude Code; o texto inteiro vai
+    /// na mensagem. As quebras de linha não enviam.
+    pub fn paste(&mut self, text: &str) {
+        self.mode = InputMode::Insert;
+        self.insert_paste(text);
+        self.browsing = None;
+        self.refresh_picker(true);
+        self.show_cursor();
+    }
+
+    fn insert_paste(&mut self, text: &str) {
+        let text = clean_paste(text);
+        if text.is_empty() {
+            return;
+        }
+        if text.chars().count() <= mention::PASTE_LIMIT {
+            for c in text.chars() {
+                self.insert_char(c);
+            }
+            return;
+        }
+        let number = 1 + self
+            .mentions
+            .iter()
+            .filter(|m| matches!(m, Mention::Paste { .. }))
+            .count();
+        let token = mention::token(self.mentions.len());
+        self.mentions.push(Mention::Paste { number, text });
+        self.insert_char(token);
     }
 
     /// ↑: sobe uma linha do texto; na primeira, mostra a mensagem enviada
@@ -845,6 +887,19 @@ impl InputBox {
         }
         Line::from(spans)
     }
+}
+
+/// O texto colado como vai para a caixa: quebras de linha do Windows e do
+/// Mac antigo viram `\n`, o Tab vira quatro espaços (ele não tem largura na
+/// tela) e os outros caracteres de controle somem.
+fn clean_paste(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\t', "    ")
+        .chars()
+        .filter(|&c| c == '\n' || !c.is_control())
+        .filter(|&c| mention::token_index(c).is_none())
+        .collect()
 }
 
 /// Fecha um trecho de texto corrido como um span (destacado ou não).

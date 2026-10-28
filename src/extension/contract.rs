@@ -41,6 +41,9 @@ pub struct McpServer {
     pub args: Vec<String>,
     /// O endereço de um servidor HTTP; com ele, `command` e `args` não valem.
     pub url: Option<String>,
+    /// Os cabeçalhos de cada requisição HTTP (ex.: `Authorization`); os
+    /// valores podem citar variáveis de [`Contribution::env`] como `${NOME}`.
+    pub headers: Vec<(String, String)>,
 }
 
 /// O que as extensões acrescentam ao agente. O adapter traduz para o
@@ -49,6 +52,9 @@ pub struct McpServer {
 pub struct Contribution {
     pub hooks: Vec<Hook>,
     pub mcp_servers: Vec<McpServer>,
+    /// Variáveis de ambiente do processo do agente: um segredo vai por
+    /// aqui, e não pela linha de comando, que outros processos leem.
+    pub env: Vec<(String, String)>,
 }
 
 impl Contribution {
@@ -56,6 +62,7 @@ impl Contribution {
     pub fn merge(&mut self, other: Contribution) {
         self.hooks.extend(other.hooks);
         self.mcp_servers.extend(other.mcp_servers);
+        self.env.extend(other.env);
     }
 }
 

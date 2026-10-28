@@ -12,7 +12,7 @@ mod history;
 mod input;
 mod mention;
 mod mode;
-mod model_menu;
+pub(super) mod model_menu;
 mod permission;
 #[cfg(test)]
 mod tests;
@@ -36,7 +36,7 @@ use self::permission::{Kind, Prompts};
 use super::usage;
 use super::widgets::badge;
 use crate::agent::{
-    self, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, PermissionMode,
+    self, AgentEvent, Catalog, ChatAdapter, CommandRoute, Delegated, Interactive, PermissionMode,
     ReportedMode, Request, Session, UsageWindow,
 };
 use crate::extension::Contribution;
@@ -46,6 +46,9 @@ use crate::settings::{AgentSettings, ContextSettings, StartMode, UsageSettings};
 use crate::theme::{self, Variant};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Acima disso (em caracteres), um texto colado vira um badge no input.
+pub use self::mention::PASTE_LIMIT;
+
 /// Altura do painel: atividade, caixa de input e badges.
 pub const HEIGHT: u16 = 1 + input::HEIGHT + badge::HEIGHT;
 
@@ -85,6 +88,8 @@ pub struct Chat {
     /// lugar dos padrões.
     session_model: Option<String>,
     session_effort: Option<String>,
+    /// Modelo dos sub agentes, escolhido na Config.
+    subagent_model: Option<String>,
     /// Menu do `/model`, quando aberto.
     model_menu: Option<ModelMenu>,
     /// Comando do `/login`, para a tela principal rodar fora da tela.
@@ -105,6 +110,10 @@ pub struct Chat {
     /// A delegação ([`mcp::ChatRequest::id`]) de um chat aberto por um
     /// agente pelo orquestrador.
     delegation: Option<u64>,
+    /// Os MCP e as ferramentas que quem delegou pediu
+    /// ([`mcp::ChatRequest::mcp`] e [`mcp::ChatRequest::tools`]).
+    delegated_mcp: Vec<String>,
+    delegated_tools: Vec<String>,
     /// Resposta em andamento.
     run: Option<Box<dyn Session>>,
     /// Pedidos de permissão do agente esperando o usuário.
@@ -136,7 +145,8 @@ pub struct Chat {
     context_settings: ContextSettings,
     /// Display da barra de consumo (Config).
     usage_settings: UsageSettings,
-    /// O consumo da sessão (as 5 horas), quando o provedor informa.
+    /// O consumo da sessão (a janela da barra de consumo), quando o provedor
+    /// informa.
     session_usage: Option<UsageWindow>,
     /// A resposta em andamento é a de uma mensagem do usuário que ainda pode
     /// ser auto compactada: a auto compactação roda no máximo uma vez por
@@ -159,6 +169,7 @@ impl Default for Chat {
             default_effort: None,
             session_model: None,
             session_effort: None,
+            subagent_model: None,
             model_menu: None,
             pending_login: None,
             pending_original: None,
@@ -168,6 +179,8 @@ impl Default for Chat {
             extensions: Contribution::default(),
             session_id: None,
             delegation: None,
+            delegated_mcp: Vec::new(),
+            delegated_tools: Vec::new(),
             run: None,
             prompts: Prompts::default(),
             allowed: Vec::new(),
@@ -195,9 +208,13 @@ impl Default for Chat {
 }
 
 impl Chat {
-    /// Chat ligado ao primeiro provedor disponível (ou Desconectado).
+    /// Chat ligado ao provedor escolhido na Config ou, sem escolha, ao
+    /// primeiro disponível (ou Desconectado).
     pub fn connect(settings: &AgentSettings) -> Self {
-        Self::with_adapter(agent::adapters::default(), settings)
+        Self::with_adapter(
+            agent::adapters::select(settings.provider.as_deref()),
+            settings,
+        )
     }
 
     /// Chat ligado a `adapter`, com as configurações da seção Agente.
@@ -225,10 +242,15 @@ impl Chat {
     /// conta e não pode ser continuada com esta. O aviso só aparece quando
     /// havia uma conversa, para passar pelas contas não encher o histórico.
     pub fn apply_settings(&mut self, settings: &AgentSettings, previous: Option<&AgentSettings>) {
-        let account_changed = previous.is_some_and(|p| p.account != settings.account);
+        let provider_changed = previous.is_some_and(|p| p.provider != settings.provider);
+        if provider_changed {
+            self.switch_provider(settings.provider.as_deref());
+        }
+        let account_changed =
+            provider_changed || previous.is_some_and(|p| p.account != settings.account);
         self.account = settings.account.clone();
         if account_changed {
-            // Cada conta tem os seus comandos e modelos.
+            // Cada conta (e cada provedor) tem os seus comandos e modelos.
             self.load_catalog();
         }
         if account_changed && self.session_id.is_some() {
@@ -236,10 +258,14 @@ impl Chat {
             self.agent_mode = None;
             self.model = None;
             self.context = None;
-            let label = self.account_label();
-            self.history.push(Entry::Info(format!(
-                "Conta: {label}. A próxima mensagem começa uma conversa nova."
-            )));
+            let message = if provider_changed {
+                let name = self.adapter.as_ref().map_or("Nenhum", |a| a.name());
+                format!("Provedor: {name}. A próxima mensagem começa uma conversa nova.")
+            } else {
+                let label = self.account_label();
+                format!("Conta: {label}. A próxima mensagem começa uma conversa nova.")
+            };
+            self.history.push(Entry::Info(message));
         }
         let start_changed = previous.is_none_or(|p| p.start_mode != settings.start_mode);
         // "Do provedor" depende da conta: a configuração é de cada uma.
@@ -249,11 +275,38 @@ impl Chat {
         }
         self.chosen_model = settings.model.clone();
         self.default_effort = settings.effort.clone();
+        self.subagent_model = settings.subagent_model.clone();
         self.context_settings = settings.context;
         self.usage_settings = settings.usage;
     }
 
-    /// O consumo da sessão (as 5 horas) para a barra de consumo.
+    /// Troca o provedor (o `id` de um adapter; `None`, o primeiro
+    /// disponível). A resposta em andamento é do provedor anterior: para.
+    fn switch_provider(&mut self, id: Option<&str>) {
+        let adapter = agent::adapters::select(id);
+        if self.run.take().is_some() {
+            self.prompts.clear_asks();
+            self.agent_activity = None;
+        }
+        self.agent_status = if adapter.is_available() {
+            AgentStatus::Ocioso
+        } else {
+            AgentStatus::Desconectado
+        };
+        self.adapter = Some(adapter);
+        self.session_model = None;
+        self.session_effort = None;
+        self.context_window = None;
+        self.session_usage = None;
+    }
+
+    /// O `id` do provedor do chat (ex.: `claude`).
+    pub fn provider_id(&self) -> Option<&str> {
+        self.adapter.as_deref().map(|a| a.id())
+    }
+
+    /// O consumo da sessão (a janela do provedor que tem `session`) para a
+    /// barra de consumo.
     pub fn set_session_usage(&mut self, window: Option<UsageWindow>) {
         self.session_usage = window;
     }
@@ -284,10 +337,31 @@ impl Chat {
         self.permission_mode = self.start_mode(start);
     }
 
-    /// Marca o chat como delegado (`id` é a delegação no orquestrador): os
-    /// pedidos de permissão do agente vão para quem delegou.
-    pub fn set_delegation(&mut self, id: u64) {
-        self.delegation = Some(id);
+    /// Usa `model` e `effort` nesta conversa (ex.: os dos chats abertos pelo
+    /// orquestrador), no lugar dos padrões. Sem modelo, fica o padrão.
+    pub fn set_model(&mut self, model: Option<String>, effort: Option<String>) {
+        let Some(model) = model else {
+            return;
+        };
+        self.model = self.resolved_model(&model).or(Some(model.clone()));
+        self.session_model = Some(model);
+        self.session_effort = effort;
+    }
+
+    /// O modelo padrão: o salvo na Config ou o do agente.
+    pub fn default_model(&self) -> Option<String> {
+        self.chosen_model
+            .clone()
+            .or_else(|| self.catalog.as_ref().and_then(|c| c.default_model.clone()))
+    }
+
+    /// Marca o chat como delegado pelo pedido `request`: os pedidos de
+    /// permissão do agente vão para quem delegou, e o agente roda enxuto,
+    /// só com os MCP e as ferramentas do pedido além do mínimo.
+    pub fn set_delegation(&mut self, request: &mcp::ChatRequest) {
+        self.delegation = Some(request.id);
+        self.delegated_mcp = request.mcp.clone();
+        self.delegated_tools = request.tools.clone();
     }
 
     pub fn delegation(&self) -> Option<u64> {
@@ -424,6 +498,14 @@ impl Chat {
         }
     }
 
+    /// Texto colado no terminal: vai para o input, menos com o menu do
+    /// `/model` ou um pedido de permissão abertos.
+    pub fn handle_paste(&mut self, text: &str) {
+        if self.model_menu.is_none() && !self.prompts.is_open() {
+            self.input.paste(text);
+        }
+    }
+
     /// Começa a carregar os comandos e modelos do agente (da conta atual).
     /// Sem provedor disponível, não há comandos.
     fn load_catalog(&mut self) {
@@ -466,10 +548,7 @@ impl Chat {
             "usage" => self.open_usage = true,
             "model" => {
                 // O Default do menu é o modelo padrão salvo ou o do agente.
-                let default = self
-                    .chosen_model
-                    .clone()
-                    .or_else(|| self.catalog.as_ref().and_then(|c| c.default_model.clone()));
+                let default = self.default_model();
                 let effort = self.session_effort.clone().or(self.default_effort.clone());
                 let mut menu = ModelMenu::new(default, effort);
                 menu.sync(self.catalog.as_ref());
@@ -523,6 +602,7 @@ impl Chat {
                         .session_effort
                         .as_deref()
                         .or(self.default_effort.as_deref()),
+                    subagent_model: self.subagent_model.as_deref(),
                     mode: Some(self.permission_mode),
                     extensions: Some(&self.extensions),
                     session_id: self.session_id.as_deref(),
@@ -569,10 +649,20 @@ impl Chat {
             .and_then(|adapter| adapter.login(self.account.as_deref()));
         match login {
             Some(command) => self.pending_login = Some(command),
-            None => self.history.push(Entry::Info(
-                "Este provedor não tem login pelo terra.".to_string(),
-            )),
+            None => {
+                let help = self.available_adapter().and_then(|a| a.login_help());
+                self.history.push(Entry::Info(
+                    help.unwrap_or_else(|| "Este provedor não tem login pelo terra.".to_string()),
+                ));
+            }
         }
+    }
+
+    /// O agente terminou de responder `text`.
+    #[cfg(test)]
+    pub fn reply_for_test(&mut self, text: &str) {
+        self.run = None;
+        self.history.push(Entry::Assistant(text.to_string()));
     }
 
     #[cfg(test)]
@@ -609,12 +699,16 @@ impl Chat {
         self.history.follow();
     }
 
-    /// Um erro de autenticação do agente: sugere o `/login`.
+    /// Um erro de autenticação do agente: sugere o `/login`. As palavras que
+    /// denunciam o erro são do provedor ([`ChatAdapter::login_error_words`]).
     fn hint_login(&mut self, message: &str) {
         let lower = message.to_lowercase();
-        let auth = ["authenticate", "oauth", "log in again"]
-            .iter()
-            .any(|word| lower.contains(word));
+        let auth = self.adapter.as_deref().is_some_and(|adapter| {
+            adapter
+                .login_error_words()
+                .iter()
+                .any(|word| lower.contains(word))
+        });
         if auth {
             let label = self.account_label();
             self.history.push(Entry::Info(format!(
@@ -627,7 +721,8 @@ impl Chat {
     fn apply_model_menu(&mut self, outcome: model_menu::Outcome) {
         let (target, model, effort) = match outcome {
             model_menu::Outcome::Handled => return,
-            model_menu::Outcome::Close => {
+            // O Default só zera o modelo dos sub agentes, que é da Config.
+            model_menu::Outcome::Close | model_menu::Outcome::Unset(_) => {
                 self.model_menu = None;
                 return;
             }
@@ -662,6 +757,9 @@ impl Chat {
                 self.model = self.resolved_model(&model);
                 self.default_choice = Some((model, effort));
             }
+            // Só a Config abre o menu dos sub agentes, e só a aba
+            // Orquestrador o dos chats delegados.
+            Target::Subagent | Target::Delegated => {}
         }
         self.history.follow();
     }
@@ -689,11 +787,12 @@ impl Chat {
     }
 
     /// Nome de um modelo para a tela (ex.: `Opus - 5.5`).
-    fn model_label_of(&self, id: &str) -> String {
-        let info = self
-            .catalog
-            .as_ref()
-            .and_then(|c| c.models.iter().find(|m| m.id == id));
+    pub fn model_label_of(&self, id: &str) -> String {
+        let info = self.catalog.as_ref().and_then(|c| {
+            c.models
+                .iter()
+                .find(|m| m.id == id || m.resolved.as_deref() == Some(id))
+        });
         match (info, &self.adapter) {
             (Some(info), Some(adapter)) => info
                 .resolved
@@ -702,6 +801,12 @@ impl Chat {
             (Some(info), None) => info.label.clone(),
             (None, _) => id.to_string(),
         }
+    }
+
+    /// O catálogo do agente, quando já carregou (para o menu de modelos da
+    /// Config).
+    pub fn catalog(&self) -> Option<&Catalog> {
+        self.catalog.as_ref()
     }
 
     /// Modelos para a Config: os do catálogo, ou os fixos do provedor
@@ -847,6 +952,7 @@ impl Chat {
                 .session_effort
                 .as_deref()
                 .or(self.default_effort.as_deref()),
+            subagent_model: self.subagent_model.as_deref(),
             extensions: &self.extensions,
             // Num chat delegado, quem delegou decide os pedidos de permissão
             // (pelo MCP do terra, quando ele está ligado ao chat).
@@ -860,6 +966,10 @@ impl Chat {
                 })
                 .map(|_| (mcp::SERVER_NAME, mcp::PERMISSION_TOOL)),
             allowed_tools: &self.allowed,
+            delegated: self.delegation.map(|_| Delegated {
+                mcp: &self.delegated_mcp,
+                tools: &self.delegated_tools,
+            }),
         });
         self.allowed.clear();
         let ok = started.is_ok();
@@ -1303,7 +1413,7 @@ impl Chat {
 
     /// "[Router] Modelo - Versão", com o router no estilo de botão (pill).
     fn model_title(&self) -> Line<'static> {
-        // TODO: o botão do router vai abrir a troca de provedor (adapters::all).
+        // O provedor é trocado na Config (Provedor).
         let router = self.adapter.as_ref().map_or("Sem agente", |a| a.name());
         let model = match (&self.model, &self.adapter) {
             (Some(id), Some(adapter)) => adapter.model_label(id),

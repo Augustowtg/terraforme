@@ -33,19 +33,22 @@ curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.
 irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
 ```
 
-Para instalar sem a pergunta, use `curl ... | bash -s -- -y`. Para outra branch ou tag, defina `TERRAFORME_REF` (ex.: `TERRAFORME_REF=v0.8.17`; no PowerShell, `$env:TERRAFORME_REF='v0.8.17'` antes do `irm`). Numa tag sem binário compilado (as anteriores à v0.8.17), numa branch (como a `main`) ou em outro processador, o instalador compila com o `cargo`, como os instaladores abaixo. O RTK das extensões é compilado com o `cargo`: sem o Rust, o instalador pula o RTK e avisa no fim. Os passos são os mesmos dos instaladores abaixo.
+Para instalar sem a pergunta, use `curl ... | bash -s -- -y`. Para outra branch ou tag, defina `TERRAFORME_REF` (ex.: `TERRAFORME_REF=v0.8.17`; no PowerShell, `$env:TERRAFORME_REF='v0.8.17'` antes do `irm`). Numa tag sem binário compilado (as anteriores à v0.8.17), numa branch (como a `main`) ou em outro processador, o instalador compila com o `cargo` o código baixado, como os instaladores abaixo com `--dev`. O RTK das extensões é compilado com o `cargo`: sem o Rust, o instalador pula o RTK e avisa no fim. Os passos são os mesmos dos instaladores abaixo.
+
+Para atualizar depois, rode `terra upgrade`: ele roda o mesmo comando (o `install.sh` no Linux, o `install.ps1` no Windows), sem clonar o repositório. Com `--repo`, roda o instalador do repositório do diretório atual (ou de um diretório acima): o `install-linux.sh` no Linux e o `install.ps1` no Windows, que, rodado de um clone, chama o `install-win.sh` do próprio clone em vez de baixar. Os argumentos depois passam para o instalador: `terra upgrade -y`, `terra upgrade --repo --dev` (compila e instala o código do repositório).
 
 Os binários vêm do workflow `release` do GitHub Actions: a cada tag `vX.Y.Z`, ele compila o `terra` para Linux (`terra-x86_64-unknown-linux-gnu`) e Windows (`terra-x86_64-pc-windows-msvc.exe`) e anexa os dois à release da tag, criando a release com as notas do CHANGELOG se ela ainda não existir. Para uma tag já publicada, rode o workflow pelo Actions com a tag.
 
 ### Linux
 
 ```bash
-./install-linux.sh
+./install-linux.sh        # instala a última release do GitHub
+./install-linux.sh --dev  # compila e instala este repositório
 ```
 
 O script:
 
-- compila em modo release;
+- baixa o binário da última release do GitHub (só x86_64) ou, com `--dev`, compila este repositório em modo release (precisa do Rust);
 - copia o binário para `~/.local/bin/terra`;
 - adiciona a função `terra` ao `~/.bashrc`, ao `~/.zshrc` (se o zsh estiver instalado) e ao `~/.config/fish/config.fish` (se o fish estiver instalado).
 
@@ -56,12 +59,13 @@ O bloco fica entre `# >>> terraforme >>>` e `# <<< terraforme <<<`. Rodar o scri
 ### Windows (Git Bash)
 
 ```bash
-./install-win.sh
+./install-win.sh        # instala a última release do GitHub
+./install-win.sh --dev  # compila e instala este repositório
 ```
 
 O script:
 
-- compila o projeto;
+- baixa o binário da última release do GitHub ou, com `--dev`, compila este repositório (precisa do Rust);
 - copia `terra.exe` para `~/.terraforme/bin`;
 - adiciona ao `~/.bashrc` essa pasta no `PATH` e a função `terra`, com os mesmos marcadores;
 - garante que o `~/.bash_profile` carregue o `~/.bashrc`;
@@ -80,6 +84,8 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
 | `terra mcp` | Roda o [MCP do terra](#aba-orquestrador) (o orquestrador) em `http://127.0.0.1:30303/mcp`. Com o MCP ativado nas Configurações, o `terra cli` já abre ele sozinho |
+| `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório |
+| `terra upgrade --repo` | Atualiza pelo instalador do repositório do diretório atual (`install-linux.sh` no Linux, `install.ps1` no Windows). Os argumentos passam para o instalador (ex.: `terra upgrade --repo --dev`) |
 
 ### Navegação no `terra cli`
 
@@ -214,11 +220,18 @@ O MCP do terra é um servidor [MCP](https://modelcontextprotocol.io) (JSON-RPC p
 
 Ativado, ao iniciar o `terra cli` verifica se já há um MCP na porta 30303: se houver, usa ele; se não, abre um num processo novo (`terra mcp`, que continua rodando depois que o terra fecha). Cada terra se registra nele e avisa, a cada 2 segundos, o workspace e se há uma sessão ativa com o agente; um terra que para de avisar por 6 segundos sai da lista.
 
-Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP ●`) e aparece a aba **Orquestrador**, entre as abas Extensões e Configurações. Em **Sessões**, ela mostra os spaces (os workspaces salvos e os abertos em algum terra) e, embaixo de cada um, os terra abertos nele, agrupados pelo workspace, com o pid de cada um:
+Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP ●`) e aparece a aba **Orquestrador**, entre as abas Extensões e Configurações. Em **Configurações**, ela mostra como o agente principal usa os chats que delega (os sub agentes), e em **Sessões**, ela mostra os spaces (os workspaces salvos e os abertos em algum terra) e, embaixo de cada um, os terra abertos nele, agrupados pelo workspace, com o pid de cada um:
 
 ```
  Orquestrador · http://127.0.0.1:30303/mcp
    3 terra cli abertos · 1 com sessão ativa
+
+ Configurações
+   Provedor            Claude
+   Modelo              Default (Opus - 5.5)
+   Modo dos chats      Accept Edits
+   Ao terminar         Fechar o chat
+   Ao abrir            Em segundo plano
 
  Sessões
  ▌ ● terraforme-cli  sessão ativa      /home/eu/terraforme-cli
@@ -229,9 +242,21 @@ Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP 
    ○ notas           fechado           /home/eu/notas
 ```
 
-A bola verde é um terra com uma conversa com o agente (no chat do terra ou na interface original do provedor), a amarela é só o terra cli aberto e a vazia, nenhum terra aberto. O space mostra o melhor estado entre os terra dele, e os terra com sessão ativa vêm primeiro. `↑`/`↓` escolhem o space; a lista se atualiza a cada segundo.
+A bola verde é um terra com uma conversa com o agente (no chat do terra ou na interface original do provedor), a amarela é só o terra cli aberto e a vazia, nenhum terra aberto. O space mostra o melhor estado entre os terra dele, e os terra com sessão ativa vêm primeiro. `↑`/`↓` passam pelas configurações e pelos spaces; a lista se atualiza a cada segundo.
+
+As configurações, gravadas no `~/.terraforme/config.json` (valem para todos os terra), mudam com `←`/`→` ou `Enter`:
+
+| Configuração | O que faz |
+| --- | --- |
+| Provedor | O provedor dos chats delegados. Por enquanto, só o **Claude** |
+| Modelo | O modelo e o esforço dos chats delegados. `Enter` abre o mesmo menu do `/model` (`↑`/`↓` escolhem o modelo, `←`/`→` o esforço, `Esc` fecha). **Default** (o padrão): no Claude, Sonnet com esforço médio; nos outros provedores, o modelo padrão |
+| Modo dos chats | O modo com que começam os chats delegados (o mesmo da seção MCP das Configurações). **Accept Edits** por padrão |
+| Ao terminar | **Fechar o chat** (o padrão): o chat delegado fecha sozinho quando termina a tarefa, e a resposta continua indo para quem delegou (o `wait` retorna `done`). **Manter aberto**: o chat fica na barra de chats até o `Alt+W` |
+| Ao abrir | **Em segundo plano** (o padrão): o chat delegado entra na barra de chats sem tirar você do chat atual. **Mostrar o chat**: a aba Chat passa para ele |
 
 Desativar o MCP nas Configurações fecha ele (para todos os terra) e esconde a aba. Para os agentes, o MCP tem a ferramenta `spaces`, a mesma lista.
+
+No Claude, o chat delegado roda enxuto, para gastar menos a cada chamada: sem os MCP, as skills, os plugins, os hooks e as permissões do seu Claude Code, só com as ferramentas `Bash`, `Read`, `Edit`, `Write`, `Glob` e `Grep` e com o MCP `ai-memory`. O prompt inicial dele cai de uns 27k para uns 11k tokens. Quem delega acrescenta o que a tarefa precisar nos campos `mcp` (servidores MCP do seu Claude Code, pelo nome, ex.: `git`) e `tools` (ferramentas embutidas, ex.: `WebFetch`) da ferramenta `chat`; se o delegado precisar de mais alguma, ele termina dizendo qual, e quem delegou delega de novo com ela. Do MCP do terra, o chat delegado só vê a ferramenta `permission`: ele não delega de novo. O `--mcp-config` dele fica num arquivo em `~/.terraforme/delegados/` (só do usuário), que some quando a resposta termina.
 
 ### Navegação no `terra workspace`
 
@@ -311,6 +336,7 @@ O código é organizado por funcionalidade: cada módulo tem uma responsabilidad
 ```
 src/
 ├── main.rs, cli.rs, db.rs, theme.rs
+├── upgrade.rs            # terra upgrade: roda o instalador do GitHub ou do repositório
 ├── settings.rs           # configurações da aba Configurações, salvas no banco
 ├── files.rs              # índice dos arquivos do diretório, atualizado em tempo real
 ├── mcp.rs                # MCP do terra: abrir, cliente e o Link de cada terra
@@ -355,6 +381,7 @@ src/
 | Módulo | Responsabilidade |
 | --- | --- |
 | `src/cli.rs` | Argumentos (clap) e execução dos comandos |
+| `src/upgrade.rs` | `terra upgrade`: roda o instalador do GitHub ou, com `--repo`, o do repositório |
 | `src/db.rs` | SQLite, canonicalização de paths e regras de nome |
 | `src/agent/` | Agente do chat: eventos e integração com o Claude CLI |
 | `src/extension/` | Extensões do agente: o contrato (Strategy), o Registry e as extensões |
@@ -375,7 +402,7 @@ O chat usa o padrão **Adapter**: ele só conhece o trait `ChatAdapter` (`src/ag
 2. Declare o módulo e inclua-o na lista de `all()` em `src/agent/adapters.rs`.
 
 Nada na interface muda: o histórico, os modos, o consumo e a sincronia do modo funcionam com qualquer adapter. O `src/tui/chat/tests.rs` tem um `FakeAdapter` que serve de exemplo mínimo.
-| `install.sh` / `install.ps1` | Instalação direto do GitHub (`curl ... \| bash` e `irm ... \| iex`) |
+| `install.sh` / `install.ps1` | Instalação direto do GitHub (`curl ... \| bash` e `irm ... \| iex`); o `terra upgrade` roda os mesmos. Rodado de um clone, o `install.ps1` chama o `install-win.sh` dele |
 | `install-powershell.ps1` | Põe o `terra` no `PATH` do usuário e nos perfis do PowerShell (chamado pelo `install-win.sh`) |
 | `.github/workflows/release.yml` | Compila o `terra` para Linux e Windows a cada tag e anexa os binários à release |
 | `install-ui.sh` | Interface dos instaladores (banner, progresso e confirmação) |

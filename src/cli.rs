@@ -37,6 +37,50 @@ enum Command {
     Workspace(WorkspaceArgs),
     /// Roda o MCP do terra (o orquestrador) em http://127.0.0.1:30303/mcp
     Mcp,
+    /// Atualiza o terra pelo instalador do GitHub (a última release)
+    Upgrade(UpgradeArgs),
+
+    /// O gancho de permissão do Antigravity (`agy`): o `agy` o roda antes de
+    /// cada ferramenta e ele leva o pedido a quem delegou o chat ou ao
+    /// usuário (uso interno)
+    #[command(hide = true)]
+    AgyPermissionHook(AgyHookArgs),
+}
+
+#[derive(Args)]
+#[command(group(clap::ArgGroup::new("route").required(true).args(["from", "channel"])))]
+struct AgyHookArgs {
+    /// O processo do terra do chat delegado
+    #[arg(long, requires = "chat")]
+    from: Option<u32>,
+
+    /// A delegação do chat
+    #[arg(long, requires = "from")]
+    chat: Option<u64>,
+
+    /// O arquivo do canal do chat do terra, quando o usuário decide
+    #[arg(long, value_name = "ARQUIVO")]
+    channel: Option<PathBuf>,
+
+    /// Edições de arquivo passam sem perguntar (modo Accept Edits)
+    #[arg(long)]
+    accept_edits: bool,
+}
+
+#[derive(Args)]
+struct UpgradeArgs {
+    /// Usa o instalador do repositório do diretório atual (install-linux.sh
+    /// no Linux, install.ps1 no Windows)
+    #[arg(long)]
+    repo: bool,
+
+    /// Argumentos passados ao instalador (ex.: -y, --dev)
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "ARGS"
+    )]
+    args: Vec<String>,
 }
 
 #[derive(Args)]
@@ -57,6 +101,16 @@ pub fn run() -> Result<()> {
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,
         Command::Mcp => crate::mcp::server::run()?,
+        Command::Upgrade(args) => crate::upgrade::run(args.repo, &args.args)?,
+        Command::AgyPermissionHook(args) => {
+            use crate::agent::adapters::antigravity::permission::{self, Route};
+            let route = match (args.from, args.chat, args.channel) {
+                (Some(pid), Some(chat), _) => Route::Delegator { pid, chat },
+                (_, _, Some(file)) => Route::User(file),
+                _ => unreachable!("o clap exige o --from com o --chat, ou o --channel"),
+            };
+            permission::hook(&route, args.accept_edits);
+        }
     }
     Ok(())
 }

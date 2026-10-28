@@ -91,6 +91,10 @@ impl ChatAdapter for FakeAdapter {
         Some(Command::new("fake-login"))
     }
 
+    fn login_error_words(&self) -> &[&str] {
+        &["authenticate", "oauth", "log in again", "not logged into"]
+    }
+
     fn command_route(&self, name: &str) -> agent::CommandRoute {
         match name {
             "hooks" => agent::CommandRoute::Original,
@@ -243,10 +247,12 @@ fn sends_through_adapter_and_continues_the_session() {
 #[test]
 fn settings_choose_start_mode_and_model() {
     let settings = AgentSettings {
+        provider: None,
         start_mode: StartMode::Fixed(PermissionMode::Plan),
         model: Some("haiku".into()),
         account: None,
         effort: None,
+        subagent_model: None,
         interface: Default::default(),
         context: Default::default(),
         usage: Default::default(),
@@ -477,6 +483,28 @@ fn auth_error_suggests_login() {
             "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."
                 .into(),
         ),
+        tokens: 0,
+        cache_tokens: 0,
+        denied: 0,
+    }];
+    let (mut chat, _) = fake_chat(true, reply);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.tick();
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info(
+            "Use /login para entrar de novo na conta Default.".into()
+        ))
+    );
+}
+
+#[test]
+fn not_logged_error_of_agy_suggests_login() {
+    let reply = vec![AgentEvent::Done {
+        is_error: true,
+        message: Some("error getting token source: You are not logged into Antigravity.".into()),
         tokens: 0,
         cache_tokens: 0,
         denied: 0,

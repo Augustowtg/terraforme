@@ -46,12 +46,13 @@ echo "Baixando o terraforme ($REF) de github.com/$REPO..."
 curl -fsSL "https://codeload.github.com/$REPO/tar.gz/$REF" | tar -xz -C "$tmp" --strip-components=1
 
 # O binário compilado da release, se a tag tiver um para este sistema; sem
-# ele, o instalador compila com o cargo.
+# ele, o instalador compila com o cargo o código baixado (--dev).
 if [ -n "$asset" ] && curl -fsSL -o "$tmp/$asset" "https://github.com/$REPO/releases/download/$REF/$asset" 2>/dev/null; then
   export TERRAFORME_BIN="$tmp/$asset"
   echo "Usando o binário compilado da release $REF."
-elif [ -n "$asset" ]; then
-  rm -f "$tmp/$asset"
+else
+  [ -z "$asset" ] || rm -f "$tmp/$asset"
+  set -- "$@" --dev
 fi
 
 # Com `curl | bash`, a entrada é o pipe: o instalador lê as teclas do terminal.
