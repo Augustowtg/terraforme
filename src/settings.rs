@@ -16,13 +16,14 @@
 //!     "interface": "terraforme",
 //!     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 },
 //!     "usage": { "display": "hidden", "total_display": "visible" }
-//!   },
-//!   "extensions": { "enabled": ["rtk", "ai-memory"] }
+//!   }
 //! }
 //! ```
 //!
-//! As extensões ativas ([`ExtensionSettings`]) também são de cada workspace;
-//! sem a chave, nenhuma.
+//! As extensões ativas ([`ExtensionSettings`]) são da conta do agente, para
+//! todos os workspaces, e ficam no banco (`terra.sqlite`). A antiga chave
+//! `"extensions": {"enabled": [...]}` do `config.json` só é lida uma vez, para
+//! levá-las ao banco.
 //!
 //! O MCP ([`McpSettings`]) é um só para a máquina, então fica no
 //! `~/.terraforme/config.json` ([`global_file`]):
@@ -294,43 +295,86 @@ impl AgentSettings {
     }
 }
 
-/// As extensões ativas no workspace (seção Extensões da Config).
+/// Em quantas contas uma extensão está ativa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionMode {
+    Off,
+    /// Só na conta do agente.
+    Account,
+    /// Em todas as contas ("usar sempre"): continua ativa ao trocar de conta.
+    Always,
+}
+
+/// As extensões ativas na conta do agente (seção Extensões da Config).
+///
+/// Ficam no banco ([`crate::db::Db::extension_settings`]), por conta e para
+/// todos os workspaces; as "usar sempre", para todas as contas.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ExtensionSettings {
-    /// Ids das extensões ativas, na ordem em que foram escolhidas.
+    /// Ids das extensões ativas só nesta conta, na ordem em que foram
+    /// escolhidas.
     pub enabled: Vec<String>,
+    /// Ids das extensões ativas em todas as contas.
+    pub always: Vec<String>,
 }
 
 impl ExtensionSettings {
-    /// Lê as extensões do `config.json` de um workspace; sem o arquivo ou a
-    /// chave, nenhuma.
-    pub fn load_file(path: &Path) -> Self {
-        let enabled = read_file(path)["extensions"]["enabled"]
+    /// As extensões do `config.json` de um workspace, de antes de elas irem
+    /// para o banco; sem o arquivo ou a chave, nenhuma.
+    pub fn load_file(path: &Path) -> Vec<String> {
+        read_file(path)["extensions"]["enabled"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|id| id.as_str().map(str::to_string))
-            .collect();
-        Self { enabled }
+            .collect()
     }
 
-    /// Grava as extensões no `config.json`, mantendo as outras chaves.
-    pub fn save_file(&self, path: &Path) -> Result<()> {
-        update_file(path, |json| {
-            json["extensions"] = json!({ "enabled": self.enabled });
-        })
+    /// Todas as ativas: as "usar sempre" e depois as da conta.
+    pub fn active(&self) -> Vec<String> {
+        let mut active = self.always.clone();
+        active.extend(
+            self.enabled
+                .iter()
+                .filter(|id| !self.always.contains(id))
+                .cloned(),
+        );
+        active
+    }
+
+    pub fn mode(&self, id: &str) -> ExtensionMode {
+        if self.always.iter().any(|e| e == id) {
+            ExtensionMode::Always
+        } else if self.enabled.iter().any(|e| e == id) {
+            ExtensionMode::Account
+        } else {
+            ExtensionMode::Off
+        }
     }
 
     pub fn is_enabled(&self, id: &str) -> bool {
-        self.enabled.iter().any(|e| e == id)
+        self.mode(id) != ExtensionMode::Off
     }
 
-    /// Liga a extensão `id`, ou desliga se ela já estava ativa.
-    pub fn toggle(&mut self, id: &str) {
-        if self.is_enabled(id) {
-            self.enabled.retain(|e| e != id);
-        } else {
-            self.enabled.push(id.to_string());
+    /// Passa a extensão `id` para o próximo modo: inativa → ativa nesta
+    /// conta → usar sempre → inativa. Retorna o novo modo.
+    pub fn toggle(&mut self, id: &str) -> ExtensionMode {
+        let mode = match self.mode(id) {
+            ExtensionMode::Off => ExtensionMode::Account,
+            ExtensionMode::Account => ExtensionMode::Always,
+            ExtensionMode::Always => ExtensionMode::Off,
+        };
+        self.set(id, mode);
+        mode
+    }
+
+    pub fn set(&mut self, id: &str, mode: ExtensionMode) {
+        self.enabled.retain(|e| e != id);
+        self.always.retain(|e| e != id);
+        match mode {
+            ExtensionMode::Off => {}
+            ExtensionMode::Account => self.enabled.push(id.to_string()),
+            ExtensionMode::Always => self.always.push(id.to_string()),
         }
     }
 }
@@ -536,32 +580,31 @@ mod tests {
     }
 
     #[test]
-    fn extensions_toggle_and_round_trip_with_the_agent_settings() {
+    fn extensions_cycle_off_account_always() {
+        let mut extensions = ExtensionSettings::default();
+        assert_eq!(extensions.toggle("rtk"), ExtensionMode::Account);
+        assert_eq!(extensions.toggle("ai-memory"), ExtensionMode::Account);
+        assert_eq!(extensions.toggle("ai-memory"), ExtensionMode::Always);
+        assert!(extensions.is_enabled("rtk"));
+        assert_eq!(extensions.enabled, ["rtk"]);
+        assert_eq!(extensions.always, ["ai-memory"]);
+        assert_eq!(extensions.active(), ["ai-memory", "rtk"]);
+        assert_eq!(extensions.toggle("ai-memory"), ExtensionMode::Off);
+        assert_eq!(extensions.active(), ["rtk"]);
+    }
+
+    #[test]
+    fn extensions_of_the_old_workspace_file_are_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = config_file(dir.path(), "terra");
-        assert_eq!(
-            ExtensionSettings::load_file(&path),
-            ExtensionSettings::default()
-        );
-
-        let mut extensions = ExtensionSettings::default();
-        extensions.toggle("rtk");
-        extensions.toggle("ai-memory");
-        assert!(extensions.is_enabled("rtk"));
-        extensions.toggle("rtk");
-        assert_eq!(extensions.enabled, ["ai-memory"]);
-
-        let agent = AgentSettings {
-            model: Some("opus".into()),
-            ..AgentSettings::default()
-        };
-        agent.save_file(&path).unwrap();
-        extensions.save_file(&path).unwrap();
-        agent.save_file(&path).unwrap();
-        assert_eq!(ExtensionSettings::load_file(&path), extensions);
-        assert_eq!(AgentSettings::load_file(&path), Some(agent));
-        let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(json["extensions"], json!({"enabled": ["ai-memory"]}));
+        assert!(ExtensionSettings::load_file(&path).is_empty());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"extensions": {"enabled": ["rtk", "ai-memory"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(ExtensionSettings::load_file(&path), ["rtk", "ai-memory"]);
     }
 
     #[test]

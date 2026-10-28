@@ -30,7 +30,7 @@ Configurações do agente (conta, modo inicial, modelo e esforço padrão), de c
 2. O nome é o do workspace salvo para o diretório ou, sem um, o nome da pasta
 3. O config.json é lido ao iniciar; sem ele, o workspace começa com o padrão do router (modo do provedor, modelo e esforço padrão, conta Default)
 4. Interface: Agente Terraforme (chat e input do terra) ou Original do provedor (o `claude` interativo dentro da aba Chat, mantendo a barra de abas; aberto ao iniciar e com Enter, com as mesmas configurações; Ctrl+Q volta às abas; trocar de Interface não fecha o terminal se já foi enviada uma mensagem)
-5. Seção Extensões, à direita do Agente (embaixo em telas estreitas): a lista das extensões no estilo da lista de modelos (`1. RTK - descrição`), paginada (5 por página, `←`/`→` trocam de página); `Espaço` (ou `Enter`) ativa ou desativa; `Shift+Tab` alterna entre o Agente e as Extensões. Salva em `extensions.enabled` no config.json do workspace
+5. Seção Extensões, à direita do Agente (embaixo em telas estreitas): a lista das extensões no estilo da lista de modelos (`1. RTK - descrição`), paginada (5 por página, `←`/`→` trocam de página); `Espaço` (ou `Enter`) passa de inativa para ativa nesta conta, usar sempre e inativa; `Shift+Tab` alterna entre o Agente e as Extensões. Salva no banco (`terra.sqlite`), por conta do agente; as de usar sempre valem em todas as contas
 
 ## Sair
 Botão em vermelho, e quando apertar Esc ele redireciona para o botão de sair quando clicar enter ele mostra o box abaixo

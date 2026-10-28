@@ -28,14 +28,15 @@ use crate::agent::{AccountOption, Catalog, ModelInfo, ModelOption};
 use crate::extension::Status;
 use crate::mcp;
 use crate::settings::{
-    AgentSettings, ContextSettings, ExtensionSettings, Interface, McpSettings, StartMode,
+    AgentSettings, ContextSettings, ExtensionMode, ExtensionSettings, Interface, McpSettings,
+    StartMode,
 };
 use crate::theme::{self, Variant};
 
 const HELP: &str =
     "↑/↓ escolher · ←/→ ou Enter alterar · Shift+Tab extensões · Tab trocar aba · Esc ir para Sair";
 const HELP_MODEL: &str = "↑/↓ escolher · Enter selecionar · Esc fechar";
-const HELP_EXTENSIONS: &str = "↑/↓ escolher · Espaço ativar · ←/→ página · Shift+Tab agente · Tab trocar aba · Esc ir para Sair";
+const HELP_EXTENSIONS: &str = "↑/↓ escolher · Espaço ativar/usar sempre/desativar · ←/→ página · Shift+Tab agente · Tab trocar aba · Esc ir para Sair";
 /// Largura da coluna dos nomes das configurações.
 const LABEL_WIDTH: usize = 18;
 /// Extensões em cada página.
@@ -301,8 +302,9 @@ impl ConfigView {
     }
 
     /// `↑`/`↓` andam pela lista (trocando de página), `←`/`→` trocam de
-    /// página e `Espaço`/`Enter` ligam ou desligam. Uma extensão que não
-    /// está instalada não liga, mas desliga.
+    /// página e `Espaço`/`Enter` passam de inativa para ativa nesta conta,
+    /// usar sempre e inativa de novo. Uma extensão que não está instalada não
+    /// liga, mas desliga.
     fn handle_extension_key(
         &mut self,
         key: KeyEvent,
@@ -329,8 +331,12 @@ impl ConfigView {
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
                 let option = &options[self.extension];
-                if !option.status.is_installed() && !settings.is_enabled(&option.id) {
-                    return Outcome::Moved;
+                if !option.status.is_installed() {
+                    if !settings.is_enabled(&option.id) {
+                        return Outcome::Moved;
+                    }
+                    settings.set(&option.id, ExtensionMode::Off);
+                    return Outcome::ExtensionsChanged;
                 }
                 settings.toggle(&option.id);
                 return Outcome::ExtensionsChanged;
@@ -510,7 +516,8 @@ impl ConfigView {
     }
 
     /// A seção Extensões: a página da extensão em foco, como a lista do
-    /// `/model` (`1. RTK - descrição`), com `[x]` nas ativas, os detalhes da
+    /// `/model` (`1. RTK - descrição`), com `[x]` nas ativas nesta conta e
+    /// `[*]` nas de usar sempre, os detalhes da
     /// que está em foco e a página.
     fn extension_lines(
         &self,
@@ -531,7 +538,11 @@ impl ConfigView {
         let pages = options.len().div_ceil(PAGE);
         for (i, option) in options.iter().enumerate().skip(page * PAGE).take(PAGE) {
             let enabled = settings.is_enabled(&option.id);
-            let check = if enabled { "[x]" } else { "[ ]" };
+            let check = match settings.mode(&option.id) {
+                ExtensionMode::Off => "[ ]",
+                ExtensionMode::Account => "[x]",
+                ExtensionMode::Always => "[*]",
+            };
             let mut text = format!("{}. {} - {}", i + 1, option.name, option.description);
             if !option.status.is_installed() {
                 text.push_str(" (indisponível)");
@@ -567,10 +578,15 @@ impl ConfigView {
         lines.push(Line::default());
 
         let option = &options[current];
-        let state = if settings.is_enabled(&option.id) {
-            Span::styled("ativa neste workspace", theme::variant(Variant::Success))
-        } else {
-            Span::styled("inativa", theme::muted())
+        let state = match settings.mode(&option.id) {
+            ExtensionMode::Off => Span::styled("inativa", theme::muted()),
+            ExtensionMode::Account => {
+                Span::styled("ativa nesta conta", theme::variant(Variant::Success))
+            }
+            ExtensionMode::Always => Span::styled(
+                "usar sempre (em todas as contas)",
+                theme::variant(Variant::Success),
+            ),
         };
         let status = match &option.status {
             Status::Installed { version: Some(v) } => {
@@ -972,6 +988,7 @@ mod tests {
         };
         let mut extensions = ExtensionSettings {
             enabled: vec!["ext2".into()],
+            ..ExtensionSettings::default()
         };
         let outcome = view.handle_key(
             KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
@@ -996,6 +1013,7 @@ mod tests {
         };
         let extensions = ExtensionSettings {
             enabled: vec!["ext7".into()],
+            ..ExtensionSettings::default()
         };
         let choices = Choices {
             extensions: extension_options(7),
@@ -1021,7 +1039,7 @@ mod tests {
         assert!(row(3).ends_with("▌ [x] 7. Ext7 - faz 7"), "{}", row(3));
         assert!(row(4).ends_with("‹ Página 2/2 ›"), "{}", row(4));
         assert!(
-            row(6).ends_with("Ext7 1.0 · ativa neste workspace"),
+            row(6).ends_with("Ext7 1.0 · ativa nesta conta"),
             "{}",
             row(6)
         );

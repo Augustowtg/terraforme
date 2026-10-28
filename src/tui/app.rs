@@ -184,7 +184,7 @@ pub struct App {
     settings: AgentSettings,
     /// As extensões conhecidas (estratégias), já detectadas.
     registry: Registry,
-    /// As extensões ativas no workspace.
+    /// As extensões ativas na conta do agente (e as de usar sempre).
     extensions: ExtensionSettings,
     /// O `config.json` do workspace, onde as configurações são salvas
     /// (`None` nos testes).
@@ -225,7 +225,6 @@ impl App {
     pub fn new(db: Db, dir: PathBuf, name: String, files: ConfigFiles) -> Self {
         let config = files.workspace;
         let settings = AgentSettings::load_file(&config).unwrap_or_default();
-        let extensions = ExtensionSettings::load_file(&config);
         let saved = db.workspace_name(&dir).ok().flatten().is_some();
         let mut app = Self {
             chat: Chat::connect(&settings),
@@ -233,7 +232,6 @@ impl App {
             open_provider: settings.interface == Interface::Provider,
             settings,
             registry: Registry::detect(),
-            extensions,
             config: Some(config),
             mcp: McpSettings::load_file(&files.global),
             global_config: Some(files.global),
@@ -242,7 +240,7 @@ impl App {
             db: Some(db),
             ..Self::default()
         };
-        app.apply_extensions();
+        app.load_extensions();
         app.update_view.check();
         if app.mcp.enabled {
             app.start_mcp();
@@ -425,11 +423,59 @@ impl App {
         }
     }
 
+    /// A conta das extensões: o provedor e a conta do agente (ex.:
+    /// `claude:.claude-trabalho`; a Default fica sem nada depois do `:`).
+    fn extension_account(&self) -> String {
+        format!(
+            "{}:{}",
+            self.chat.provider_id().unwrap_or_default(),
+            self.settings.account.as_deref().unwrap_or_default()
+        )
+    }
+
+    /// Lê do banco as extensões da conta do agente e as aplica. Na primeira
+    /// vez da conta, ela fica com as do `config.json` do workspace, de antes
+    /// de as extensões irem para o banco.
+    fn load_extensions(&mut self) {
+        if let Some(db) = &self.db {
+            let legacy = self
+                .config
+                .as_deref()
+                .map(ExtensionSettings::load_file)
+                .unwrap_or_default();
+            match db.extension_settings(&self.extension_account(), &legacy) {
+                Ok(extensions) => self.extensions = extensions,
+                Err(err) => self.chat.warn(format!("Extensões: {err:#}")),
+            }
+        }
+        self.apply_extensions();
+    }
+
+    /// Grava no banco as extensões que mudaram de modo desde `previous`.
+    fn save_extensions(&mut self, previous: &ExtensionSettings) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        let account = self.extension_account();
+        let mut ids = previous.active();
+        ids.extend(self.extensions.active());
+        for id in ids {
+            let mode = self.extensions.mode(&id);
+            if mode != previous.mode(&id)
+                && let Err(err) = db.set_extension(&account, &id, mode)
+            {
+                // Sem conseguir salvar, a mudança vale só nesta execução.
+                self.chat.warn(format!("Extensões: {err:#}"));
+                return;
+            }
+        }
+    }
+
     /// Passa aos chats o que as extensões ativas acrescentam ao agente (vale
     /// a partir da próxima mensagem), mais o MCP do terra quando ligado; as
     /// que falharem viram avisos.
     fn apply_extensions(&mut self) {
-        let (mut contribution, warnings) = self.registry.contribution(&self.extensions.enabled);
+        let (mut contribution, warnings) = self.registry.contribution(&self.extensions.active());
         if self.mcp_link.is_some() {
             // O MCP só atende com o token: o agente o manda no cabeçalho e o
             // recebe pelo ambiente, fora da linha de comando.
@@ -492,6 +538,7 @@ impl App {
     fn handle_config_key(&mut self, key: KeyEvent) -> bool {
         let choices = self.choices();
         let previous = self.settings.clone();
+        let previous_extensions = self.extensions.clone();
         match self.config_view.handle_key(
             key,
             &mut self.settings,
@@ -506,10 +553,7 @@ impl App {
                 true
             }
             config::Outcome::ExtensionsChanged => {
-                if let Some(config) = &self.config {
-                    // Sem conseguir salvar, a mudança vale só nesta execução.
-                    let _ = self.extensions.save_file(config);
-                }
+                self.save_extensions(&previous_extensions);
                 self.apply_extensions();
                 true
             }
@@ -640,6 +684,7 @@ impl App {
 
     /// Salva as configurações e as aplica ao chat.
     fn save_settings(&mut self, previous: &AgentSettings) {
+        let provider = self.chat.provider_id().map(str::to_string);
         if let Some(config) = &self.config {
             // Sem conseguir salvar, a mudança vale só nesta execução.
             let _ = self.settings.save_file(config);
@@ -647,6 +692,12 @@ impl App {
         self.chat.apply_settings(&self.settings, Some(previous));
         for tab in &mut self.chats {
             tab.chat.apply_settings(&self.settings, Some(previous));
+        }
+        // Outra conta (ou provedor): as extensões passam a ser as dela.
+        if self.settings.account != previous.account
+            || self.chat.provider_id() != provider.as_deref()
+        {
+            self.load_extensions();
         }
     }
 
@@ -1660,13 +1711,19 @@ mod tests {
         let config = crate::settings::config_file(dir.path(), "terra");
         let mut app = App {
             config: Some(config.clone()),
+            db: Some(Db::open_in_memory().unwrap()),
             registry: Registry::new(vec![Box::new(Fake)]),
             tab: Tab::Config,
             ..App::default()
         };
+        let saved = |app: &App| {
+            let db = app.db.as_ref().unwrap();
+            db.extension_settings(&app.extension_account(), &[])
+                .unwrap()
+        };
         assert!(!key(&mut app, KeyCode::BackTab));
         assert!(!key(&mut app, KeyCode::Char(' ')));
-        assert_eq!(ExtensionSettings::load_file(&config).enabled, ["fake"]);
+        assert_eq!(saved(&app).enabled, ["fake"]);
         assert_eq!(app.chat.extensions().hooks[0].command, "fake");
         // O agente continua igual.
         assert_eq!(
@@ -1674,8 +1731,29 @@ mod tests {
             AgentSettings::default()
         );
 
+        // Na outra conta, só fica a de usar sempre.
+        let previous = app.settings.clone();
+        app.settings.account = Some(".claude-trabalho".into());
+        app.save_settings(&previous);
+        assert!(app.extensions.active().is_empty());
+        assert_eq!(app.chat.extensions(), &Contribution::default());
+        let previous = app.settings.clone();
+        app.settings.account = None;
+        app.save_settings(&previous);
+        assert_eq!(app.extensions.enabled, ["fake"]);
+
         key(&mut app, KeyCode::Char(' '));
-        assert!(ExtensionSettings::load_file(&config).enabled.is_empty());
+        assert_eq!(saved(&app).always, ["fake"]);
+        let previous = app.settings.clone();
+        app.settings.account = Some(".claude-trabalho".into());
+        app.save_settings(&previous);
+        assert_eq!(app.chat.extensions().hooks[0].command, "fake");
+        let previous = app.settings.clone();
+        app.settings.account = None;
+        app.save_settings(&previous);
+
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(saved(&app), ExtensionSettings::default());
         assert_eq!(app.chat.extensions(), &Contribution::default());
 
         // A aba Extensões fica entre Consumo e Config.

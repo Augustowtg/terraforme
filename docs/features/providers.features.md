@@ -498,8 +498,8 @@ Cada extensão é uma estratégia que implementa o trait `Extension` (`src/exten
 
 ### Da extensão ao processo do agente
 
-1. A Config liga e desliga uma extensão por workspace: `handle_extension_key` faz `settings.toggle(id)` (`src/tui/config.rs:324-330`). Os ids ficam em `ExtensionSettings.enabled`, no `config.json` do workspace (`src/settings.rs:292`).
-2. `App::apply_extensions` (`src/tui/app.rs:359-379`) chama `registry.contribution(&enabled)`.
+1. A Config muda o modo de uma extensão (inativa → ativa nesta conta → usar sempre): `handle_extension_key` faz `settings.toggle(id)` (`src/tui/config.rs`). Os ids ficam em `ExtensionSettings.enabled` (da conta) e `ExtensionSettings.always`, no banco (`Db::extension_settings` / `Db::set_extension`, `src/db.rs`), por conta do agente (`App::extension_account`).
+2. `App::apply_extensions` (`src/tui/app.rs`) chama `registry.contribution(&extensions.active())`.
    - Com o MCP do terra ligado, acrescenta o servidor `terra` (HTTP, `mcp::agent_url(pid)`) (`app.rs:361-366`).
    - Num chat delegado, `delegated()` troca a URL por `delegated_url(pid, id)` (`app.rs:1199-1209`).
    - O resultado vai para cada chat com `chat.set_extensions` (`src/tui/chat.rs:351`).

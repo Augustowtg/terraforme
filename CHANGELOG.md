@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.28] - 2026-10-28
+
+### Alterado
+
+- As extensões passam a ser da conta do agente (provedor e conta), para todos os workspaces, e ficam no banco (`~/.terraforme/terra.sqlite`) em vez do `config.json` do workspace. Na primeira vez de uma conta, ela começa com as que estavam no `config.json` do workspace aberto.
+- Na seção Extensões das Configurações, o `Espaço` passa a extensão de inativa para **ativa nesta conta** (`[x]`), **usar sempre** (`[*]`) e inativa de novo. As de usar sempre continuam ativas ao trocar de conta; trocando a conta na seção Agente, as extensões passam a ser as da nova conta.
+
 ## [0.8.27] - 2026-10-28
 
 ### Adicionado

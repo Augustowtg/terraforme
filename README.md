@@ -110,7 +110,7 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 150K (30%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra vem oculta: para vê-la, troque o Display na seção Contexto da aba Configurações. À esquerda dela, a **barra de consumo** mostra quanto resta da sessão de 5 horas do provedor e quando ela zera (ex.: `58% · reseta 15:00`): verde, laranja de 50% para baixo, vermelha de 25% para baixo e cinza ao chegar em 0%. Ela vem oculta; para vê-la, troque o Display na seção Consumo da aba Configurações. Visível, é atualizada a cada minuto |
 | `↑` / `↓` (aba Extensões) | Escolhem a extensão; `r` atualiza o relatório dela |
 | `Shift+Tab` (aba Configurações) | Alterna entre a seção Agente e a seção Extensões |
-| `Espaço` (aba Configurações, Extensões) | Ativa ou desativa a extensão em foco neste workspace; `←`/`→` trocam de página |
+| `Espaço` (aba Configurações, Extensões) | Passa a extensão em foco de inativa para ativa nesta conta, usar sempre e inativa de novo; `←`/`→` trocam de página |
 | `r` (aba Consumo) | Atualiza o consumo na hora (ele também se atualiza sozinho a cada minuto com a aba aberta) |
 | `c` ou clique nos botões (aba Consumo) | Alterna o gráfico Consumo por dia entre **Sem cache** (padrão) e **Com cache** |
 | Clique num dia (aba Consumo) | Mostra o consumo daquele dia por hora; **‹ Dias** ou `Esc` volta |
@@ -177,8 +177,7 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
     "interface": "terraforme",
     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 },
     "usage": { "display": "hidden" }
-  },
-  "extensions": { "enabled": ["rtk", "ai-memory"] }
+  }
 }
 ```
 
@@ -212,7 +211,7 @@ Embaixo do Consumo, separada da seção Agente, fica a seção **MCP**, com uma 
 | Servidor | **Desativado** (o padrão) ou **Ativado**: abre o [MCP](#aba-orquestrador) e mostra a aba Orquestrador. Desativar fecha o MCP |
 | Endereço | `http://127.0.0.1:30303/mcp` (só leitura) |
 
-À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) ativa ou desativa a extensão neste workspace. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada aparece como **indisponível** (`(indisponível)` na lista e `indisponível (não instalada)` embaixo) e não pode ser ativada. As ativas ficam em `extensions.enabled` no `config.json` e valem a partir da próxima mensagem; sem a chave, nenhuma.
+À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas nesta conta e `[*]` nas de usar sempre, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) passa a extensão de inativa para **ativa nesta conta**, **usar sempre** e inativa de novo. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada aparece como **indisponível** (`(indisponível)` na lista e `indisponível (não instalada)` embaixo) e não pode ser ativada. As extensões são da conta do agente (o provedor e a conta da seção Agente), valem em todos os workspaces e ficam no banco (`~/.terraforme/terra.sqlite`); as de usar sempre continuam ativas ao trocar de conta. Valem a partir da próxima mensagem. Na primeira vez de uma conta, ela começa com as que estavam em `extensions.enabled` no `config.json` do workspace (de antes da v0.8.28).
 
 ### Aba Orquestrador
 
