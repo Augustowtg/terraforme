@@ -271,7 +271,9 @@ As extensões ativas (aba Configurações) são a exceção: os servidores MCP d
 
 O modo fica sincronizado com o agente, menos o Yolo, que é só do terra: nele o agente pede permissão e o terra aceita tudo. O `terra cli` começa no `permissions.defaultMode` configurado no Claude (settings local, do projeto ou do usuário), e a cada resposta confere o modo em que o agente diz estar; se for outro, o terminal passa a mostrar o modo real. Trocar com `Shift+Tab` durante uma resposta mostra `Modo: atual → próximo`, e o novo modo vale a partir da próxima mensagem. Com o agente ativo, o badge de modo fica sempre visível.
 
-No modo Manual ainda não há como aprovar ferramentas pela interface: as que pedem aprovação são bloqueadas, e o histórico avisa quantas foram.
+Fora do Yolo, quando o agente pede permissão para uma ferramenta, aparece acima do input uma caixa **Permissão** com a ferramenta e o que ela vai fazer (ex.: `Bash` e o comando), com os botões **Permitir** e **Negar**: `←`/`→` escolhem e `Enter` confirma; `s` permite direto, e `n` ou `Esc` negam. Enquanto a caixa está aberta, ela fica com as teclas (menos o `Tab`, que continua trocando de aba) e a atividade mostra `Aguardando permissão para Bash...`. Pedidos que chegam juntos entram numa fila e aparecem um de cada vez. Cada resposta fica no histórico (`Permitido: Bash (ls).` ou `Negado: ...`), e interromper a resposta descarta os pedidos abertos. Os pedidos chegam pelo `--permission-prompt-tool stdio`; num chat delegado pelo orquestrador, quem delegou continua decidindo, pelo MCP do terra.
+
+No modo **Agente** (`auto`), quem decide é o classificador do próprio Claude, que não pergunta: quando ele bloqueia uma ferramenta, o agente segue sem ela. O terra mostra cada bloqueio na mesma caixa, com o título **Bloqueado pelo modo Agente** e o motivo, e ela continua aberta depois do fim da resposta. Com **Permitir**, quando todos os pedidos estiverem respondidos, o terra manda uma mensagem nova na mesma sessão pedindo ao agente para fazer o que foi bloqueado, com só aquela chamada liberada no `--allowedTools`: o comando exato no `Bash`, o arquivo nas ferramentas de arquivo e o domínio no `WebFetch` (nas outras, a ferramenta). O histórico mostra `Fazendo o que foi permitido...`. Ferramentas negadas por uma regra `deny` dos settings continuam negadas, sem caixa.
 
 ## Como o `terra` troca de diretório
 
@@ -343,6 +345,7 @@ src/
         ├── mention.rs    # menções de arquivo com @: lista, filtro e badge
         ├── commands.rs   # comandos com /: lista do agente e interfaces do terra
         ├── model_menu.rs # interface do /model: modelo e esforço
+        ├── permission.rs # pedidos de permissão do agente: Permitir ou Negar
         ├── history.rs    # histórico: quebra de linha, rolagem, seleção
         └── tests.rs      # testes do Chat (com um adapter de mentira)
 ```
@@ -365,7 +368,7 @@ O chat usa o padrão **Adapter**: ele só conhece o trait `ChatAdapter` (`src/ag
 1. Crie `src/agent/adapters/<provedor>.rs` com uma struct que implemente `ChatAdapter`:
    - `name()`: o nome no botão do título (ex.: `"Claude"`);
    - `is_available()`: se o provedor está instalado ou configurado (sem ele, o chat fica Desconectado com o `unavailable_hint()`);
-   - `start(Request)`: começa uma resposta e devolve uma `Session`, cujo `poll()` entrega os `AgentEvent`s até `Done` ou `Failed`. No `PermissionMode::Yolo`, aprove tudo o que o agente pedir;
+   - `start(Request)`: começa uma resposta e devolve uma `Session`, cujo `poll()` entrega os `AgentEvent`s até `Done` ou `Failed`. No `PermissionMode::Yolo`, aprove tudo o que o agente pedir; nos outros modos, mande cada pedido de permissão como `AgentEvent::PermissionRequest` e aplique a resposta que o chat der em `Session::respond`;
    - opcionais: `configured_mode()` (modo inicial vindo da configuração do provedor), `model_label()` (nome amigável do modelo), `load_usage()` e `load_daily()` (o consumo e os tokens por dia da aba Consumo, em segundo plano) e `login()` (o comando interativo do `/login`).
 2. Declare o módulo e inclua-o na lista de `all()` em `src/agent/adapters.rs`.
 

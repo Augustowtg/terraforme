@@ -1,7 +1,7 @@
 //! Parser do `--output-format stream-json` do Claude CLI: cada linha (um
 //! JSON) vira zero ou mais [`AgentEvent`]s.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -24,6 +24,9 @@ pub struct StreamParser {
     /// A conversa foi compactada nesta resposta: o uso do `result` é o da
     /// compactação, não o do contexto que ficou.
     compacted: bool,
+    /// As ferramentas chamadas nesta resposta (pelo id do `tool_use`), para
+    /// saber a entrada de uma que o modo bloqueou.
+    tools: HashMap<String, (String, Value)>,
 }
 
 impl StreamParser {
@@ -46,6 +49,9 @@ impl StreamParser {
                     .as_u64()
                     .filter(|&t| t > 0);
                 vec![AgentEvent::Compacted { tokens }]
+            }
+            Some("system") if value["subtype"] == "permission_denied" => {
+                self.blocked(&value).into_iter().collect()
             }
             Some("stream_event") => self.stream_event(&value["event"]),
             Some("assistant") => self.assistant(&value["message"]),
@@ -87,14 +93,35 @@ impl StreamParser {
             .chain(
                 blocks(&message["content"]).filter_map(|block| match block["type"].as_str() {
                     Some("text") if !streamed => Some(AgentEvent::Text(text(&block["text"]))),
-                    Some("tool_use") => Some(AgentEvent::ToolUse {
-                        name: text(&block["name"]),
-                        detail: tool_detail(&block["input"]),
-                    }),
+                    Some("tool_use") => {
+                        let name = text(&block["name"]);
+                        self.tools
+                            .insert(text(&block["id"]), (name.clone(), block["input"].clone()));
+                        Some(AgentEvent::ToolUse {
+                            name,
+                            detail: tool_detail(&block["input"]),
+                        })
+                    }
                     _ => None,
                 }),
             )
             .collect()
+    }
+
+    /// Uma ferramenta que o classificador do modo `auto` bloqueou sem
+    /// perguntar. As negadas por uma regra do usuário (`deny`) ficam
+    /// negadas: não viram pedido.
+    fn blocked(&self, value: &Value) -> Option<AgentEvent> {
+        if value["decision_reason_type"] != "classifier" {
+            return None;
+        }
+        let (name, input) = self.tools.get(value["tool_use_id"].as_str()?)?;
+        Some(AgentEvent::Blocked {
+            name: name.clone(),
+            detail: tool_detail(input),
+            reason: first_line(&text(&value["decision_reason"])),
+            allow: allow_rule(name, input),
+        })
     }
 
     /// Fim da resposta: o contexto da última chamada, com o limite do
@@ -184,7 +211,7 @@ fn result(value: &Value) -> AgentEvent {
 }
 
 /// O dado mais útil da chamada: o comando, o arquivo, o padrão...
-fn tool_detail(input: &Value) -> String {
+pub fn tool_detail(input: &Value) -> String {
     const KEYS: [&str; 8] = [
         "command",
         "file_path",
@@ -199,6 +226,29 @@ fn tool_detail(input: &Value) -> String {
         .find_map(|key| input[key].as_str())
         .map(first_line)
         .unwrap_or_default()
+}
+
+/// A regra do `--allowedTools` que libera só esta chamada: o comando exato
+/// no `Bash`, o arquivo nas ferramentas de arquivo (`//` é o caminho
+/// absoluto) e o domínio no `WebFetch`; nas outras, a ferramenta.
+fn allow_rule(name: &str, input: &Value) -> String {
+    let specifier = match name {
+        "Bash" => input["command"].as_str().map(str::to_string),
+        "WebFetch" => input["url"]
+            .as_str()
+            .and_then(|url| url.split("://").nth(1))
+            .and_then(|rest| rest.split(['/', '?', '#']).next())
+            .map(|host| format!("domain:{host}")),
+        _ => input["file_path"]
+            .as_str()
+            .or(input["notebook_path"].as_str())
+            .filter(|path| path.starts_with('/'))
+            .map(|path| format!("/{path}")),
+    };
+    match specifier {
+        Some(specifier) => format!("{name}({specifier})"),
+        None => name.to_string(),
+    }
 }
 
 fn blocks(content: &Value) -> impl Iterator<Item = &Value> {
@@ -365,6 +415,41 @@ mod tests {
             r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":150000}}"#,
         ]);
         assert_eq!(events[0], AgentEvent::Compacted { tokens: None });
+    }
+
+    #[test]
+    fn classifier_denials_become_blocked_with_an_allow_rule() {
+        let mut parser = StreamParser::default();
+        parser.parse(
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git push --force"}}]}}"#,
+        );
+        let events = parser.parse(
+            r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"t1","decision_reason_type":"classifier","decision_reason":"perigoso\ndetalhes"}"#,
+        );
+        assert_eq!(
+            events,
+            [AgentEvent::Blocked {
+                name: "Bash".into(),
+                detail: "git push --force".into(),
+                reason: "perigoso".into(),
+                allow: "Bash(git push --force)".into(),
+            }]
+        );
+        // Negada por uma regra do usuário: fica negada.
+        let rule = r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"t1","decision_reason_type":"rule"}"#;
+        assert_eq!(parser.parse(rule), []);
+    }
+
+    #[test]
+    fn allow_rules_name_only_the_blocked_call() {
+        let rule = |name: &str, input: &str| allow_rule(name, &serde_json::from_str(input).unwrap());
+        assert_eq!(rule("Bash", r#"{"command":"rm -rf x"}"#), "Bash(rm -rf x)");
+        assert_eq!(rule("Edit", r#"{"file_path":"/home/a/x.rs"}"#), "Edit(//home/a/x.rs)");
+        assert_eq!(
+            rule("WebFetch", r#"{"url":"https://docs.rs/serde?x=1"}"#),
+            "WebFetch(domain:docs.rs)"
+        );
+        assert_eq!(rule("Task", r#"{"prompt":"x"}"#), "Task");
     }
 
     #[test]
