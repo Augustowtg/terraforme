@@ -4,6 +4,18 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.29] - 2026-10-28
+
+### Alterado
+
+- O terra não tem mais um MCP próprio: saem o comando `terra mcp`, o servidor em `http://127.0.0.1:30303/mcp`, a seção MCP das Configurações, a aba de sessões por workspace e os chats delegados que um agente abria pela ferramenta `chat` (com o `permission`, o `spaces`, o `wait` e o `decide`). O agente do chat não recebe mais esse MCP.
+- A aba **Orquestrador**, entre Extensões e Configurações, agora mostra só as configurações dos chats delegados (provedor, modelo, modo dos chats, ao terminar e ao abrir), que ficam no `~/.terraforme/config.json` em `{"orchestrator": {...}}` (a antiga chave `mcp` é lida e sai ao salvar). Por enquanto, elas só ficam salvas: o terra ainda não delega chats. Os chats extras continuam com `Alt+N`.
+- `terra agy-permission-hook`: o `--channel` passa a ser obrigatório e saem o `--from` e o `--chat`, porque não há mais chat delegado para levar o pedido.
+
+### Corrigido
+
+- O `claude` não iniciava com `Error: opening managed workstream; the agent was not started` / `409 Conflict: workstream is already active`: no fim do turno o terra encerra o grupo do lançador, e o `ai-memory run` não chega a liberar o workstream, que fica preso até o TTL (cerca de 90 s) e barra a mensagem seguinte. O lançador do ai-memory agora vai com `--force-unlock`, que retoma o workstream do mesmo operador quando o lançador anterior já morreu.
+
 ## [0.8.28] - 2026-10-28
 
 ### Alterado
