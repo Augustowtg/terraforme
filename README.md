@@ -35,7 +35,7 @@ irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | i
 
 Para instalar sem a pergunta, use `curl ... | bash -s -- -y`. Para outra branch ou tag, defina `TERRAFORME_REF` (ex.: `TERRAFORME_REF=v0.8.17`; no PowerShell, `$env:TERRAFORME_REF='v0.8.17'` antes do `irm`). Numa tag sem binário compilado (as anteriores à v0.8.17), numa branch (como a `main`) ou em outro processador, o instalador compila com o `cargo` o código baixado, como os instaladores abaixo com `--dev`. O RTK das extensões é compilado com o `cargo`: sem o Rust, o instalador pula o RTK e avisa no fim. Os passos são os mesmos dos instaladores abaixo.
 
-Para atualizar depois, rode `terra upgrade`: ele roda o mesmo comando (o `install.sh` no Linux, o `install.ps1` no Windows), sem clonar o repositório. Com `--repo`, roda o instalador do repositório do diretório atual (ou de um diretório acima): o `install-linux.sh` no Linux e o `install.ps1` no Windows, que, rodado de um clone, chama o `install-win.sh` do próprio clone em vez de baixar. Os argumentos depois passam para o instalador: `terra upgrade -y`, `terra upgrade --repo --dev` (compila e instala o código do repositório).
+Para atualizar depois, rode `terra upgrade`: ele roda o mesmo comando (o `install.sh` no Linux, o `install.ps1` no Windows), sem clonar o repositório: antes, confere no CHANGELOG do GitHub se há versão nova (se não há, avisa e para), instala sem perguntar e, no fim, mostra o que mudou. Com `--repo`, roda o instalador do repositório do diretório atual (ou de um diretório acima): o `install-linux.sh` no Linux e o `install.ps1` no Windows, que, rodado de um clone, chama o `install-win.sh` do próprio clone em vez de baixar. Os argumentos depois passam para o instalador: `terra upgrade -y`, `terra upgrade --repo --dev` (compila e instala o código do repositório).
 
 Os binários vêm do workflow `release` do GitHub Actions: a cada tag `vX.Y.Z`, ele compila o `terra` para Linux (`terra-x86_64-unknown-linux-gnu`) e Windows (`terra-x86_64-pc-windows-msvc.exe`) e anexa os dois à release da tag, criando a release com as notas do CHANGELOG se ela ainda não existir. Para uma tag já publicada, rode o workflow pelo Actions com a tag.
 
@@ -84,7 +84,7 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
 | `terra mcp` | Roda o [MCP do terra](#aba-orquestrador) (o orquestrador) em `http://127.0.0.1:30303/mcp`. Com o MCP ativado nas Configurações, o `terra cli` já abre ele sozinho |
-| `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório |
+| `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório, e mostra o que mudou |
 | `terra upgrade --repo` | Atualiza pelo instalador do repositório do diretório atual (`install-linux.sh` no Linux, `install.ps1` no Windows). Os argumentos passam para o instalador (ex.: `terra upgrade --repo --dev`) |
 
 ### Navegação no `terra cli`
