@@ -3,8 +3,10 @@
 //! confirmação de saída. Saindo de um workspace que não está salvo, a tela
 //! pergunta se ele deve ser salvo (Sim, Não ou Não, sem perguntar de novo).
 //!
-//! O orquestrador é a aba com as configurações dos chats delegados (os sub
-//! agentes): por enquanto, só ficam salvas. Chats além do principal se abrem
+//! O orquestrador é a aba com os terminais do terra abertos na máquina,
+//! separados por workspace (vindos do daemon orquestrador, o [`hub`]), e as
+//! configurações dos chats delegados (os sub agentes), que por enquanto só
+//! ficam salvas. Cada terra conta ao hub o que está fazendo a cada tick. Chats além do principal se abrem
 //! com `Alt+N`: aparecem numa barra de chats embaixo da barra de abas, no
 //! mesmo tema, e `Alt+←/→` troca de chat.
 
@@ -29,6 +31,10 @@ use crate::agent::Interactive;
 use crate::agent::adapters::ProviderOption;
 use crate::db::Db;
 use crate::extension::Registry;
+use crate::hub::{
+    self,
+    client::{Monitor, Reporter},
+};
 use crate::platform::keyboard;
 use crate::settings::{
     AgentSettings, ExtensionSettings, Interface, OrchestratorSettings, StartMode,
@@ -208,16 +214,28 @@ pub struct App {
     term: Option<Term>,
     /// As teclas vão para o terminal (até o `Ctrl+Q`).
     term_focus: bool,
+    /// Este terra no daemon orquestrador (`None` nos testes ou sem o hub).
+    hub: Option<Reporter>,
+    /// A lista do orquestrador, assinada ao abrir a aba Orquestrador.
+    hub_monitor: Option<Monitor>,
 }
 
 impl App {
     /// Tela principal com o chat ligado ao provedor disponível e as
     /// configurações do workspace `name`, em `dir`, lidas dos arquivos
     /// `files` (sem eles, o padrão do router) e salvas neles.
-    pub fn new(db: Db, dir: PathBuf, _name: String, files: ConfigFiles) -> Self {
+    pub fn new(db: Db, dir: PathBuf, name: String, files: ConfigFiles) -> Self {
         let config = files.workspace;
         let settings = AgentSettings::load_file(&config).unwrap_or_default();
         let saved = db.workspace_name(&dir).ok().flatten().is_some();
+        let hub = Reporter::start(
+            name,
+            dir.to_string_lossy().into_owned(),
+            hub::protocol::Status {
+                chats: 1,
+                ..Default::default()
+            },
+        );
         let mut app = Self {
             chat: Chat::connect(&settings),
             providers: crate::agent::adapters::options(),
@@ -229,6 +247,7 @@ impl App {
             global_config: Some(files.global),
             workspace: Some(Workspace { dir, saved }),
             db: Some(db),
+            hub,
             ..Self::default()
         };
         app.load_extensions();
@@ -817,14 +836,42 @@ impl App {
         }
         self.extensions_view.tick();
         self.update_view.tick();
-        // No Orquestrador, a aba carrega o catálogo do provedor escolhido.
+        self.report_to_hub();
+        // No Orquestrador, a aba carrega o catálogo do provedor escolhido e
+        // assina a lista do hub (só com o hub ligado: não nos testes).
         if self.tab == Tab::Orquestrador {
+            if self.hub.is_some() && self.hub_monitor.is_none() {
+                self.hub_monitor = Monitor::start();
+            }
             self.sync_delegated();
             let own = self.delegated_is_own();
             self.orchestrator_view.sync(match &self.delegated {
                 Some(d) if !own => d.catalog(),
                 _ => self.chat.catalog(),
             });
+        }
+    }
+
+    /// O que este terra está fazendo, para o hub: algum chat rodando, o que
+    /// o agente faz e os chats abertos (os além do principal são os sub
+    /// agentes).
+    fn hub_status(&self) -> hub::protocol::Status {
+        let chats = std::iter::once(&self.chat).chain(self.chats.iter().map(|c| &c.chat));
+        let task = chats.clone().find_map(Chat::activity);
+        hub::protocol::Status {
+            running: task.is_some(),
+            task: task.map(str::to_string),
+            chats: self.chats.len() + 1,
+            agents: self.chats.len(),
+        }
+    }
+
+    /// Manda o estado ao hub; o [`Reporter`] só manda quando mudou e nunca
+    /// espera.
+    fn report_to_hub(&mut self) {
+        let status = self.hub_status();
+        if let Some(hub) = &mut self.hub {
+            hub.set_status(status);
         }
     }
 
@@ -999,8 +1046,13 @@ impl App {
                 delegated,
                 &label,
             );
+            let instances = self.hub_monitor.as_ref().map(Monitor::instances);
+            let hub = orchestrator_tab::HubView {
+                instances: instances.as_ref(),
+                own: self.hub.as_ref().map(Reporter::id),
+            };
             self.orchestrator_view
-                .draw(frame, area, &self.orchestrator, &agent);
+                .draw(frame, area, &self.orchestrator, &agent, &hub);
             return;
         }
         if self.tab == Tab::Atualizacao {
