@@ -88,6 +88,7 @@ mod tests {
             }],
             mcp_servers: Vec::new(),
             env: Vec::new(),
+            launchers: Vec::new(),
         }
     }
 
@@ -101,6 +102,7 @@ mod tests {
                 ..Default::default()
             }],
             env: Vec::new(),
+            launchers: Vec::new(),
         };
         Registry::new(vec![
             Box::new(Fake {

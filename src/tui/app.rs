@@ -860,7 +860,9 @@ impl App {
         }
         match (self.focus, key.code) {
             (Focus::Tabs, KeyCode::Tab) => {
-                self.tab = self.tab.next(self.mcp_online(), self.update_view.available())
+                self.tab = self
+                    .tab
+                    .next(self.mcp_online(), self.update_view.available())
             }
             (Focus::Tabs, KeyCode::Esc) => self.focus = Focus::Quit,
             (Focus::Quit, KeyCode::Enter) => self.focus = Focus::Confirm(true),
@@ -1649,6 +1651,7 @@ mod tests {
                     }],
                     mcp_servers: Vec::new(),
                     env: Vec::new(),
+                    launchers: Vec::new(),
                 })
             }
         }

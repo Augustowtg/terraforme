@@ -346,3 +346,60 @@ pub trait Session {
     /// da ferramenta, senão ele é negado.
     fn respond(&mut self, _id: &str, _allow: bool) {}
 }
+
+/// O processo de `bin` (o provedor `harness` no lançador, ex.: `claude`),
+/// iniciado pelos lançadores das extensões ativas
+/// ([`Contribution::launch_line`]); sem lançadores, `direct(bin)`. `fresh`:
+/// a conversa é nova (não continua uma sessão).
+pub fn launch(
+    bin: &Path,
+    harness: &str,
+    extensions: &Contribution,
+    fresh: bool,
+    direct: fn(&Path) -> Command,
+) -> Command {
+    let line = extensions.launch_line(&bin.to_string_lossy(), harness, fresh);
+    match line.split_first() {
+        Some((program, args)) if !extensions.launchers.is_empty() => {
+            let mut cmd = Command::new(program);
+            cmd.args(args);
+            cmd
+        }
+        _ => direct(bin),
+    }
+}
+
+/// Põe o processo num grupo próprio, para [`kill_tree`] encerrar também o
+/// que ele abre (ex.: o `rtk` abre o `ai-memory`, que abre o `claude`).
+#[cfg(unix)]
+pub fn own_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+#[cfg(windows)]
+pub fn own_group(_cmd: &mut Command) {}
+
+/// Encerra o processo e os que ele abriu: matar só o primeiro de uma cadeia
+/// de lançadores deixaria o agente rodando, e o `ai-memory` segurando o
+/// workstream.
+pub fn kill_tree(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    // O `--` é obrigatório: sem ele o `kill` do procps-ng lê `-<pid>` como
+    // opção e manda o sinal para outro alvo (`-1xxxx` vira `kill(-1)`, que
+    // mata todos os processos do usuário e derruba a sessão gráfica).
+    #[cfg(unix)]
+    let tree = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .stderr(std::process::Stdio::null())
+        .status();
+    #[cfg(windows)]
+    let tree = Command::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = tree;
+    let _ = child.kill();
+    let _ = child.wait();
+}

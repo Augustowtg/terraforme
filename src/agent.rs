@@ -14,7 +14,7 @@ mod mode;
 pub use adapter::{
     AccountOption, Catalog, ChatAdapter, CommandInfo, CommandRoute, DailyTokens, Delegated,
     Interactive, ModelInfo, ModelOption, ProviderMcp, ProviderSkill, Request, Session, Usage,
-    UsageWindow,
+    UsageWindow, kill_tree, launch, own_group,
 };
 pub use event::{AgentEvent, ReportedMode};
 pub use mode::PermissionMode;
