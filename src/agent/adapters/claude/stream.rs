@@ -442,9 +442,13 @@ mod tests {
 
     #[test]
     fn allow_rules_name_only_the_blocked_call() {
-        let rule = |name: &str, input: &str| allow_rule(name, &serde_json::from_str(input).unwrap());
+        let rule =
+            |name: &str, input: &str| allow_rule(name, &serde_json::from_str(input).unwrap());
         assert_eq!(rule("Bash", r#"{"command":"rm -rf x"}"#), "Bash(rm -rf x)");
-        assert_eq!(rule("Edit", r#"{"file_path":"/home/a/x.rs"}"#), "Edit(//home/a/x.rs)");
+        assert_eq!(
+            rule("Edit", r#"{"file_path":"/home/a/x.rs"}"#),
+            "Edit(//home/a/x.rs)"
+        );
         assert_eq!(
             rule("WebFetch", r#"{"url":"https://docs.rs/serde?x=1"}"#),
             "WebFetch(domain:docs.rs)"

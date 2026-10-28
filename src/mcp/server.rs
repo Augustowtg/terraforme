@@ -28,10 +28,17 @@
 //! As requisições curtas são atendidas uma de cada vez; as que esperam
 //! (`wait` e `permission`) ganham uma thread, e as outras continuam sendo
 //! atendidas enquanto isso.
+//!
+//! Antes de olhar o corpo, o MCP recusa ([`refusal`]) o que não veio de um
+//! terra: sem o token ([`token`](super::token)) no `Authorization`, com um
+//! `Host` ou um `Origin` de fora da máquina (um site no navegador, ou um
+//! *DNS rebinding*) ou sem `Content-Type: application/json` (o navegador
+//! manda `text/plain` sem perguntar ao servidor antes).
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -58,23 +65,31 @@ const WAIT_MAX: u64 = 600;
 /// De quanto em quanto tempo o `wait` olha de novo (os terra avisam a cada
 /// 2 s).
 const WAIT_STEP: Duration = Duration::from_millis(500);
+/// O erro de um chat delegado que chama uma ferramenta de quem delega.
+const DELEGATED_ONLY: &str = "um chat delegado só usa a ferramenta permission do terra";
 
 /// Abre o MCP na porta [`PORT`](super::PORT) e atende até o
 /// `terra/shutdown`.
 pub fn run() -> Result<()> {
+    let dir = crate::db::data_dir()?;
+    super::token_in(&dir)?;
     let listener = TcpListener::bind(super::addr()).with_context(|| {
         format!(
             "não foi possível abrir o MCP em {} (a porta já está em uso?)",
             super::addr()
         )
     })?;
-    serve(&listener);
+    serve(&listener, &dir);
     Ok(())
 }
 
-/// Atende as conexões de `listener` até o `terra/shutdown`.
-pub fn serve(listener: &TcpListener) {
-    let shared = Arc::new(Shared::default());
+/// Atende as conexões de `listener` até o `terra/shutdown`, com o token da
+/// pasta `dir`.
+pub fn serve(listener: &TcpListener, dir: &Path) {
+    let shared = Arc::new(Shared {
+        token_dir: dir.to_path_buf(),
+        ..Shared::default()
+    });
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         // Um cliente com problema não derruba o MCP.
@@ -90,6 +105,9 @@ pub fn serve(listener: &TcpListener) {
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    /// A pasta do token; ele é lido a cada requisição, e um token novo
+    /// (o arquivo foi apagado) vale sem reabrir o MCP.
+    token_dir: PathBuf,
 }
 
 impl Shared {
@@ -305,7 +323,16 @@ fn handle_connection(stream: TcpStream, shared: &Arc<Shared>) -> Result<Flow> {
         pid: param("from").and_then(|pid| pid.parse().ok()),
         chat: param("chat").and_then(|chat| chat.parse().ok()),
     };
-    let length = read_headers(&mut reader)?;
+    let headers = parse_headers(&mut reader)?;
+    if let Some((status, why)) = refusal(&headers, &shared.token_dir) {
+        respond(
+            &mut writer,
+            status,
+            &error(Value::Null, -32001, why).to_string(),
+        )?;
+        return Ok(Flow::Continue);
+    }
+    let length = headers.length;
     if path != PATH {
         respond(&mut writer, "404 Not Found", "")?;
         return Ok(Flow::Continue);
@@ -354,10 +381,25 @@ fn waits(request: &Value) -> bool {
         )
 }
 
+/// Os cabeçalhos de uma requisição que o MCP olha.
+#[derive(Debug, Default)]
+struct Headers {
+    /// O `Content-Length` (0 sem ele).
+    length: usize,
+    authorization: Option<String>,
+    host: Option<String>,
+    origin: Option<String>,
+    content_type: Option<String>,
+}
+
 /// Lê os cabeçalhos até a linha vazia e retorna o `Content-Length` (0 sem
 /// ele).
 pub(super) fn read_headers(reader: &mut impl BufRead) -> Result<usize> {
-    let mut length = 0;
+    Ok(parse_headers(reader)?.length)
+}
+
+fn parse_headers(reader: &mut impl BufRead) -> Result<Headers> {
+    let mut headers = Headers::default();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -365,14 +407,79 @@ pub(super) fn read_headers(reader: &mut impl BufRead) -> Result<usize> {
         }
         let line = line.trim_end();
         if line.is_empty() {
-            return Ok(length);
+            return Ok(headers);
         }
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse().context("Content-Length inválido")?;
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match name.to_ascii_lowercase().as_str() {
+            "content-length" => {
+                headers.length = value.parse().context("Content-Length inválido")?
+            }
+            "authorization" => headers.authorization = Some(value.to_string()),
+            "host" => headers.host = Some(value.to_string()),
+            "origin" => headers.origin = Some(value.to_string()),
+            "content-type" => headers.content_type = Some(value.to_string()),
+            _ => {}
         }
     }
+}
+
+/// Por que o MCP recusa a requisição (o status e o motivo), ou `None` se ela
+/// pode seguir: com o token do terra no `Authorization`, um `Host` e um
+/// `Origin` da própria máquina e `Content-Type: application/json`.
+fn refusal(headers: &Headers, token_dir: &Path) -> Option<(&'static str, &'static str)> {
+    let token = super::token_in(token_dir).ok();
+    let sent = headers
+        .authorization
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer "));
+    match (token, sent) {
+        (Some(token), Some(sent)) if same(&token, sent.trim()) => {}
+        _ => return Some(("401 Unauthorized", "token do MCP ausente ou inválido")),
+    }
+    if !headers.host.as_deref().is_some_and(is_local_host) {
+        return Some(("403 Forbidden", "Host de fora da máquina"));
+    }
+    if let Some(origin) = &headers.origin {
+        let host = origin
+            .strip_prefix("http://")
+            .or_else(|| origin.strip_prefix("https://"));
+        if !host.is_some_and(is_local_host) {
+            return Some(("403 Forbidden", "Origin de fora da máquina"));
+        }
+    }
+    let json = headers.content_type.as_deref().is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+    });
+    if !json {
+        return Some((
+            "415 Unsupported Media Type",
+            "o Content-Type deve ser application/json",
+        ));
+    }
+    None
+}
+
+/// `host` (com a porta, se tiver) é a própria máquina.
+fn is_local_host(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(ipv6) => ipv6.split(']').next().unwrap_or(""),
+        None => host.split(':').next().unwrap_or(""),
+    };
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "::1"
+    )
+}
+
+/// Compara sem parar no primeiro byte diferente.
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |d, (x, y)| d | (x ^ y)) == 0
 }
 
 fn respond(writer: &mut impl Write, status: &str, body: &str) -> Result<()> {
@@ -435,9 +542,14 @@ fn handle_as(request: &Value, state: &mut State, caller: Caller) -> (Option<Valu
             "instructions": "O orquestrador do terra: lista os workspaces com o terra cli aberto e se há uma sessão ativa neles, e delega tarefas a chats novos neles. Quem delega espera a resposta com wait e aprova ou nega, com decide, os pedidos de permissão dos chats delegados.",
         })),
         "ping" => Ok(json!({})),
+        // O chat delegado só vê a `permission` (o `--permission-prompt-tool`
+        // dele): as outras ocupariam o prompt de cada chamada dele e o
+        // deixariam delegar de novo.
+        "tools/list" if caller.chat.is_some() => Ok(json!({ "tools": [permission_tool()] })),
         "tools/list" => Ok(json!({
             "tools": [spaces_tool(), chat_tool(), wait_tool(), decide_tool(), permission_tool()]
         })),
+        "tools/call" if caller.chat.is_some() => Ok(tool_error(DELEGATED_ONLY)),
         "tools/call" => {
             let arguments = &params["arguments"];
             match params["name"].as_str() {
@@ -519,6 +631,7 @@ fn handle_waiting(request: &Value, shared: &Shared, caller: Caller) -> Value {
     let id = request["id"].clone();
     let arguments = &request["params"]["arguments"];
     let result = match request["params"]["name"].as_str() {
+        Some("wait") if caller.chat.is_some() => tool_error(DELEGATED_ONLY),
         Some("wait") => wait(shared, arguments, caller),
         _ => permission(shared, arguments, caller),
     };
@@ -614,9 +727,11 @@ fn spaces_tool() -> Value {
 
 /// A ferramenta `chat`, para um agente delegar uma tarefa a outro chat.
 fn chat_tool() -> Value {
+    let tools = super::DELEGATED_TOOLS.join(", ");
+    let memory = super::DELEGATED_MCP;
     json!({
         "name": "chat",
-        "description": "Delega uma tarefa a um agente novo: abre um chat num terra aberto (por padrão, no seu) com a tarefa como primeira mensagem e retorna o chat_id da delegação. O chat aparece numa aba embaixo da barra de abas do terra. Você é o agente principal dele: chame wait com o chat_id para receber a resposta final e os pedidos de permissão dele, que você aprova ou nega com decide. Escolha o terra pelo pid ou pelo nome do workspace (veja a ferramenta spaces).",
+        "description": format!("Delega uma tarefa a um agente novo: abre um chat num terra aberto (por padrão, no seu) com a tarefa como primeira mensagem e retorna o chat_id da delegação. O chat aparece numa aba embaixo da barra de abas do terra. Você é o agente principal dele: chame wait com o chat_id para receber a resposta final e os pedidos de permissão dele, que você aprova ou nega com decide. Escolha o terra pelo pid ou pelo nome do workspace (veja a ferramenta spaces). O agente delegado roda enxuto, para gastar menos: só com as ferramentas {tools} e o MCP {memory}, sem os outros MCP, skills e hooks do usuário. Passe em mcp e tools o que mais a tarefa precisar; se ele terminar pedindo uma ferramenta, delegue de novo com ela e com o que ele já fez."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -624,6 +739,8 @@ fn chat_tool() -> Value {
                 "title": { "type": "string", "description": "O título da aba do chat." },
                 "pid": { "type": "integer", "description": "O processo do terra onde abrir o chat." },
                 "workspace": { "type": "string", "description": "O nome do workspace onde abrir o chat (sem o pid)." },
+                "mcp": { "type": "array", "items": { "type": "string" }, "description": format!("Os servidores MCP do usuário, pelo nome (ex.: git, postman), que o agente delegado precisa além do {memory}.") },
+                "tools": { "type": "array", "items": { "type": "string" }, "description": format!("As ferramentas embutidas que o agente delegado precisa além de {tools} (ex.: WebFetch, WebSearch).") },
             },
             "required": ["message"],
         },
@@ -709,6 +826,47 @@ mod tests {
 
     fn call(name: &str, args: Value) -> Value {
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}})
+    }
+
+    fn headers(token: &str) -> Headers {
+        Headers {
+            length: 2,
+            authorization: Some(format!("Bearer {token}")),
+            host: Some("127.0.0.1:30303".into()),
+            origin: None,
+            content_type: Some("application/json".into()),
+        }
+    }
+
+    #[test]
+    fn refuses_what_did_not_come_from_a_terra() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = super::super::token_in(dir.path()).unwrap();
+        let refused = |h: &Headers| refusal(h, dir.path()).map(|(status, _)| status);
+        assert_eq!(refused(&headers(&token)), None);
+
+        let mut h = headers("outro-token");
+        assert_eq!(refused(&h), Some("401 Unauthorized"));
+        h.authorization = None;
+        assert_eq!(refused(&h), Some("401 Unauthorized"));
+
+        let mut h = headers(&token);
+        h.host = Some("evil.example:30303".into());
+        assert_eq!(refused(&h), Some("403 Forbidden"));
+        h.host = Some("localhost:30303".into());
+        assert_eq!(refused(&h), None);
+        h.host = Some("[::1]:30303".into());
+        assert_eq!(refused(&h), None);
+
+        h.origin = Some("https://evil.example".into());
+        assert_eq!(refused(&h), Some("403 Forbidden"));
+        h.origin = Some("http://localhost:3000".into());
+        assert_eq!(refused(&h), None);
+
+        h.content_type = Some("text/plain".into());
+        assert_eq!(refused(&h), Some("415 Unsupported Media Type"));
+        h.content_type = Some("Application/JSON; charset=utf-8".into());
+        assert_eq!(refused(&h), None);
     }
 
     #[test]
@@ -835,6 +993,39 @@ mod tests {
         let again = handle(&request, &mut state, None).0.unwrap();
         assert_eq!(again["result"]["chats"], json!([]), "entregue uma vez só");
         assert_eq!(state.chats[&1].len(), 1);
+    }
+
+    /// O chat delegado só vê a `permission` e não usa as ferramentas de quem
+    /// delega (não delega de novo nem espera outros chats).
+    #[test]
+    fn a_delegated_chat_only_sees_permission() {
+        let delegated = Caller {
+            pid: Some(1),
+            chat: Some(1),
+        };
+        let mut state = State::default();
+        let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+        let tools = handle_as(&list, &mut state, delegated).0.unwrap();
+        let names: Vec<_> = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["permission"]);
+
+        for name in ["spaces", "chat", "decide"] {
+            let args = json!({"message": "de novo", "request_id": 1, "allow": true});
+            let result = handle_as(&call(name, args), &mut state, delegated)
+                .0
+                .unwrap();
+            assert_eq!(result["result"]["isError"], true, "{name}");
+        }
+        assert!(state.chats.is_empty(), "não delegou de novo");
+
+        let shared = Shared::default();
+        let waited = handle_waiting(&call("wait", json!({})), &shared, delegated);
+        assert_eq!(waited["result"]["isError"], true);
     }
 
     /// O principal (terra 1) delega ao terra 2; o chat delegado pede
@@ -978,12 +1169,15 @@ mod tests {
     fn serves_over_http_until_shutdown() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || serve(&listener));
+        let dir = tempfile::tempdir().unwrap();
+        let token = super::super::token_in(dir.path()).unwrap();
+        let path = dir.path().to_path_buf();
+        let server = std::thread::spawn(move || serve(&listener, &path));
         let me = instance(9, "terra", Vec::new());
-        super::super::call_at(addr, "terra/announce", me.to_json()).unwrap();
-        let spaces = super::super::call_at(addr, "terra/spaces", json!({})).unwrap();
+        super::super::call_at(addr, &token, "terra/announce", me.to_json()).unwrap();
+        let spaces = super::super::call_at(addr, &token, "terra/spaces", json!({})).unwrap();
         assert_eq!(spaces["instances"][0]["name"], "terra");
-        super::super::call_at(addr, "terra/shutdown", json!({})).unwrap();
+        super::super::call_at(addr, &token, "terra/shutdown", json!({})).unwrap();
         server.join().unwrap();
     }
 }

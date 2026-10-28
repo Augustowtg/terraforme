@@ -12,6 +12,7 @@ mod usage;
 mod widgets;
 mod workspace;
 
+use std::collections::VecDeque;
 use std::io::stdout;
 use std::path::PathBuf;
 use std::process::Command;
@@ -20,9 +21,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -67,10 +68,14 @@ pub fn run_app(
     })
 }
 
-/// Mouse para selecionar o texto do input, cursor em barra (`|`) e, quando
-/// o terminal tem, o protocolo de teclado do kitty.
+/// Mouse para selecionar o texto do input, cursor em barra (`|`), o texto
+/// colado num evento só (bracketed paste) e, quando o terminal tem, o
+/// protocolo de teclado do kitty.
 fn enter_app_mode(enhanced: bool) -> Result<()> {
     execute!(stdout(), EnableMouseCapture, SetCursorStyle::SteadyBar)?;
+    // O console do Windows não tem; lá a colagem chega como teclas
+    // ([`paste_burst`]).
+    let _ = execute!(stdout(), EnableBracketedPaste);
     if enhanced {
         execute!(
             stdout(),
@@ -84,6 +89,7 @@ fn leave_app_mode(enhanced: bool) -> Result<()> {
     if enhanced {
         execute!(stdout(), PopKeyboardEnhancementFlags)?;
     }
+    let _ = execute!(stdout(), DisableBracketedPaste);
     execute!(
         stdout(),
         DisableMouseCapture,
@@ -139,12 +145,31 @@ fn outside_screen<T>(
 
 fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) -> Result<()> {
     let mut last_tick = Instant::now();
+    // Eventos já lidos por [`paste_burst`] que não eram uma colagem.
+    let mut pending = VecDeque::new();
     loop {
         let size = terminal.size()?;
         app.sync_term(ratatui::layout::Rect::new(0, 0, size.width, size.height));
         terminal.draw(|frame| app.draw(frame))?;
-        if event::poll(TICK.saturating_sub(last_tick.elapsed()))? {
-            match event::read()? {
+        let next = match pending.pop_front() {
+            Some(event) => Some(event),
+            None if event::poll(TICK.saturating_sub(last_tick.elapsed()))? => {
+                let event = event::read()?;
+                match &event {
+                    Event::Key(key) if !app.captures_keys() && is_text_key(key) => {
+                        match paste_burst(*key, &mut pending)? {
+                            Some(text) => Some(Event::Paste(text)),
+                            None => pending.pop_front(),
+                        }
+                    }
+                    _ => Some(event),
+                }
+            }
+            None => None,
+        };
+        if let Some(event) = next {
+            match event {
+                Event::Paste(text) => app.handle_paste(&text),
                 // No Windows também chegam eventos de Release; só interessa o Press.
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if (is_ctrl_c(&key) && !app.captures_keys()) || app.handle_key(key) {
@@ -168,6 +193,51 @@ fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) 
             last_tick = Instant::now();
         }
     }
+}
+
+/// Uma tecla que um texto colado gera: caractere, Enter ou Tab, sem Ctrl
+/// nem Alt.
+fn is_text_key(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && matches!(key.code, KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab)
+}
+
+/// Nos terminais sem bracketed paste (ex.: o console do Windows), o texto
+/// colado chega como teclas, uma atrás da outra, e cada Enter enviaria a
+/// mensagem. Com `first` e as teclas que já estão na fila, junta a rajada: se
+/// ela tem uma quebra de linha ou passa de 100 caracteres, é uma colagem.
+/// Senão, as teclas (e o evento que interrompeu a rajada) vão para `pending`,
+/// para serem tratadas uma a uma.
+fn paste_burst(first: KeyEvent, pending: &mut VecDeque<Event>) -> Result<Option<String>> {
+    let mut keys = vec![first];
+    while event::poll(Duration::ZERO)? {
+        match event::read()? {
+            Event::Key(key) if is_text_key(&key) => keys.push(key),
+            // As de Release (Windows) não contam.
+            Event::Key(key) if key.kind == KeyEventKind::Release => {}
+            other => {
+                pending.extend(keys.drain(..).map(Event::Key));
+                pending.push_back(other);
+                return Ok(None);
+            }
+        }
+    }
+    let text: String = keys
+        .iter()
+        .map(|key| match key.code {
+            KeyCode::Char(c) => c,
+            KeyCode::Tab => '\t',
+            _ => '\n',
+        })
+        .collect();
+    if keys.len() > 1 && (text.contains('\n') || text.chars().count() > chat::PASTE_LIMIT) {
+        return Ok(Some(text));
+    }
+    pending.extend(keys.into_iter().map(Event::Key));
+    Ok(None)
 }
 
 fn with_terminal<T>(f: impl FnOnce(&mut DefaultTerminal) -> Result<T>) -> Result<T> {

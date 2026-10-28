@@ -11,9 +11,10 @@
 mod accounts;
 mod catalog;
 mod daily;
+mod delegated;
 mod interactive;
-mod mcp;
-mod skills;
+pub(super) mod mcp;
+pub(super) mod skills;
 mod stream;
 mod usage;
 
@@ -38,6 +39,8 @@ use crate::extension::{Contribution, Hook};
 
 const NOT_FOUND: &str =
     "Claude CLI não encontrado no PATH. Instale em https://claude.com/claude-code";
+/// A variável com que o `claude` escolhe o modelo dos sub agentes.
+const SUBAGENT_MODEL_ENV: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
 
 /// O Claude CLI do `PATH` como provedor do chat.
 pub struct ClaudeAdapter {
@@ -57,6 +60,32 @@ impl ClaudeAdapter {
     }
 
     /// A pasta de configuração da conta, ou `None` para a padrão.
+    /// O arquivo do `--mcp-config` de um chat delegado: os MCP das
+    /// extensões e do usuário (da conta em `account_dir` e da pasta atual)
+    /// que ele leva (veja [`delegated::servers`]).
+    fn delegated_mcp(
+        &self,
+        extensions: &Contribution,
+        delegated: crate::agent::Delegated<'_>,
+        account_dir: Option<&Path>,
+    ) -> Result<delegated::McpFile, String> {
+        let json = match (account_dir, &self.home) {
+            (Some(dir), _) => Some(dir.join(".claude.json")),
+            (None, Some(home)) => Some(default_json(home)),
+            (None, None) => None,
+        };
+        let user = match (json, env::current_dir()) {
+            (Some(json), Ok(cwd)) => mcp::raw(&json, &cwd),
+            _ => serde_json::Map::new(),
+        };
+        let servers = delegated::servers(extensions, &user, delegated);
+        let dir = crate::db::data_dir()
+            .map_err(|err| format!("{err:#}"))?
+            .join("delegados");
+        delegated::McpFile::create(&dir, servers)
+            .map_err(|err| format!("não foi possível gravar o MCP do chat delegado: {err}"))
+    }
+
     fn account_dir(&self, account: Option<&str>) -> Result<Option<PathBuf>, String> {
         let Some(id) = account else {
             return Ok(None);
@@ -72,6 +101,10 @@ impl ClaudeAdapter {
 impl ChatAdapter for ClaudeAdapter {
     fn name(&self) -> &str {
         "Claude"
+    }
+
+    fn id(&self) -> &str {
+        "claude"
     }
 
     fn is_available(&self) -> bool {
@@ -109,15 +142,22 @@ impl ChatAdapter for ClaudeAdapter {
         mcp::configured(&json, cwd)
     }
 
-    /// As skills da pasta da conta (do usuário e dos plugins) e as do
-    /// `.claude/skills` do `cwd` (do projeto).
+    /// As skills da pasta da conta (do usuário, do claude.ai e dos
+    /// plugins), as do `~/.agents/skills` e as do `.claude/skills` do `cwd`
+    /// e das pastas acima dele (do projeto).
     fn skills(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderSkill> {
-        let dir = match self.account_dir(account) {
-            Ok(Some(dir)) => Some(dir),
-            Ok(None) => default_config_dir(),
-            Err(_) => None,
+        let (dir, json) = match self.account_dir(account) {
+            Ok(Some(dir)) => {
+                let json = dir.join(".claude.json");
+                (dir, json)
+            }
+            Ok(None) => match (default_config_dir(), &self.home) {
+                (Some(dir), Some(home)) => (dir, default_json(home)),
+                _ => return Vec::new(),
+            },
+            Err(_) => return Vec::new(),
         };
-        dir.map_or_else(Vec::new, |dir| skills::installed(&dir, cwd))
+        skills::installed(&dir, &json, self.home.as_deref(), cwd)
     }
 
     /// `claude auth login` na pasta da conta, com o e-mail dela já
@@ -138,6 +178,12 @@ impl ChatAdapter for ClaudeAdapter {
             cmd.env("CLAUDE_CONFIG_DIR", dir);
         }
         Some(cmd)
+    }
+
+    /// Os avisos de login do `claude`: "Failed to authenticate", "OAuth token
+    /// revoked" e "Please log in again".
+    fn login_error_words(&self) -> &[&str] {
+        &["authenticate", "oauth", "log in again"]
     }
 
     /// Os comandos só do modo interativo abrem o `claude` original; os de
@@ -174,11 +220,15 @@ impl ChatAdapter for ClaudeAdapter {
         if let Some(effort) = options.effort {
             cmd.args(["--effort", effort]);
         }
+        if let Some(model) = options.subagent_model {
+            cmd.env(SUBAGENT_MODEL_ENV, model);
+        }
         if let Some(extensions) = options.extensions {
             if !extensions.hooks.is_empty() {
                 cmd.args(["--settings", &hook_settings(&extensions.hooks)]);
             }
             cmd.args(mcp_args(extensions));
+            cmd.envs(extensions.env.iter().map(|(k, v)| (k, v)));
         }
         if let Some(session) = options.session_id {
             cmd.args(["--resume", session]);
@@ -242,7 +292,13 @@ impl ChatAdapter for ClaudeAdapter {
     fn start(&self, request: Request<'_>) -> Result<Box<dyn Session>, String> {
         let bin = self.bin.as_ref().ok_or(NOT_FOUND)?;
         let account_dir = self.account_dir(request.account)?;
-        let run = Run::start(bin, request, account_dir.as_deref())?;
+        let mcp_file = match request.delegated {
+            Some(delegated) => {
+                Some(self.delegated_mcp(request.extensions, delegated, account_dir.as_deref())?)
+            }
+            None => None,
+        };
+        let run = Run::start(bin, request, account_dir.as_deref(), mcp_file)?;
         Ok(Box::new(run))
     }
 }
@@ -363,20 +419,35 @@ fn mcp_args(extensions: &Contribution) -> Vec<String> {
     let servers: serde_json::Map<String, Value> = extensions
         .mcp_servers
         .iter()
-        .map(|server| {
-            let config = match &server.url {
-                Some(url) => serde_json::json!({ "type": "http", "url": url }),
-                None => serde_json::json!({
-                    "type": "stdio",
-                    "command": server.command,
-                    "args": server.args,
-                }),
-            };
-            (server.name.clone(), config)
-        })
+        .map(|server| (server.name.clone(), server_config(server)))
         .collect();
     let config = serde_json::json!({ "mcpServers": servers }).to_string();
     vec!["--mcp-config".to_string(), config]
+}
+
+/// Um servidor MCP das extensões no formato do `--mcp-config`.
+fn server_config(server: &crate::extension::McpServer) -> Value {
+    match &server.url {
+        Some(url) if server.headers.is_empty() => {
+            serde_json::json!({ "type": "http", "url": url })
+        }
+        // O `claude` troca os `${NOME}` dos cabeçalhos pelas variáveis de
+        // ambiente dele.
+        Some(url) => serde_json::json!({
+            "type": "http",
+            "url": url,
+            "headers": server
+                .headers
+                .iter()
+                .map(|(name, value)| (name.clone(), Value::from(value.as_str())))
+                .collect::<serde_json::Map<_, _>>(),
+        }),
+        None => serde_json::json!({
+            "type": "stdio",
+            "command": server.command,
+            "args": server.args,
+        }),
+    }
 }
 
 /// A mensagem do usuário no formato do `--input-format stream-json`.
@@ -485,6 +556,8 @@ struct Run {
     /// Os pedidos de permissão esperando o usuário: a entrada da ferramenta
     /// de cada um, que volta na aprovação.
     pending: Arc<Mutex<HashMap<String, Value>>>,
+    /// O `--mcp-config` de um chat delegado: some depois do processo.
+    _mcp_file: Option<delegated::McpFile>,
 }
 
 type Stdin = Arc<Mutex<Option<ChildStdin>>>;
@@ -494,24 +567,48 @@ impl Run {
     /// Yolo, o terra aprova tudo o que o agente pedir; num chat delegado, quem
     /// delegou decide (pela ferramenta `permission_tool`); nos outros, cada
     /// pedido vira um [`AgentEvent::PermissionRequest`] para o usuário.
+    ///
+    /// Um chat delegado (`request.delegated`) roda enxuto, com o MCP de
+    /// `mcp_file` (veja [`delegated`]).
     fn start(
         claude: &Path,
         request: Request<'_>,
         config_dir: Option<&Path>,
+        mcp_file: Option<delegated::McpFile>,
     ) -> Result<Run, String> {
         let auto_allow = request.mode == PermissionMode::Yolo;
-        let delegated = !auto_allow && request.permission_tool.is_some();
-        let settings = hook_settings(&request.extensions.hooks);
+        let asks_parent = !auto_allow && request.permission_tool.is_some();
+        let lean = request.delegated.zip(mcp_file.as_ref());
+        let settings = match lean {
+            Some(_) => delegated::SETTINGS.to_string(),
+            None => hook_settings(&request.extensions.hooks),
+        };
+        // Sem modelo escolhido, o delegado usa o dele, com o esforço dele
+        // quando também não há esforço.
+        let (model, effort) = match (lean, request.model) {
+            (Some(_), None) => (
+                Some(delegated::MODEL),
+                request.effort.or(Some(delegated::EFFORT)),
+            ),
+            _ => (request.model, request.effort),
+        };
         let mut cmd = command(claude);
         cmd.args(cli_args(
             cli_mode(request.mode),
             request.session_id,
-            !delegated,
-            request.model,
-            request.effort,
+            !asks_parent,
+            model,
+            effort,
             &settings,
         ));
-        cmd.args(mcp_args(request.extensions));
+        match lean {
+            Some((delegated, file)) => cmd.args(delegated::args(file.path(), delegated)),
+            None => cmd.args(mcp_args(request.extensions)),
+        };
+        cmd.envs(request.extensions.env.iter().map(|(k, v)| (k, v)));
+        if let Some(model) = request.subagent_model {
+            cmd.env(SUBAGENT_MODEL_ENV, model);
+        }
         // As ferramentas que o usuário liberou depois de o modo bloquear: uma
         // regra por argumento, porque a do Bash tem espaços.
         if !request.allowed_tools.is_empty() {
@@ -598,6 +695,7 @@ impl Run {
             events,
             stdin,
             pending,
+            _mcp_file: mcp_file,
         })
     }
 }
@@ -729,6 +827,7 @@ mod tests {
                 args: vec!["mcp-bridge".into()],
                 ..Default::default()
             }],
+            env: Vec::new(),
         };
         let settings: Value = serde_json::from_str(&hook_settings(&extensions.hooks)).unwrap();
         assert_eq!(settings.get("disableAllHooks"), None);
@@ -780,6 +879,7 @@ mod tests {
                 command: "rtk hook claude".into(),
             }],
             mcp_servers: Vec::new(),
+            env: Vec::new(),
         };
         let options = Interactive {
             extensions: Some(&extensions),
@@ -900,9 +1000,11 @@ mod tests {
             model: None,
             account: None,
             effort: None,
+            subagent_model: None,
             extensions: &Contribution::default(),
             permission_tool: None,
             allowed_tools: &[],
+            delegated: None,
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
         assert!(adapter.accounts().is_empty());

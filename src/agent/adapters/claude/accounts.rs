@@ -181,7 +181,10 @@ mod tests {
             [
                 (None, "Default · eu@gmail.com"),
                 (Some(".claude"), "Pessoal · eu@gmail.com"),
-                (Some(".claude-empresa"), "Trabalho · eu@empresa.com (Empresa)"),
+                (
+                    Some(".claude-empresa"),
+                    "Trabalho · eu@empresa.com (Empresa)"
+                ),
             ]
         );
     }
