@@ -3,6 +3,7 @@ mod cli;
 mod db;
 mod extension;
 mod files;
+mod hub;
 mod platform;
 mod settings;
 mod theme;
