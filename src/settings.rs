@@ -8,6 +8,7 @@
 //! ```json
 //! {
 //!   "agent": {
+//!     "provider": "claude",
 //!     "start_mode": "accept_edits",
 //!     "model": "sonnet",
 //!     "account": ".claude-trabalho",
@@ -231,6 +232,10 @@ impl Default for UsageSettings {
 /// fica com o provedor.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AgentSettings {
+    /// Provedor escolhido (o `id` de um adapter, ex.: `claude` ou
+    /// `antigravity`); `None` é o primeiro disponível. A conta, os modelos e
+    /// o esforço são ids desse provedor.
+    pub provider: Option<String>,
     pub start_mode: StartMode,
     /// Modelo escolhido (um id dos modelos do provedor); `None` é o padrão.
     pub model: Option<String>,
@@ -238,6 +243,9 @@ pub struct AgentSettings {
     pub account: Option<String>,
     /// Esforço padrão (escolhido no `/model`); `None` é o do provedor.
     pub effort: Option<String>,
+    /// Modelo dos sub agentes (escolhido no menu do `/model` da Config);
+    /// `None` deixa o agente decidir.
+    pub subagent_model: Option<String>,
     pub interface: Interface,
     pub context: ContextSettings,
     pub usage: UsageSettings,
@@ -251,12 +259,14 @@ impl AgentSettings {
         let agent = &json["agent"];
         let text = |key: &str| agent[key].as_str().map(str::to_string);
         Some(Self {
+            provider: text("provider"),
             start_mode: text("start_mode")
                 .and_then(|key| StartMode::from_key(&key))
                 .unwrap_or_default(),
             model: text("model"),
             account: text("account"),
             effort: text("effort"),
+            subagent_model: text("subagent_model"),
             interface: text("interface")
                 .and_then(|key| Interface::from_key(&key))
                 .unwrap_or_default(),
@@ -270,10 +280,12 @@ impl AgentSettings {
     pub fn save_file(&self, path: &Path) -> Result<()> {
         update_file(path, |json| {
             json["agent"] = json!({
+                "provider": self.provider,
                 "start_mode": self.start_mode.key(),
                 "model": self.model,
                 "account": self.account,
                 "effort": self.effort,
+                "subagent_model": self.subagent_model,
                 "interface": self.interface.key(),
                 "context": self.context.to_json(),
                 "usage": self.usage.to_json(),
@@ -325,7 +337,7 @@ impl ExtensionSettings {
 
 /// O MCP do terra (seção MCP da Config): o servidor orquestrador, um só para
 /// a máquina.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpSettings {
     /// Ao iniciar, o terra abre o MCP (se ninguém abriu) e se registra nele.
     /// Desativado por padrão.
@@ -333,13 +345,28 @@ pub struct McpSettings {
     /// O modo com que começam os chats abertos pelo orquestrador (a
     /// ferramenta `chat`). Accept Edits por padrão.
     pub spawn_mode: StartMode,
+    /// O chat delegado fecha quando termina a tarefa (a resposta continua
+    /// indo para quem delegou). Ativado por padrão.
+    pub close_finished: bool,
+    /// O chat delegado aparece na aba Chat ao abrir, em vez de ficar em
+    /// segundo plano na barra de chats. Desativado por padrão.
+    pub focus_delegated: bool,
+    /// O modelo (um id do catálogo) e o esforço dos chats delegados,
+    /// escolhidos no menu do `/model` da aba Orquestrador. Sem modelo, eles
+    /// usam o modelo padrão.
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// O provedor dos chats delegados (o `id` de um adapter); `None` é o
+    /// mesmo do workspace. O modelo e o esforço são ids dele.
+    pub provider: Option<String>,
 }
 
 impl McpSettings {
     pub const DEFAULT_SPAWN_MODE: StartMode = StartMode::Fixed(PermissionMode::AcceptEdits);
 
-    /// Lê o MCP do `config.json` global; sem o arquivo ou a chave, desativado
-    /// e com os chats abertos em Accept Edits.
+    /// Lê o MCP do `config.json` global; sem o arquivo ou a chave, desativado,
+    /// com os chats abertos em Accept Edits, em segundo plano, e fechados ao
+    /// terminar.
     pub fn load_file(path: &Path) -> Self {
         let json = read_file(path);
         Self {
@@ -348,6 +375,11 @@ impl McpSettings {
                 .as_str()
                 .and_then(StartMode::from_key)
                 .unwrap_or(Self::DEFAULT_SPAWN_MODE),
+            close_finished: json["mcp"]["close_finished"] != false,
+            focus_delegated: json["mcp"]["focus_delegated"] == true,
+            model: json["mcp"]["model"].as_str().map(str::to_string),
+            effort: json["mcp"]["effort"].as_str().map(str::to_string),
+            provider: json["mcp"]["provider"].as_str().map(str::to_string),
         }
     }
 
@@ -357,6 +389,11 @@ impl McpSettings {
             json["mcp"] = json!({
                 "enabled": self.enabled,
                 "spawn_mode": self.spawn_mode.key(),
+                "close_finished": self.close_finished,
+                "focus_delegated": self.focus_delegated,
+                "model": self.model,
+                "effort": self.effort,
+                "provider": self.provider,
             });
         })
     }
@@ -367,6 +404,11 @@ impl Default for McpSettings {
         Self {
             enabled: false,
             spawn_mode: Self::DEFAULT_SPAWN_MODE,
+            close_finished: true,
+            focus_delegated: false,
+            model: None,
+            effort: None,
+            provider: None,
         }
     }
 }
@@ -446,10 +488,12 @@ mod tests {
         assert_eq!(AgentSettings::load_file(&path), None, "sem arquivo");
 
         let settings = AgentSettings {
+            provider: Some("antigravity".into()),
             start_mode: StartMode::Fixed(PermissionMode::AcceptEdits),
             model: Some("sonnet".into()),
             account: Some(".claude-trabalho".into()),
             effort: None,
+            subagent_model: Some("haiku".into()),
             interface: Interface::Provider,
             context: ContextSettings {
                 visible: false,
@@ -465,8 +509,10 @@ mod tests {
         settings.save_file(&path).unwrap();
         assert_eq!(AgentSettings::load_file(&path), Some(settings.clone()));
         let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["agent"]["provider"], "antigravity");
         assert_eq!(json["agent"]["start_mode"], "accept_edits");
         assert_eq!(json["agent"]["effort"], Value::Null);
+        assert_eq!(json["agent"]["subagent_model"], "haiku");
         assert_eq!(json["agent"]["interface"], "provider");
         assert_eq!(
             json["agent"]["context"],
@@ -551,17 +597,35 @@ mod tests {
             StartMode::Fixed(PermissionMode::AcceptEdits),
             "os chats do orquestrador começam em Accept Edits"
         );
+        assert!(
+            McpSettings::load_file(&path).close_finished,
+            "os chats do orquestrador fecham ao terminar por padrão"
+        );
+        assert!(!McpSettings::load_file(&path).focus_delegated);
         fs::write(&path, r#"{"outra": 1}"#).unwrap();
         let mcp = McpSettings {
             enabled: true,
             spawn_mode: StartMode::Fixed(PermissionMode::Yolo),
+            close_finished: false,
+            focus_delegated: true,
+            model: Some("sonnet".into()),
+            effort: Some("high".into()),
+            provider: Some("claude".into()),
         };
         mcp.save_file(&path).unwrap();
         assert_eq!(McpSettings::load_file(&path), mcp);
         let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             json,
-            json!({"outra": 1, "mcp": {"enabled": true, "spawn_mode": "yolo"}})
+            json!({"outra": 1, "mcp": {
+                "enabled": true,
+                "spawn_mode": "yolo",
+                "close_finished": false,
+                "focus_delegated": true,
+                "model": "sonnet",
+                "effort": "high",
+                "provider": "claude",
+            }})
         );
     }
 

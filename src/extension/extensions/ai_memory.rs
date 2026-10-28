@@ -43,6 +43,7 @@ impl AiMemory {
         Ok(Contribution {
             hooks: parse_hooks(&hooks)?,
             mcp_servers: parse_mcp(&mcp)?,
+            env: Vec::new(),
         })
     }
 }
@@ -135,6 +136,7 @@ fn parse_mcp(text: &str) -> Result<Vec<McpServer>, String> {
                     .filter_map(|a| a.as_str().map(str::to_string))
                     .collect(),
                 url: None,
+                headers: Vec::new(),
             })
         })
         .collect())
@@ -246,6 +248,7 @@ claude mcp add --transport stdio ai-memory -- \
                     "http://127.0.0.1:49374/mcp".into()
                 ],
                 url: None,
+                headers: Vec::new(),
             }]
         );
         assert!(parse_mcp("claude mcp add").is_err());

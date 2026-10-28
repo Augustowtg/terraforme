@@ -8,6 +8,7 @@ mod platform;
 mod settings;
 mod theme;
 mod tui;
+mod upgrade;
 
 use std::io::{IsTerminal, stderr};
 use std::process::ExitCode;

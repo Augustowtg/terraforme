@@ -16,12 +16,17 @@
 //! de abas. O agente que delegou espera a resposta (a ferramenta `wait`), e
 //! os pedidos de permissão do chat delegado chegam a ele para aprovar ou
 //! negar (as ferramentas `wait` e `decide`).
+//!
+//! Só quem tem o token ([`token`], em `~/.terraforme/mcp.token`) usa o MCP:
+//! os terra e os agentes deles. Um site aberto no navegador ou outro usuário
+//! da máquina não consegue abrir chats nem aprovar pedidos de permissão.
 
 pub mod server;
 
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -48,6 +53,86 @@ pub fn addr() -> SocketAddr {
 /// O endereço do endpoint, para mostrar.
 pub fn url() -> String {
     format!("http://{}{PATH}", addr())
+}
+
+/// As ferramentas embutidas de um chat delegado, que roda enxuto: quem
+/// delega acrescenta outras no `tools` da ferramenta `chat`.
+pub const DELEGATED_TOOLS: &[&str] = &["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
+/// O servidor MCP do usuário que todo chat delegado leva (a memória entre
+/// sessões); quem delega acrescenta outros no `mcp` da ferramenta `chat`.
+pub const DELEGATED_MCP: &str = "ai-memory";
+
+/// O arquivo do token, na pasta de dados do terra.
+const TOKEN_FILE: &str = "mcp.token";
+/// A variável de ambiente com o token para o agente: o `--mcp-config` cita
+/// `${TERRA_MCP_TOKEN}`, e o token não aparece na linha de comando (`ps`).
+pub const TOKEN_ENV: &str = "TERRA_MCP_TOKEN";
+
+/// O token do MCP (`~/.terraforme/mcp.token`), criado na primeira vez.
+pub fn token() -> Result<String> {
+    token_in(&crate::db::data_dir()?)
+}
+
+/// O token do MCP na pasta `dir`: 32 bytes aleatórios em hexadecimal, num
+/// arquivo que só o usuário lê.
+fn token_in(dir: &Path) -> Result<String> {
+    let path = dir.join(TOKEN_FILE);
+    if let Some(token) = read_token(&path) {
+        return Ok(token);
+    }
+    fs::create_dir_all(dir).with_context(|| format!("não foi possível criar {}", dir.display()))?;
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|err| anyhow::anyhow!("sem bytes aleatórios: {err}"))?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    // Grava ao lado e renomeia: quem lê nunca vê o arquivo pela metade. Com
+    // dois terra criando ao mesmo tempo, vale o último, e os dois o leem.
+    let tmp = dir.join(format!("{TOKEN_FILE}.{}", std::process::id()));
+    write_private(&tmp, &token)
+        .and_then(|()| fs::rename(&tmp, &path))
+        .with_context(|| format!("não foi possível gravar {}", path.display()))?;
+    read_token(&path).context("o token do MCP sumiu logo depois de gravado")
+}
+
+fn read_token(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let token = text.trim();
+    (token.len() >= 32).then(|| token.to_string())
+}
+
+#[cfg(unix)]
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(text.as_bytes())
+}
+
+/// No Windows, a pasta do usuário já é só dele.
+#[cfg(windows)]
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    fs::write(path, text)
+}
+
+/// O MCP do terra para o agente, em `url` (veja [`agent_url`] e
+/// [`delegated_url`]): o token vai pela variável [`TOKEN_ENV`].
+pub fn agent_server(url: String, token: &str) -> crate::extension::Contribution {
+    crate::extension::Contribution {
+        mcp_servers: vec![crate::extension::McpServer {
+            name: SERVER_NAME.to_string(),
+            url: Some(url),
+            headers: vec![(
+                "Authorization".to_string(),
+                format!("Bearer ${{{TOKEN_ENV}}}"),
+            )],
+            ..Default::default()
+        }],
+        env: vec![(TOKEN_ENV.to_string(), token.to_string())],
+        ..Default::default()
+    }
 }
 
 /// Um terra aberto, como ele se registra no MCP.
@@ -152,7 +237,7 @@ pub const SERVER_NAME: &str = "terra";
 pub const PERMISSION_TOOL: &str = "permission";
 
 /// Um pedido de um agente para abrir um chat novo num terra.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChatRequest {
     /// A delegação, dada pelo MCP: com ela, quem delegou espera a resposta
     /// (a ferramenta `wait`) e aprova os pedidos de permissão do chat.
@@ -163,6 +248,11 @@ pub struct ChatRequest {
     pub title: Option<String>,
     /// A primeira mensagem do chat.
     pub message: String,
+    /// Os servidores MCP do usuário que o chat leva além do
+    /// [`DELEGATED_MCP`].
+    pub mcp: Vec<String>,
+    /// As ferramentas embutidas que o chat tem além das [`DELEGATED_TOOLS`].
+    pub tools: Vec<String>,
 }
 
 impl ChatRequest {
@@ -172,6 +262,8 @@ impl ChatRequest {
             "from": self.from,
             "title": self.title,
             "message": self.message,
+            "mcp": self.mcp,
+            "tools": self.tools,
         })
     }
 
@@ -183,20 +275,32 @@ impl ChatRequest {
                 .filter(|t| !t.is_empty())
                 .map(str::to_string)
         };
+        let names = |key: &str| -> Vec<String> {
+            json[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|name| Some(name.as_str()?.trim().to_string()))
+                .filter(|name| !name.is_empty())
+                .collect()
+        };
         Some(Self {
             id: json["id"].as_u64().unwrap_or(0),
             from: text("from"),
             title: text("title"),
             message: text("message")?,
+            mcp: names("mcp"),
+            tools: names("tools"),
         })
     }
 
-    /// O prompt da primeira mensagem: diz ao agente de onde ela veio e que
-    /// a resposta final volta para quem delegou.
+    /// O prompt da primeira mensagem: diz ao agente de onde ela veio, que
+    /// a resposta final volta para quem delegou e como pedir uma ferramenta
+    /// que ele não tem.
     pub fn prompt(&self) -> String {
         let from = self.from.as_deref().unwrap_or("principal");
         format!(
-            "[Tarefa delegada pelo agente do workspace {from}. A sua última resposta volta para ele: termine com o resultado.]\n\n{}",
+            "[Tarefa delegada pelo agente do workspace {from}. A sua última resposta volta para ele: termine com o resultado. Você roda só com as ferramentas e os MCP que ele escolheu; se precisar de outro, pare e termine dizendo qual e por quê, e ele delega de novo com ele.]\n\n{}",
             self.message
         )
     }
@@ -275,15 +379,76 @@ pub fn instances() -> Result<Vec<Instance>> {
         .collect())
 }
 
-/// Chama o método `method` do MCP e retorna o `result`.
-fn call(method: &str, params: Value) -> Result<Value> {
-    call_at(addr(), method, params)
+/// Quanto o pedido de permissão espera quem delegou decidir: o MCP nega
+/// depois de 10 minutos, e este espera um pouco mais para ler a negativa.
+const PERMISSION_WAIT: Duration = Duration::from_secs(11 * 60);
+
+/// De onde vem o pedido de um chat delegado: o terra (`from`) e a delegação
+/// (`chat`) que a URL do servidor `terra` ([`delegated_url`]) carrega.
+pub fn delegated_ids(url: &str) -> Option<(u32, u64)> {
+    let query = url.split_once('?')?.1;
+    let param = |name: &str| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+    };
+    Some((param("from")?.parse().ok()?, param("chat")?.parse().ok()?))
 }
 
-/// Chama o método `method` do servidor em `addr`.
-fn call_at(addr: SocketAddr, method: &str, params: Value) -> Result<Value> {
+/// Pede, pelo MCP, a quem delegou o chat `chat` (do terra `pid`) para usar a
+/// ferramenta `tool` com `input`, e espera a decisão. `Ok(Ok(()))` é
+/// aprovado; `Ok(Err(motivo))`, negado. Para os provedores sem
+/// `--permission-prompt-tool`, que chamam isso de um gancho.
+pub fn ask_permission(
+    pid: u32,
+    chat: u64,
+    tool: &str,
+    input: &Value,
+) -> Result<std::result::Result<(), String>> {
+    let target = format!("{PATH}?from={pid}&chat={chat}");
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": PERMISSION_TOOL,
+            "arguments": { "tool_name": tool, "input": input },
+        },
+    });
+    let body = post(
+        addr(),
+        &token()?,
+        &target,
+        PERMISSION_WAIT,
+        &request.to_string(),
+    )?;
+    let response: Value =
+        serde_json::from_str(&body).context("o MCP respondeu algo que não é JSON")?;
+    if let Some(error) = response.get("error") {
+        bail!("o MCP respondeu com erro: {}", error["message"]);
+    }
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    let decision: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    if decision["behavior"] == "allow" {
+        return Ok(Ok(()));
+    }
+    let reason = decision["message"]
+        .as_str()
+        .unwrap_or("negado por quem delegou");
+    Ok(Err(reason.to_string()))
+}
+
+/// Chama o método `method` do MCP e retorna o `result`.
+fn call(method: &str, params: Value) -> Result<Value> {
+    call_at(addr(), &token()?, method, params)
+}
+
+/// Chama o método `method` do servidor em `addr`, com o token `token`.
+fn call_at(addr: SocketAddr, token: &str, method: &str, params: Value) -> Result<Value> {
     let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let body = post(addr, &request.to_string())?;
+    let body = post(addr, token, PATH, TIMEOUT, &request.to_string())?;
     let response: Value =
         serde_json::from_str(&body).context("o MCP respondeu algo que não é JSON")?;
     if let Some(error) = response.get("error") {
@@ -292,17 +457,17 @@ fn call_at(addr: SocketAddr, method: &str, params: Value) -> Result<Value> {
     Ok(response["result"].clone())
 }
 
-/// Um `POST` no endpoint de `addr`, com o corpo `body`; retorna o corpo da
-/// resposta.
-fn post(addr: SocketAddr, body: &str) -> Result<String> {
+/// Um `POST` em `target` (o caminho e a query) de `addr`, com o corpo `body`,
+/// esperando a resposta por `wait`; retorna o corpo da resposta.
+fn post(addr: SocketAddr, token: &str, target: &str, wait: Duration, body: &str) -> Result<String> {
     let mut stream = TcpStream::connect_timeout(&addr, TIMEOUT)?;
-    stream.set_read_timeout(Some(TIMEOUT))?;
+    stream.set_read_timeout(Some(wait))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
     write!(
         stream,
-        "POST {PATH} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
-         Accept: application/json, text/event-stream\r\nContent-Length: {}\r\n\
-         Connection: close\r\n\r\n{body}",
+        "POST {target} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
+         Accept: application/json, text/event-stream\r\nAuthorization: Bearer {token}\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         addr,
         body.len()
     )?;
@@ -460,6 +625,8 @@ mod tests {
             from: Some("a".into()),
             title: None,
             message: "oi".into(),
+            mcp: vec!["git".into()],
+            tools: vec!["WebFetch".into()],
         };
         assert_eq!(
             ChatRequest::from_json(&request.to_json()),

@@ -594,7 +594,9 @@ pub(super) fn draw_bars(frame: &mut Frame, area: Rect, bars: &[ChartBar]) -> Vec
         .collect()
 }
 
-/// O consumo da sessão (as 5 horas) para a barra de consumo do chat. Carrega
+/// O consumo da sessão (a janela com `session`, ex.: as 5 horas do Claude)
+/// para a barra de consumo do chat. Provedor sem essa janela (ex.: o
+/// Antigravity, só com cotas semanais) fica sem a barra. Carrega
 /// só o consumo (sem os tokens por dia da aba), enquanto a barra está
 /// visível, e recarrega como a aba: a cada [`STALE`], ao trocar de conta ou
 /// depois de a janela zerar.

@@ -68,6 +68,7 @@ impl Extension for Rtk {
                 command: "rtk hook claude".to_string(),
             }],
             mcp_servers: Vec::new(),
+            env: Vec::new(),
         })
     }
 

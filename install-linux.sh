@@ -11,23 +11,62 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/install-ui.sh"
 
 UI_ASSUME_YES=0
+DEV=0
 for arg in "$@"; do
   case "$arg" in
     -y | --yes) UI_ASSUME_YES=1 ;;
+    --dev) DEV=1 ;;
   esac
 done
 
-# O binário compilado da release, baixado pelo install.sh; sem ele, compila
-# com o cargo.
+REPO="Augustowtg/terraforme"
+ASSET="terra-x86_64-unknown-linux-gnu"
+
+# O binário: o baixado pelo install.sh (TERRAFORME_BIN), o da última release
+# do GitHub ou, com --dev, o compilado deste repositório com o cargo (mesmo
+# com o TERRAFORME_BIN).
 PREBUILT="${TERRAFORME_BIN:-}"
 BUILT="$SCRIPT_DIR/target/release/terra"
+RELEASE=""
 
-if [ -z "$PREBUILT" ] && ! command -v cargo >/dev/null 2>&1; then
+# A última release: o /releases/latest redireciona para /releases/tag/<tag>.
+latest_release() {
+  local url
+  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)"
+  case "$url" in
+    */releases/tag/*) echo "${url##*/}" ;;
+  esac
+}
+
+if [ "$DEV" -eq 1 ]; then
+  PREBUILT=""
+elif [ -z "$PREBUILT" ]; then
+  if [ "$(uname -m)" != "x86_64" ]; then
+    echo "erro: a release só tem o binário para x86_64. Para compilar este repositório, use --dev." >&2
+    exit 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "erro: 'curl' não encontrado; é preciso para baixar a release. Para compilar este repositório, use --dev." >&2
+    exit 1
+  fi
+  RELEASE="$(latest_release)"
+  if [ -z "$RELEASE" ]; then
+    echo "erro: não foi possível achar a última release em github.com/$REPO. Para compilar este repositório, use --dev." >&2
+    exit 1
+  fi
+  PREBUILT="$(mktemp -d)/$ASSET"
+fi
+
+if [ "$DEV" -eq 1 ] && ! command -v cargo >/dev/null 2>&1; then
   echo "erro: 'cargo' não encontrado. Instale o Rust em https://rustup.rs e rode o script de novo." >&2
   exit 1
 fi
 
 build() {
+  if [ -n "$RELEASE" ]; then
+    curl -fsSL -o "$PREBUILT" "https://github.com/$REPO/releases/download/$RELEASE/$ASSET"
+    return
+  fi
   if [ -n "$PREBUILT" ]; then
     return
   fi
@@ -37,6 +76,10 @@ build() {
 install_bin() {
   mkdir -p "$BIN_DIR"
   install -m 755 "${PREBUILT:-$BUILT}" "$BIN_DIR/terra"
+  # A pasta temporária do binário baixado da release.
+  if [ -n "$RELEASE" ]; then
+    rm -rf "$(dirname "$PREBUILT")"
+  fi
   ui_note "Binário instalado em $BIN_DIR/terra"
 }
 
@@ -176,8 +219,12 @@ EXT_INSTALLED=(0 0)
 if command -v rtk >/dev/null 2>&1; then EXT_INSTALLED[0]=1; fi
 if command -v ai-memory >/dev/null 2>&1; then EXT_INSTALLED[1]=1; fi
 
-# O passo 2 compila ou usa o binário baixado da release.
-if [ -n "$PREBUILT" ]; then
+# O passo 2 baixa a última release, usa o binário baixado pelo install.sh ou
+# compila (--dev).
+if [ -n "$RELEASE" ]; then
+  BUILD_LABEL="Baixar o binário da release $RELEASE"
+  BUILD_SUMMARY="github.com/$REPO; não precisa compilar"
+elif [ -n "$PREBUILT" ]; then
   BUILD_LABEL="Usar o binário compilado da release"
   BUILD_SUMMARY="baixado do GitHub; não precisa compilar"
 else
@@ -190,6 +237,8 @@ ui_init "$SCRIPT_DIR" \
   "$BUILD_LABEL" \
   "Instalar o binário em $BIN_DIR" \
   "Adicionar a função 'terra' aos shells"
+# A versão mostrada é a da release baixada, e não a deste repositório.
+if [ -n "$RELEASE" ]; then UI_VERSION="${RELEASE#v}"; fi
 
 # Os arquivos que o setup_shells altera, para o resumo do passo.
 shell_files() {

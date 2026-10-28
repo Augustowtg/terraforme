@@ -8,7 +8,7 @@
 //!
 //! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor (nos
 //! servidores MCP e nas skills, passam de um para outro, com os detalhes
-//! embaixo); a
+//! embaixo; nos Sub agentes, o `Enter` abre o menu do `/model`); a
 //! tela principal salva e aplica a mudança. `Shift+Tab` alterna entre o
 //! Agente e as Extensões. Nas Extensões, a lista é paginada (como a dos
 //! modelos do `/model`, mas com páginas): `↑`/`↓` escolhem, `←`/`→` trocam
@@ -22,7 +22,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
 
 use super::chat::compact_count;
-use crate::agent::{AccountOption, ChatAdapter, ModelOption};
+use super::chat::model_menu::{self, ModelMenu};
+use crate::agent::adapters::ProviderOption;
+use crate::agent::{AccountOption, Catalog, ModelInfo, ModelOption};
 use crate::extension::Status;
 use crate::mcp;
 use crate::settings::{
@@ -32,6 +34,7 @@ use crate::theme::{self, Variant};
 
 const HELP: &str =
     "↑/↓ escolher · ←/→ ou Enter alterar · Shift+Tab extensões · Tab trocar aba · Esc ir para Sair";
+const HELP_MODEL: &str = "↑/↓ escolher · Enter selecionar · Esc fechar";
 const HELP_EXTENSIONS: &str = "↑/↓ escolher · Espaço ativar · ←/→ página · Shift+Tab agente · Tab trocar aba · Esc ir para Sair";
 /// Largura da coluna dos nomes das configurações.
 const LABEL_WIDTH: usize = 18;
@@ -46,9 +49,11 @@ const DETAIL_WIDTH: usize = 36;
 /// Uma configuração que pode ser alterada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
+    Provider,
     Account,
     StartMode,
     Model,
+    SubagentModel,
     Interface,
     ContextDisplay,
     AutoCompact,
@@ -62,10 +67,12 @@ enum Field {
     Skills,
 }
 
-const FIELDS: [Field; 14] = [
+const FIELDS: [Field; 16] = [
+    Field::Provider,
     Field::Account,
     Field::StartMode,
     Field::Model,
+    Field::SubagentModel,
     Field::Interface,
     Field::ContextDisplay,
     Field::AutoCompact,
@@ -79,19 +86,23 @@ const FIELDS: [Field; 14] = [
     Field::Skills,
 ];
 /// Onde começa a seção Contexto em [`FIELDS`].
-const CONTEXT_START: usize = 4;
+const CONTEXT_START: usize = 6;
 /// Onde começa a seção Consumo em [`FIELDS`].
-const USAGE_START: usize = 8;
+const USAGE_START: usize = 10;
 /// Onde começa a seção MCP em [`FIELDS`].
-const MCP_START: usize = 10;
+const MCP_START: usize = 12;
 
-/// As opções que vêm do provedor: contas e modelos, e o limite de contexto
-/// do modelo (para mostrar em tokens o ponto de compactar). E as extensões
-/// do registro e o MCP.
+/// As opções que vêm do provedor: os provedores conhecidos (e o `id` do que
+/// o chat usa), contas e modelos (e o catálogo, para o menu do `/model`), e
+/// o limite de contexto do modelo (para mostrar em tokens o ponto de
+/// compactar). E as extensões do registro e o MCP.
 #[derive(Debug, Default, Clone)]
 pub struct Choices {
+    pub providers: Vec<ProviderOption>,
+    pub provider: Option<String>,
     pub accounts: Vec<AccountOption>,
     pub models: Vec<ModelOption>,
+    pub catalog: Option<Catalog>,
     pub context_window: u64,
     pub extensions: Vec<ExtensionOption>,
     pub mcp: McpState,
@@ -169,10 +180,15 @@ pub struct ConfigView {
     mcp_server: usize,
     /// A skill em foco.
     skill: usize,
+    /// O menu do `/model` dos sub agentes, quando aberto.
+    model_menu: Option<ModelMenu>,
 }
 
 impl ConfigView {
     pub fn help(&self) -> &'static str {
+        if self.model_menu.is_some() {
+            return HELP_MODEL;
+        }
         match self.section {
             Section::Agent => HELP,
             Section::Extensions => HELP_EXTENSIONS,
@@ -187,6 +203,26 @@ impl ConfigView {
         mcp: &mut McpSettings,
         choices: &Choices,
     ) -> Outcome {
+        // O menu, aberto, fica com todas as teclas.
+        if let Some(menu) = &mut self.model_menu {
+            return match menu.handle_key(key, choices.catalog.as_ref()) {
+                model_menu::Outcome::Handled => Outcome::Moved,
+                model_menu::Outcome::Close => {
+                    self.model_menu = None;
+                    Outcome::Moved
+                }
+                model_menu::Outcome::Chosen { model, .. } => {
+                    self.model_menu = None;
+                    settings.subagent_model = Some(model);
+                    Outcome::Changed
+                }
+                model_menu::Outcome::Unset(_) => {
+                    self.model_menu = None;
+                    settings.subagent_model = None;
+                    Outcome::Changed
+                }
+            };
+        }
         if key.code == KeyCode::BackTab {
             self.section = match self.section {
                 Section::Agent => Section::Extensions,
@@ -239,6 +275,13 @@ impl ConfigView {
                 1
             };
             self.skill = cycle(self.skill.min(len - 1), len, step);
+            return Outcome::Moved;
+        }
+        if FIELDS[self.focus] == Field::SubagentModel && key.code == KeyCode::Enter {
+            let mut menu =
+                ModelMenu::subagents(settings.subagent_model.clone(), choices.catalog.as_ref());
+            menu.sync(choices.catalog.as_ref());
+            self.model_menu = Some(menu);
             return Outcome::Moved;
         }
         match key.code {
@@ -303,22 +346,9 @@ impl ConfigView {
         area: Rect,
         settings: &AgentSettings,
         extensions: &ExtensionSettings,
-        adapter: Option<&dyn ChatAdapter>,
         choices: &Choices,
     ) {
-        let provider = match adapter {
-            Some(a) if a.is_available() => Span::styled(
-                format!("{} · disponível", a.name()),
-                theme::variant(Variant::Success),
-            ),
-            Some(a) => Span::styled(format!("{} · não encontrado", a.name()), theme::error()),
-            None => Span::styled("Nenhum", theme::muted()),
-        };
-
-        let mut lines = vec![
-            Line::styled(" Agente", theme::section_title()),
-            info_row("Provedor", provider),
-        ];
+        let mut lines = vec![Line::styled(" Agente", theme::section_title())];
         let agent_focus = self.section == Section::Agent;
         let row = |i: usize, field: Field| {
             let value = value_label(field, settings, choices);
@@ -401,14 +431,35 @@ impl ConfigView {
             .areas(area);
             (top, bottom)
         };
+        // Em telas baixas, a seção rola até a configuração em foco (ex.: as
+        // Skills, a última), que senão ficaria fora da tela.
+        let scroll = agent_scroll(&lines, agent_area.height.saturating_sub(1));
         frame.render_widget(
-            Paragraph::new(lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
+            Paragraph::new(lines)
+                .scroll((scroll, 0))
+                .block(Block::new().padding(Padding::new(1, 2, 1, 0))),
             agent_area,
         );
         frame.render_widget(
             Paragraph::new(extension_lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
             extensions_area,
         );
+        if let Some(menu) = &self.model_menu {
+            // Como o do chat, mas acima do pé da aba.
+            let bottom = Rect {
+                y: area.bottom(),
+                height: 0,
+                ..area
+            };
+            let label = |m: &ModelInfo| {
+                choices
+                    .models
+                    .iter()
+                    .find(|o| o.id == m.id)
+                    .map_or_else(|| m.label.clone(), |o| o.label.clone())
+            };
+            menu.draw(frame, bottom, choices.catalog.as_ref(), &label);
+        }
     }
 
     /// Os servidores MCP conectados ao agente: o em foco, `‹ nome · 1/3 ›`,
@@ -544,9 +595,11 @@ impl ConfigView {
 
 fn field_label(field: Field) -> &'static str {
     match field {
+        Field::Provider => "Provedor",
         Field::Account => "Conta",
         Field::StartMode => "Modo inicial",
         Field::Model => "Modelo",
+        Field::SubagentModel => "Sub agentes",
         Field::Interface => "Interface",
         Field::ContextDisplay => "Display",
         Field::AutoCompact => "Auto compactação",
@@ -564,6 +617,14 @@ fn field_label(field: Field) -> &'static str {
 fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> String {
     let models = &choices.models;
     match field {
+        Field::Provider => {
+            let id = settings.provider.as_ref().or(choices.provider.as_ref());
+            match choices.providers.iter().find(|p| Some(&p.id) == id) {
+                Some(p) if p.available => format!("{} · disponível", p.name),
+                Some(p) => format!("{} · não encontrado", p.name),
+                None => id.cloned().unwrap_or_else(|| "Nenhum".to_string()),
+            }
+        }
         Field::Account => choices
             .accounts
             .iter()
@@ -613,13 +674,19 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
             format!("{}% · {} tokens", context.compact_at, compact_count(tokens))
         }
         Field::Mcp | Field::McpSpawnMode | Field::McpServers | Field::Skills => String::new(),
-        Field::Model => match &settings.model {
-            None => "Padrão".to_string(),
-            Some(id) => models
-                .iter()
-                .find(|m| &m.id == id)
-                .map_or_else(|| id.clone(), |m| m.label.clone()),
-        },
+        Field::Model => model_label(&settings.model, models),
+        Field::SubagentModel => model_label(&settings.subagent_model, models),
+    }
+}
+
+/// O nome do modelo escolhido; `None` é o Padrão.
+fn model_label(model: &Option<String>, models: &[ModelOption]) -> String {
+    match model {
+        None => "Padrão".to_string(),
+        Some(id) => models
+            .iter()
+            .find(|m| &m.id == id)
+            .map_or_else(|| id.clone(), |m| m.label.clone()),
     }
 }
 
@@ -627,6 +694,24 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
 fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: isize) {
     let models = &choices.models;
     match field {
+        Field::Provider => {
+            let ids: Vec<&String> = choices.providers.iter().map(|p| &p.id).collect();
+            if ids.is_empty() {
+                return;
+            }
+            let current = settings.provider.as_ref().or(choices.provider.as_ref());
+            let i = ids.iter().position(|id| Some(*id) == current).unwrap_or(0);
+            let next = ids[cycle(i, ids.len(), step)].clone();
+            if Some(&next) != current {
+                // A conta, os modelos e o esforço são ids do provedor
+                // anterior: voltam para o padrão do novo.
+                settings.account = None;
+                settings.model = None;
+                settings.effort = None;
+                settings.subagent_model = None;
+            }
+            settings.provider = Some(next);
+        }
         Field::Account => {
             // Sem contas do provedor, só a Default.
             let mut options: Vec<Option<String>> =
@@ -678,20 +763,20 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
             let i = all.iter().position(|p| p == at).unwrap_or(0);
             *at = all[cycle(i, all.len(), step)];
         }
-        Field::Model => {
-            // Padrão (None) e depois os modelos do provedor.
-            let options: Vec<Option<String>> = std::iter::once(None)
-                .chain(models.iter().map(|m| Some(m.id.clone())))
-                .collect();
-            let i = options
-                .iter()
-                .position(|m| *m == settings.model)
-                .unwrap_or(0);
-            settings.model = options[cycle(i, options.len(), step)].clone();
-        }
+        Field::Model => cycle_model(&mut settings.model, models, step),
+        Field::SubagentModel => cycle_model(&mut settings.subagent_model, models, step),
         // Fica com a Config, que tem o MCP.
         Field::Mcp | Field::McpSpawnMode | Field::McpServers | Field::Skills => {}
     }
+}
+
+/// Padrão (None) e depois os modelos do provedor.
+fn cycle_model(model: &mut Option<String>, models: &[ModelOption], step: isize) {
+    let options: Vec<Option<String>> = std::iter::once(None)
+        .chain(models.iter().map(|m| Some(m.id.clone())))
+        .collect();
+    let i = options.iter().position(|m| m == model).unwrap_or(0);
+    *model = options[cycle(i, options.len(), step)].clone();
 }
 
 fn cycle(index: usize, len: usize, step: isize) -> usize {
@@ -709,6 +794,16 @@ fn shorten(text: &str, width: usize) -> String {
 }
 
 /// A linha que separa as seções, com `width` colunas.
+/// Quanto rolar a seção Agente, com `height` linhas, para caberem a linha em
+/// foco e as duas de detalhes embaixo dela (nos servidores MCP e nas skills).
+fn agent_scroll(lines: &[Line], height: u16) -> u16 {
+    let Some(focus) = lines.iter().position(|l| l.style == theme::focused()) else {
+        return 0;
+    };
+    let end = (focus + 3).min(lines.len());
+    end.saturating_sub(height as usize).min(focus) as u16
+}
+
 fn separator(width: usize) -> Line<'static> {
     Line::styled(
         format!(" {}", "─".repeat(width.saturating_sub(1))),
@@ -756,6 +851,19 @@ mod tests {
 
     fn choices() -> Choices {
         Choices {
+            providers: vec![
+                ProviderOption {
+                    id: "claude".into(),
+                    name: "Claude".into(),
+                    available: true,
+                },
+                ProviderOption {
+                    id: "antigravity".into(),
+                    name: "Antigravity".into(),
+                    available: false,
+                },
+            ],
+            provider: Some("claude".into()),
             accounts: vec![
                 AccountOption {
                     id: None,
@@ -773,6 +881,7 @@ mod tests {
                     label: id.to_uppercase(),
                 })
                 .collect(),
+            catalog: None,
             context_window: 200_000,
             extensions: Vec::new(),
             mcp: McpState::default(),
@@ -896,7 +1005,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let settings = AgentSettings::default();
-                view.draw(frame, frame.area(), &settings, &extensions, None, &choices)
+                view.draw(frame, frame.area(), &settings, &extensions, &choices)
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -951,10 +1060,29 @@ mod tests {
     }
 
     #[test]
+    fn switching_provider_drops_the_ids_of_the_previous_one() {
+        let mut settings = AgentSettings {
+            account: Some(".claude-empresa".into()),
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            subagent_model: Some("haiku".into()),
+            ..AgentSettings::default()
+        };
+        // Sem escolha salva, o atual é o do chat (claude): o próximo é o agy.
+        change(Field::Provider, &mut settings, &choices(), 1);
+        assert_eq!(settings.provider.as_deref(), Some("antigravity"));
+        assert_eq!(settings.account, None);
+        assert_eq!(settings.model, None);
+        assert_eq!(settings.effort, None);
+        assert_eq!(settings.subagent_model, None);
+    }
+
+    #[test]
     fn account_cycles_through_provider_accounts() {
         let mut view = ConfigView::default();
         let mut settings = AgentSettings::default();
-        // A Conta é a primeira configuração.
+        // A Conta vem depois do Provedor.
+        press(&mut view, &mut settings, KeyCode::Down);
         assert_eq!(
             press(&mut view, &mut settings, KeyCode::Right),
             Outcome::Changed
@@ -983,7 +1111,8 @@ mod tests {
     fn arrows_change_start_mode_and_model() {
         let mut view = ConfigView::default();
         let mut settings = AgentSettings::default();
-        // Pula a Conta, a primeira configuração.
+        // Pula o Provedor e a Conta, as primeiras configurações.
+        press(&mut view, &mut settings, KeyCode::Down);
         assert_eq!(
             press(&mut view, &mut settings, KeyCode::Down),
             Outcome::Moved
@@ -1011,6 +1140,15 @@ mod tests {
         press(&mut view, &mut settings, KeyCode::Right);
         press(&mut view, &mut settings, KeyCode::Right);
         assert_eq!(settings.model, None, "depois do último, volta ao Padrão");
+
+        press(&mut view, &mut settings, KeyCode::Down);
+        press(&mut view, &mut settings, KeyCode::Left);
+        assert_eq!(
+            settings.subagent_model.as_deref(),
+            Some("haiku"),
+            "volta do Padrão ao último"
+        );
+        assert_eq!(settings.model, None);
 
         press(&mut view, &mut settings, KeyCode::Down);
         press(&mut view, &mut settings, KeyCode::Right);
@@ -1074,18 +1212,91 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_subagents_opens_the_model_menu() {
+        let model = |id: &str| ModelInfo {
+            id: id.into(),
+            label: id.into(),
+            description: String::new(),
+            resolved: None,
+            efforts: vec!["high".into()],
+        };
+        let choices = Choices {
+            catalog: Some(Catalog {
+                models: vec![model("opus"), model("haiku")],
+                ..Catalog::default()
+            }),
+            ..choices()
+        };
+        let mut view = ConfigView::default();
+        let mut settings = AgentSettings::default();
+        let press = |view: &mut ConfigView, settings: &mut AgentSettings, code| {
+            view.handle_key(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                settings,
+                &mut ExtensionSettings::default(),
+                &mut McpSettings::default(),
+                &choices,
+            )
+        };
+        for _ in 0..4 {
+            press(&mut view, &mut settings, KeyCode::Down);
+        }
+        assert_eq!(FIELDS[view.focus], Field::SubagentModel);
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Enter),
+            Outcome::Moved
+        );
+        assert_eq!(view.help(), HELP_MODEL, "o menu do /model abriu");
+        // Default, opus, haiku: o Tab fica com o menu.
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Tab),
+            Outcome::Moved
+        );
+        press(&mut view, &mut settings, KeyCode::Down);
+        press(&mut view, &mut settings, KeyCode::Down);
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Enter),
+            Outcome::Changed
+        );
+        assert_eq!(settings.subagent_model.as_deref(), Some("haiku"));
+        assert!(view.model_menu.is_none());
+        assert_eq!(settings.model, None, "o modelo da conversa fica");
+
+        // Reabre no haiku; o Default volta ao padrão do agente.
+        press(&mut view, &mut settings, KeyCode::Enter);
+        press(&mut view, &mut settings, KeyCode::Up);
+        press(&mut view, &mut settings, KeyCode::Up);
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Enter),
+            Outcome::Changed
+        );
+        assert_eq!(settings.subagent_model, None);
+
+        // Esc fecha sem mudar.
+        press(&mut view, &mut settings, KeyCode::Enter);
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Esc),
+            Outcome::Moved
+        );
+        assert!(view.model_menu.is_none());
+        assert_eq!(settings.subagent_model, None);
+    }
+
+    #[test]
     fn draws_agent_section_with_focus() {
         let view = ConfigView::default();
         let settings = AgentSettings {
+            provider: None,
             start_mode: StartMode::Provider,
             model: Some("haiku".into()),
             account: None,
             effort: None,
+            subagent_model: None,
             interface: Interface::Provider,
             context: ContextSettings::default(),
             usage: Default::default(),
         };
-        let mut terminal = Terminal::new(TestBackend::new(60, 22)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 23)).unwrap();
         terminal
             .draw(|frame| {
                 let extensions = ExtensionSettings::default();
@@ -1094,7 +1305,6 @@ mod tests {
                     frame.area(),
                     &settings,
                     &extensions,
-                    None,
                     &Choices {
                         mcp: McpState {
                             settings: McpSettings {
@@ -1118,30 +1328,31 @@ mod tests {
                 .to_string()
         };
         assert_eq!(row(1), "  Agente");
-        assert_eq!(row(2), "   Provedor          Nenhum");
-        assert_eq!(row(3), " ▌ Conta             ‹ Default · eu@gmail.com ›");
+        assert_eq!(row(2), " ▌ Provedor          ‹ Claude · disponível ›");
+        assert_eq!(row(3), "   Conta               Default · eu@gmail.com");
         assert_eq!(row(4), "   Modo inicial        Do provedor");
         assert_eq!(row(5), "   Modelo              HAIKU");
-        assert_eq!(row(6), "   Interface           Original do provedor");
-        assert_eq!(buffer[(3, 3)].bg, theme::focused().bg.unwrap());
+        assert_eq!(row(6), "   Sub agentes         Padrão");
+        assert_eq!(row(7), "   Interface           Original do provedor");
+        assert_eq!(buffer[(3, 2)].bg, theme::focused().bg.unwrap());
         // A linha que separa o Contexto vai até onde vai a seção.
-        assert!(row(7).starts_with("  ─"));
-        assert_eq!(row(7).chars().count(), row(3).chars().count());
-        assert_eq!(row(8), "  Contexto");
-        assert_eq!(row(9), "   Display             Oculto");
-        assert_eq!(row(10), "   Auto compactação    Não");
-        assert_eq!(row(11), "   Limite de tokens    200K");
-        assert_eq!(row(12), "   Compactar em        75% · 150K tokens");
-        assert!(row(13).starts_with("  ─"));
-        assert_eq!(row(14), "  Consumo");
-        assert_eq!(row(15), "   Display             Oculto");
-        assert_eq!(row(16), "   Consumo geral       Visível");
+        assert!(row(8).starts_with("  ─"));
+        assert_eq!(row(8).chars().count(), row(3).chars().count());
+        assert_eq!(row(9), "  Contexto");
+        assert_eq!(row(10), "   Display             Oculto");
+        assert_eq!(row(11), "   Auto compactação    Não");
+        assert_eq!(row(12), "   Limite de tokens    200K");
+        assert_eq!(row(13), "   Compactar em        75% · 150K tokens");
+        assert!(row(14).starts_with("  ─"));
+        assert_eq!(row(15), "  Consumo");
+        assert_eq!(row(16), "   Display             Oculto");
+        assert_eq!(row(17), "   Consumo geral       Visível");
         // O MCP, separado, com a bola verde de online.
-        assert_eq!(row(17), "");
-        assert_eq!(row(18), "  MCP ●");
-        assert_eq!(row(19), "   Servidor            Ativado");
-        assert_eq!(row(20), "   Modo dos chats      Accept Edits");
-        assert_eq!(row(21), "   Endereço          http://127.0.0.1:30303/mcp");
+        assert_eq!(row(18), "");
+        assert_eq!(row(19), "  MCP ●");
+        assert_eq!(row(20), "   Servidor            Ativado");
+        assert_eq!(row(21), "   Modo dos chats      Accept Edits");
+        assert_eq!(row(22), "   Endereço          http://127.0.0.1:30303/mcp");
     }
 
     #[test]
@@ -1274,5 +1485,50 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(empty.trim_end().ends_with("Nenhuma"));
+    }
+
+    #[test]
+    fn short_screens_scroll_down_to_the_skills() {
+        let choices = Choices {
+            skills: vec![SkillInfo {
+                name: "docs".into(),
+                origin: "Claude · usuário".into(),
+                description: "Escreve docs".into(),
+            }],
+            ..choices()
+        };
+        let screen = |view: &ConfigView| -> Vec<String> {
+            let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+            terminal
+                .draw(|frame| {
+                    view.draw(
+                        frame,
+                        frame.area(),
+                        &AgentSettings::default(),
+                        &ExtensionSettings::default(),
+                        &choices,
+                    )
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..20)
+                .map(|y| (0..120).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect()
+        };
+
+        let top = screen(&ConfigView::default());
+        assert!(
+            top[1].starts_with("  Agente"),
+            "com o foco em cima, não rola"
+        );
+        assert!(!top.iter().any(|row| row.contains("docs")));
+
+        let bottom = screen(&ConfigView {
+            focus: MCP_START + 3,
+            ..ConfigView::default()
+        });
+        assert!(bottom.iter().any(|row| row.contains("‹ docs · 1/1 ›")));
+        assert!(bottom.iter().any(|row| row.contains("Escreve docs")));
+        assert!(!bottom.iter().any(|row| row.contains("Agente")));
     }
 }

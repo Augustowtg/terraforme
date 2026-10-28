@@ -45,6 +45,9 @@ pub struct Request<'a> {
     pub account: Option<&'a str>,
     /// Nível de esforço (um dos [`ModelInfo::efforts`]); `None` usa o padrão.
     pub effort: Option<&'a str>,
+    /// Modelo dos sub agentes, escolhido na Config (um [`ModelInfo::id`]);
+    /// `None` deixa o agente decidir.
+    pub subagent_model: Option<&'a str>,
     /// O que as extensões ativas no workspace acrescentam ao agente.
     pub extensions: &'a Contribution,
     /// A ferramenta MCP (servidor e ferramenta, ex.: `terra` e `permission`)
@@ -54,6 +57,21 @@ pub struct Request<'a> {
     /// Ferramentas liberadas só nesta mensagem: os `allow` dos
     /// [`AgentEvent::Blocked`] que o usuário permitiu.
     pub allowed_tools: &'a [String],
+    /// Num chat delegado pelo orquestrador, o que ele leva: o provedor roda
+    /// enxuto, sem o ambiente do usuário, para gastar menos a cada chamada.
+    pub delegated: Option<Delegated<'a>>,
+}
+
+/// O que um chat delegado leva além do mínimo
+/// ([`mcp::DELEGATED_TOOLS`](crate::mcp::DELEGATED_TOOLS) e o
+/// [`mcp::DELEGATED_MCP`](crate::mcp::DELEGATED_MCP)): o que quem delegou
+/// pediu na ferramenta `chat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delegated<'a> {
+    /// Os servidores MCP do usuário, pelo nome.
+    pub mcp: &'a [String],
+    /// As ferramentas embutidas.
+    pub tools: &'a [String],
 }
 
 /// Uma conta do provedor que pode ser escolhida na Config.
@@ -180,6 +198,8 @@ pub struct Interactive<'a> {
     pub account: Option<&'a str>,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
+    /// Modelo dos sub agentes (ver [`Request::subagent_model`]).
+    pub subagent_model: Option<&'a str>,
     pub mode: Option<PermissionMode>,
     /// O que as extensões ativas no workspace acrescentam ao agente.
     pub extensions: Option<&'a Contribution>,
@@ -205,6 +225,12 @@ pub enum CommandRoute {
 pub trait ChatAdapter {
     /// Nome no botão do título do input (ex.: "Claude").
     fn name(&self) -> &str;
+
+    /// O que fica salvo na Config para escolher este provedor (ex.:
+    /// `claude`). Por padrão, o nome.
+    fn id(&self) -> &str {
+        self.name()
+    }
 
     /// `false` quando o provedor não está instalado ou configurado; o chat
     /// fica Desconectado.
@@ -270,6 +296,19 @@ pub trait ChatAdapter {
     /// foi revogado). Ele é interativo: o terra sai da tela enquanto ele roda.
     /// `None` quando o provedor não tem login.
     fn login(&self, _account: Option<&str>) -> Option<Command> {
+        None
+    }
+
+    /// Trechos, em minúsculas, das mensagens de erro do provedor que pedem
+    /// um novo login (ex.: `"log in again"`). O chat então sugere o `/login`.
+    /// Vazio: o chat nunca sugere.
+    fn login_error_words(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Como entrar na conta quando o provedor não tem login pelo terra
+    /// ([`login`](Self::login) é `None`): o texto que o `/login` mostra.
+    fn login_help(&self) -> Option<String> {
         None
     }
 

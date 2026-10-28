@@ -16,8 +16,8 @@ use std::sync::mpsc::Receiver;
 use std::thread::{self, ThreadId};
 
 use super::{
-    AccountOption, AgentEvent, Catalog, ChatAdapter, DailyTokens, Interactive, ModelOption,
-    PermissionMode, Request, Session, Usage,
+    AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
+    ModelOption, PermissionMode, ProviderMcp, ProviderSkill, Request, Session, Usage,
 };
 
 thread_local! {
@@ -94,12 +94,14 @@ pub fn guarded(make: impl FnOnce() -> Box<dyn ChatAdapter>) -> Box<dyn ChatAdapt
 pub struct Guarded {
     inner: Box<dyn ChatAdapter>,
     name: String,
+    id: String,
 }
 
 impl Guarded {
     pub fn new(inner: Box<dyn ChatAdapter>) -> Self {
         let name = catch(|| inner.name().to_string()).unwrap_or_else(|_| "Provedor".into());
-        Self { inner, name }
+        let id = catch(|| inner.id().to_string()).unwrap_or_else(|_| name.clone());
+        Self { inner, name, id }
     }
 }
 
@@ -110,6 +112,10 @@ fn failed(name: &str, reason: &str) -> String {
 impl ChatAdapter for Guarded {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn id(&self) -> &str {
+        &self.id
     }
 
     fn is_available(&self) -> bool {
@@ -128,6 +134,18 @@ impl ChatAdapter for Guarded {
 
     fn accounts(&self) -> Vec<AccountOption> {
         catch(|| self.inner.accounts()).unwrap_or_default()
+    }
+
+    fn mcp_servers(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderMcp> {
+        catch(|| self.inner.mcp_servers(cwd, account)).unwrap_or_default()
+    }
+
+    fn skills(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderSkill> {
+        catch(|| self.inner.skills(cwd, account)).unwrap_or_default()
+    }
+
+    fn command_route(&self, name: &str) -> CommandRoute {
+        catch(|| self.inner.command_route(name)).unwrap_or(CommandRoute::Agent)
     }
 
     fn models(&self) -> Vec<ModelOption> {
@@ -251,9 +269,11 @@ mod tests {
                 model: None,
                 account: None,
                 effort: None,
+                subagent_model: None,
                 extensions: &crate::extension::Contribution::default(),
                 permission_tool: None,
                 allowed_tools: &[],
+                delegated: None,
             })
             .err()
             .unwrap();

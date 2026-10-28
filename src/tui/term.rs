@@ -101,6 +101,24 @@ impl Term {
         }
     }
 
+    /// Cola `text` no processo, entre as marcas do bracketed paste quando ele
+    /// pediu esse modo (o `claude` pede), para as quebras de linha não
+    /// enviarem a mensagem.
+    pub fn send_paste(&mut self, text: &str) {
+        let bracketed = self
+            .parser
+            .lock()
+            .is_ok_and(|p| p.screen().bracketed_paste());
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        let bytes = if bracketed {
+            format!("\x1b[200~{text}\x1b[201~")
+        } else {
+            text
+        };
+        let _ = self.writer.write_all(bytes.as_bytes());
+        let _ = self.writer.flush();
+    }
+
     /// `Some` quando o processo terminou: `Ok` se saiu com sucesso.
     pub fn finished(&mut self) -> Option<Result<(), String>> {
         match self.child.try_wait() {

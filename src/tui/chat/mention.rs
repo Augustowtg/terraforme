@@ -7,7 +7,9 @@
 //! cursor, a seleção e o Backspace tratam o badge inteiro como uma unidade.
 //!
 //! Uma skill escolhida na lista da `/` vira um badge do mesmo jeito
-//! (`/docs`), em qualquer ponto do texto.
+//! (`/docs`), em qualquer ponto do texto. Um texto colado com mais de
+//! [`PASTE_LIMIT`] caracteres também, como no Claude Code
+//! (`[Pasted text #1 +12 lines]`); ele vai inteiro na mensagem.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -21,6 +23,8 @@ use crate::tui::widgets::popup;
 const TOKEN_BASE: u32 = 0xF0000;
 /// Máximo de resultados considerados no filtro.
 const MAX_RESULTS: usize = 200;
+/// Acima disso (em caracteres), um texto colado vira um badge.
+pub const PASTE_LIMIT: usize = 100;
 
 /// Caractere que representa a menção de índice `index`.
 pub fn token(index: usize) -> char {
@@ -42,13 +46,20 @@ pub enum Mention {
     File(String),
     /// Nome da skill, sem a `/` (ex.: `docs`).
     Skill(String),
+    /// Texto colado grande: `number` é o `#` do badge (1, 2...).
+    Paste { number: usize, text: String },
 }
 
-/// Texto do badge (sem os espaços do pill): `@/src/main.rs` ou `/docs`.
+/// Texto do badge (sem os espaços do pill): `@/src/main.rs`, `/docs` ou
+/// `[Pasted text #1 +12 lines]` (sem quebras de linha, só `[Pasted text #1]`).
 pub fn badge_label(mention: &Mention) -> String {
     match mention {
         Mention::File(path) => format!("@/{path}"),
         Mention::Skill(name) => format!("/{name}"),
+        Mention::Paste { number, text } => match text.matches('\n').count() {
+            0 => format!("[Pasted text #{number}]"),
+            lines => format!("[Pasted text #{number} +{lines} lines]"),
+        },
     }
 }
 
@@ -67,11 +78,13 @@ pub fn badge_span(mention: &Mention, selected: bool) -> Span<'static> {
     Span::styled(format!(" {} ", badge_label(mention)), style)
 }
 
-/// Como a menção vai no texto enviado ao agente: `@src/main.rs` ou `/docs`.
+/// Como a menção vai no texto enviado ao agente: `@src/main.rs`, `/docs` ou
+/// o texto colado inteiro.
 pub fn prompt_text(mention: &Mention) -> String {
     match mention {
         Mention::File(path) => format!("@{path}"),
         Mention::Skill(name) => format!("/{name}"),
+        Mention::Paste { text, .. } => text.clone(),
     }
 }
 
@@ -258,5 +271,16 @@ mod tests {
         let skill = Mention::Skill("docs".into());
         assert_eq!(badge_label(&skill), "/docs");
         assert_eq!(prompt_text(&skill), "/docs");
+        let paste = Mention::Paste {
+            number: 2,
+            text: "a\nb\nc".into(),
+        };
+        assert_eq!(badge_label(&paste), "[Pasted text #2 +2 lines]");
+        assert_eq!(prompt_text(&paste), "a\nb\nc");
+        let line = Mention::Paste {
+            number: 1,
+            text: "x".repeat(150),
+        };
+        assert_eq!(badge_label(&line), "[Pasted text #1]");
     }
 }
