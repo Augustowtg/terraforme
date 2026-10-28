@@ -1,10 +1,18 @@
-//! Aba Orquestrador: as configurações dos chats delegados (os sub agentes)
-//! — o provedor, o modelo, o modo e como eles começam e terminam.
+//! Aba Orquestrador: os terminais do terra abertos na máquina, separados
+//! por workspace (a lista do daemon orquestrador, [`crate::hub`]), e as
+//! configurações dos chats delegados (os sub agentes) — o provedor, o
+//! modelo, o modo e como eles começam e terminam.
 //!
-//! Por enquanto, elas só ficam salvas: o terra ainda não delega chats.
+//! Por enquanto, as configurações só ficam salvas: o terra ainda não delega
+//! chats.
 //!
 //! ```text
 //!  Orquestrador
+//!
+//!  Workspaces
+//!    terraforme-cli  ·  3 instâncias ativas + 2 sub agentes
+//!      7f3a12bc  pid 4812    alive  Pensando...   3 chats  aberto há 5m  sinal há 1s  ← este
+//!      …
 //!
 //!  Configurações
 //!    Provedor          Claude
@@ -31,6 +39,8 @@ use ratatui::widgets::{Block, Padding, Paragraph};
 use super::chat::model_menu::{self, ModelMenu, effort_label};
 use crate::agent::adapters::{self, ProviderOption};
 use crate::agent::{Catalog, ChatAdapter, ModelInfo};
+use crate::hub::protocol::{Health, Instance};
+use crate::hub::view;
 use crate::settings::{OrchestratorSettings, StartMode};
 use crate::theme::{self};
 
@@ -158,6 +168,55 @@ pub struct Agent<'a> {
     pub catalog: Option<&'a Catalog>,
     pub default_model: Option<String>,
     pub label: &'a dyn Fn(&str) -> String,
+}
+
+/// A lista do orquestrador, para a tela: `instances` é `None` antes de a
+/// aba assinar (ou sem o hub), e traz se o monitor está ligado; `own` é o
+/// id deste terra.
+pub struct HubView<'a> {
+    pub instances: Option<&'a (bool, Vec<Instance>)>,
+    pub own: Option<&'a str>,
+}
+
+impl HubView<'_> {
+    fn lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::styled(" Workspaces", theme::section_title())];
+        let message = match self.instances {
+            None if self.own.is_none() => Some("   Sem o orquestrador neste terra."),
+            None | Some((false, _)) => Some("   Conectando ao orquestrador..."),
+            Some((true, instances)) if instances.is_empty() => Some("   Nenhuma instância ativa."),
+            Some(_) => None,
+        };
+        if let Some(message) = message {
+            lines.push(Line::styled(message, theme::muted()));
+            return lines;
+        }
+        let Some((_, instances)) = self.instances else {
+            return lines;
+        };
+        for workspace in view::by_workspace(instances) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {}", workspace.name), theme::text()),
+                Span::styled(format!("  ·  {}", workspace.summary()), theme::muted()),
+            ]));
+            for instance in &workspace.instances {
+                let style = match instance.health {
+                    Health::Alive => theme::path(),
+                    Health::Stale => theme::error(),
+                    Health::Gone => theme::muted(),
+                };
+                let mut spans = vec![Span::styled(
+                    format!("     {}", view::instance_line(instance)),
+                    style,
+                )];
+                if self.own == Some(instance.id.as_str()) {
+                    spans.push(Span::styled("  ← este", theme::muted()));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+        lines
+    }
 }
 
 /// O provedor dos chats delegados quando ele não é o do workspace: o terra
@@ -368,16 +427,21 @@ impl OrchestratorView {
         area: Rect,
         settings: &OrchestratorSettings,
         agent: &Agent,
+        hub: &HubView,
     ) {
         let mut lines = vec![
             Line::styled(" Orquestrador", theme::section_title()),
-            Line::styled(
-                "   Por enquanto, as configurações só ficam salvas.",
-                theme::muted(),
-            ),
+            Line::default(),
+        ];
+        lines.extend(hub.lines());
+        lines.extend([
             Line::default(),
             Line::styled(" Configurações", theme::section_title()),
-        ];
+            Line::styled(
+                "   Dos chats delegados; por enquanto, só ficam salvas.",
+                theme::muted(),
+            ),
+        ]);
         for (i, setting) in SETTINGS.iter().enumerate() {
             lines.push(setting_line(*setting, settings, agent, i == self.selected));
         }
