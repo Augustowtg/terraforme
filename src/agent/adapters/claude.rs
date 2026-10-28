@@ -11,9 +11,7 @@
 mod accounts;
 mod catalog;
 mod daily;
-mod delegated;
 mod interactive;
-pub(super) mod mcp;
 pub(super) mod skills;
 mod stream;
 mod usage;
@@ -33,8 +31,8 @@ use serde_json::Value;
 use self::stream::{StreamParser, text, tool_detail};
 use crate::agent::{
     AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
-    ModelOption, PermissionMode, ProviderMcp, ProviderSkill, Request, Session, Usage, kill_tree,
-    launch, own_group,
+    ModelOption, PermissionMode, ProviderSkill, Request, Session, Usage, kill_tree, launch,
+    own_group,
 };
 use crate::extension::{Contribution, Hook};
 
@@ -61,32 +59,6 @@ impl ClaudeAdapter {
     }
 
     /// A pasta de configuração da conta, ou `None` para a padrão.
-    /// O arquivo do `--mcp-config` de um chat delegado: os MCP das
-    /// extensões e do usuário (da conta em `account_dir` e da pasta atual)
-    /// que ele leva (veja [`delegated::servers`]).
-    fn delegated_mcp(
-        &self,
-        extensions: &Contribution,
-        delegated: crate::agent::Delegated<'_>,
-        account_dir: Option<&Path>,
-    ) -> Result<delegated::McpFile, String> {
-        let json = match (account_dir, &self.home) {
-            (Some(dir), _) => Some(dir.join(".claude.json")),
-            (None, Some(home)) => Some(default_json(home)),
-            (None, None) => None,
-        };
-        let user = match (json, env::current_dir()) {
-            (Some(json), Ok(cwd)) => mcp::raw(&json, &cwd),
-            _ => serde_json::Map::new(),
-        };
-        let servers = delegated::servers(extensions, &user, delegated);
-        let dir = crate::db::data_dir()
-            .map_err(|err| format!("{err:#}"))?
-            .join("delegados");
-        delegated::McpFile::create(&dir, servers)
-            .map_err(|err| format!("não foi possível gravar o MCP do chat delegado: {err}"))
-    }
-
     fn account_dir(&self, account: Option<&str>) -> Result<Option<PathBuf>, String> {
         let Some(id) = account else {
             return Ok(None);
@@ -127,20 +99,6 @@ impl ChatAdapter for ClaudeAdapter {
             return Vec::new();
         };
         accounts::discover(home, &default_json(home))
-    }
-
-    /// Os MCP do `.claude.json` da conta (do usuário e, do `cwd`, os
-    /// locais) e os do `.mcp.json` do `cwd` (do projeto).
-    fn mcp_servers(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderMcp> {
-        let json = match self.account_dir(account) {
-            Ok(Some(dir)) => dir.join(".claude.json"),
-            Ok(None) => match &self.home {
-                Some(home) => default_json(home),
-                None => return Vec::new(),
-            },
-            Err(_) => return Vec::new(),
-        };
-        mcp::configured(&json, cwd)
     }
 
     /// As skills da pasta da conta (do usuário, do claude.ai e dos
@@ -302,13 +260,7 @@ impl ChatAdapter for ClaudeAdapter {
     fn start(&self, request: Request<'_>) -> Result<Box<dyn Session>, String> {
         let bin = self.bin.as_ref().ok_or(NOT_FOUND)?;
         let account_dir = self.account_dir(request.account)?;
-        let mcp_file = match request.delegated {
-            Some(delegated) => {
-                Some(self.delegated_mcp(request.extensions, delegated, account_dir.as_deref())?)
-            }
-            None => None,
-        };
-        let run = Run::start(bin, request, account_dir.as_deref(), mcp_file)?;
+        let run = Run::start(bin, request, account_dir.as_deref())?;
         Ok(Box::new(run))
     }
 }
@@ -364,7 +316,6 @@ fn find_claude() -> Option<PathBuf> {
 fn cli_args<'a>(
     mode: &'a str,
     session: Option<&'a str>,
-    stdio: bool,
     model: Option<&'a str>,
     effort: Option<&'a str>,
     settings: &'a str,
@@ -381,10 +332,9 @@ fn cli_args<'a>(
         mode,
         "--settings",
         settings,
+        "--permission-prompt-tool",
+        "stdio",
     ];
-    if stdio {
-        args.extend(["--permission-prompt-tool", "stdio"]);
-    }
     if let Some(model) = model {
         args.extend(["--model", model]);
     }
@@ -566,67 +516,36 @@ struct Run {
     /// Os pedidos de permissão esperando o usuário: a entrada da ferramenta
     /// de cada um, que volta na aprovação.
     pending: Arc<Mutex<HashMap<String, Value>>>,
-    /// O `--mcp-config` de um chat delegado: some depois do processo.
-    _mcp_file: Option<delegated::McpFile>,
 }
 
 type Stdin = Arc<Mutex<Option<ChildStdin>>>;
 
 impl Run {
     /// Inicia o `claude` com a mensagem, na conta da pasta `config_dir`. No
-    /// Yolo, o terra aprova tudo o que o agente pedir; num chat delegado, quem
-    /// delegou decide (pela ferramenta `permission_tool`); nos outros, cada
+    /// Yolo, o terra aprova tudo o que o agente pedir; nos outros, cada
     /// pedido vira um [`AgentEvent::PermissionRequest`] para o usuário.
-    ///
-    /// Um chat delegado (`request.delegated`) roda enxuto, com o MCP de
-    /// `mcp_file` (veja [`delegated`]).
     fn start(
         claude: &Path,
         request: Request<'_>,
         config_dir: Option<&Path>,
-        mcp_file: Option<delegated::McpFile>,
     ) -> Result<Run, String> {
         let auto_allow = request.mode == PermissionMode::Yolo;
-        let asks_parent = !auto_allow && request.permission_tool.is_some();
-        let lean = request.delegated.zip(mcp_file.as_ref());
-        let settings = match lean {
-            Some(_) => delegated::SETTINGS.to_string(),
-            None => hook_settings(&request.extensions.hooks),
-        };
-        // Sem modelo escolhido, o delegado usa o dele, com o esforço dele
-        // quando também não há esforço.
-        let (model, effort) = match (lean, request.model) {
-            (Some(_), None) => (
-                Some(delegated::MODEL),
-                request.effort.or(Some(delegated::EFFORT)),
-            ),
-            _ => (request.model, request.effort),
-        };
-        // O delegado roda enxuto: sem os lançadores, como sem os hooks. O
-        // `ai-memory run` também só deixa um lançador por workstream, e os
-        // delegados rodam junto com o chat que delegou.
-        let mut cmd = match lean {
-            Some(_) => command(claude),
-            None => launch(
-                claude,
-                HARNESS,
-                request.extensions,
-                request.session_id.is_none(),
-                command,
-            ),
-        };
+        let settings = hook_settings(&request.extensions.hooks);
+        let mut cmd = launch(
+            claude,
+            HARNESS,
+            request.extensions,
+            request.session_id.is_none(),
+            command,
+        );
         cmd.args(cli_args(
             cli_mode(request.mode),
             request.session_id,
-            !asks_parent,
-            model,
-            effort,
+            request.model,
+            request.effort,
             &settings,
         ));
-        match lean {
-            Some((delegated, file)) => cmd.args(delegated::args(file.path(), delegated)),
-            None => cmd.args(mcp_args(request.extensions)),
-        };
+        cmd.args(mcp_args(request.extensions));
         cmd.envs(request.extensions.env.iter().map(|(k, v)| (k, v)));
         if let Some(model) = request.subagent_model {
             cmd.env(SUBAGENT_MODEL_ENV, model);
@@ -635,12 +554,6 @@ impl Run {
         // regra por argumento, porque a do Bash tem espaços.
         if !request.allowed_tools.is_empty() {
             cmd.arg("--allowedTools").args(request.allowed_tools);
-        }
-        if let (false, Some((server, tool))) = (auto_allow, request.permission_tool) {
-            cmd.args([
-                "--permission-prompt-tool",
-                &format!("mcp__{server}__{tool}"),
-            ]);
         }
         // A conta escolhida: o `claude` lê credenciais e settings dessa pasta.
         if let Some(dir) = config_dir {
@@ -720,7 +633,6 @@ impl Run {
             events,
             stdin,
             pending,
-            _mcp_file: mcp_file,
         })
     }
 }
@@ -804,25 +716,17 @@ mod tests {
 
     #[test]
     fn cli_args_keep_user_environment_and_resume_session() {
-        let args = cli_args("plan", None, false, None, None, NO_HOOKS);
+        let args = cli_args("plan", None, None, None, NO_HOOKS);
         assert!(args.contains(&r#"{"disableAllHooks":true}"#));
         // Os MCP e as skills do usuário ficam ligados.
         assert!(!args.contains(&"--strict-mcp-config"));
         assert!(!args.contains(&"--disable-slash-commands"));
         assert!(!args.contains(&"--resume"));
-        assert!(!args.contains(&"--permission-prompt-tool"));
         assert!(!args.contains(&"--model"));
         assert!(!args.contains(&"--effort"));
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
 
-        let args = cli_args(
-            "manual",
-            Some("s1"),
-            true,
-            Some("haiku"),
-            Some("max"),
-            NO_HOOKS,
-        );
+        let args = cli_args("manual", Some("s1"), Some("haiku"), Some("max"), NO_HOOKS);
         assert!(args.windows(2).any(|w| w == ["--model", "haiku"]));
         assert!(args.windows(2).any(|w| w == ["--effort", "max"]));
         assert!(args.ends_with(&["--resume", "s1"]));
@@ -1031,9 +935,7 @@ mod tests {
             effort: None,
             subagent_model: None,
             extensions: &Contribution::default(),
-            permission_tool: None,
             allowed_tools: &[],
-            delegated: None,
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
         assert!(adapter.accounts().is_empty());

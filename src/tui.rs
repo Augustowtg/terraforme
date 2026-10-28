@@ -6,7 +6,7 @@ mod chat;
 mod config;
 mod extensions;
 mod login;
-mod mcp;
+mod orchestrator;
 mod term;
 mod update;
 mod usage;

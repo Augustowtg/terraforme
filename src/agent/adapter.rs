@@ -11,14 +11,7 @@ use std::process::Command;
 use std::sync::mpsc::Receiver;
 
 use super::{AgentEvent, PermissionMode};
-use crate::extension::{Contribution, McpServer};
-
-/// Um servidor MCP configurado no provedor e onde (ex.: `usuário`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderMcp {
-    pub server: McpServer,
-    pub scope: &'static str,
-}
+use crate::extension::Contribution;
 
 /// Uma skill instalada no provedor, onde (ex.: `usuário`) e o arquivo dela.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,28 +43,9 @@ pub struct Request<'a> {
     pub subagent_model: Option<&'a str>,
     /// O que as extensões ativas no workspace acrescentam ao agente.
     pub extensions: &'a Contribution,
-    /// A ferramenta MCP (servidor e ferramenta, ex.: `terra` e `permission`)
-    /// que decide os pedidos de permissão do agente, no lugar de negá-los
-    /// (ex.: num chat delegado, quem delegou decide).
-    pub permission_tool: Option<(&'a str, &'a str)>,
     /// Ferramentas liberadas só nesta mensagem: os `allow` dos
     /// [`AgentEvent::Blocked`] que o usuário permitiu.
     pub allowed_tools: &'a [String],
-    /// Num chat delegado pelo orquestrador, o que ele leva: o provedor roda
-    /// enxuto, sem o ambiente do usuário, para gastar menos a cada chamada.
-    pub delegated: Option<Delegated<'a>>,
-}
-
-/// O que um chat delegado leva além do mínimo
-/// ([`mcp::DELEGATED_TOOLS`](crate::mcp::DELEGATED_TOOLS) e o
-/// [`mcp::DELEGATED_MCP`](crate::mcp::DELEGATED_MCP)): o que quem delegou
-/// pediu na ferramenta `chat`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Delegated<'a> {
-    /// Os servidores MCP do usuário, pelo nome.
-    pub mcp: &'a [String],
-    /// As ferramentas embutidas.
-    pub tools: &'a [String],
 }
 
 /// Uma conta do provedor que pode ser escolhida na Config.
@@ -250,12 +224,6 @@ pub trait ChatAdapter {
     /// Contas que podem ser escolhidas na Config, a padrão primeiro. Vazio
     /// quando o provedor não tem contas.
     fn accounts(&self) -> Vec<AccountOption> {
-        Vec::new()
-    }
-
-    /// Os servidores MCP configurados no provedor para `cwd` e a conta
-    /// `account`, para a Config mostrar. Vazio quando ele não tem MCP.
-    fn mcp_servers(&self, _cwd: &Path, _account: Option<&str>) -> Vec<ProviderMcp> {
         Vec::new()
     }
 

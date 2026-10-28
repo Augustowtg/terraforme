@@ -79,11 +79,10 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | Comando | O que faz |
 | --- | --- |
 | `terra --version` | Mostra a versão |
-| `terra cli` | Abre a interface com as abas Chat, Consumo, Extensões, Orquestrador (com o MCP online) e Configurações e registra o diretório atual em **Recentes** |
+| `terra cli` | Abre a interface com as abas Chat, Consumo, Extensões, Orquestrador e Configurações e registra o diretório atual em **Recentes** |
 | `terra workspace` | Lista Recentes e Salvos; `Enter` entra no diretório escolhido |
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
-| `terra mcp` | Roda o [MCP do terra](#aba-orquestrador) (o orquestrador) em `http://127.0.0.1:30303/mcp`. Com o MCP ativado nas Configurações, o `terra cli` já abre ele sozinho |
 | `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório, e mostra o que mudou |
 | `terra upgrade --repo` | Atualiza pelo instalador do repositório do diretório atual (`install-linux.sh` no Linux, `install.ps1` no Windows). Os argumentos passam para o instalador (ex.: `terra upgrade --repo --dev`) |
 
@@ -91,7 +90,7 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 
 | Tecla | Ação |
 | --- | --- |
-| `Tab` | Troca de aba (Chat, Consumo, Extensões, Orquestrador, com o MCP online, e Configurações) |
+| `Tab` | Troca de aba (Chat, Consumo, Extensões, Orquestrador e Configurações) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
 | `↑` / `↓` (escrevendo) | Mostram as mensagens já enviadas (desde que o terra abriu, de todas as sessões), da mais nova para a mais antiga. Com o texto em várias linhas, primeiro andam entre as linhas. Depois da mais nova, o `↓` volta ao que estava sendo escrito |
@@ -110,7 +109,7 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `Shift+Tab` (aba Chat) | Alterna o modo de permissão: Agente → Yolo → Manual → Accept Edits → Plan Mode. Fora do padrão (Agente), aparece o badge `Modo: ...`; o de consumo aparece depois do primeiro token. No canto direito da mesma linha, embaixo do status, a **barra de contexto** mostra o tamanho do contexto da sessão (ex.: `45K / 150K (30%)`): verde, laranja a partir da metade do ponto de compactar e vermelho a partir de 75% dele; no ponto, ela mostra **Compacte a conversa**. A barra vem oculta: para vê-la, troque o Display na seção Contexto da aba Configurações. À esquerda dela, a **barra de consumo** mostra quanto resta da sessão de 5 horas do provedor e quando ela zera (ex.: `58% · reseta 15:00`): verde, laranja de 50% para baixo, vermelha de 25% para baixo e cinza ao chegar em 0%. Ela vem oculta; para vê-la, troque o Display na seção Consumo da aba Configurações. Visível, é atualizada a cada minuto |
 | `↑` / `↓` (aba Extensões) | Escolhem a extensão; `r` atualiza o relatório dela |
 | `Shift+Tab` (aba Configurações) | Alterna entre a seção Agente e a seção Extensões |
-| `Espaço` (aba Configurações, Extensões) | Ativa ou desativa a extensão em foco neste workspace; `←`/`→` trocam de página |
+| `Espaço` (aba Configurações, Extensões) | Passa a extensão em foco de inativa para ativa nesta conta, usar sempre e inativa de novo; `←`/`→` trocam de página |
 | `r` (aba Consumo) | Atualiza o consumo na hora (ele também se atualiza sozinho a cada minuto com a aba aberta) |
 | `c` ou clique nos botões (aba Consumo) | Alterna o gráfico Consumo por dia entre **Sem cache** (padrão) e **Com cache** |
 | Clique num dia (aba Consumo) | Mostra o consumo daquele dia por hora; **‹ Dias** ou `Esc` volta |
@@ -177,8 +176,7 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
     "interface": "terraforme",
     "context": { "display": "hidden", "auto_compact": false, "limit": 200000, "compact_at": 75 },
     "usage": { "display": "hidden" }
-  },
-  "extensions": { "enabled": ["rtk", "ai-memory"] }
+  }
 }
 ```
 
@@ -205,26 +203,14 @@ Embaixo do Contexto, também separada por uma linha, fica a seção **Consumo**,
 | --- | --- |
 | Display | **Oculto** (o padrão) ou **Visível**: esconde ou mostra a barra de consumo (a sessão de 5 horas). Oculta, o terra não busca o consumo para ela |
 
-Embaixo do Consumo, separada da seção Agente, fica a seção **MCP**, com uma bola verde (`MCP ●`) quando o MCP está online. Ela é da máquina, e não do workspace: fica em `~/.terraforme/config.json` (`{"mcp": {"enabled": true}}`).
-
-| Configuração | Valores |
-| --- | --- |
-| Servidor | **Desativado** (o padrão) ou **Ativado**: abre o [MCP](#aba-orquestrador) e mostra a aba Orquestrador. Desativar fecha o MCP |
-| Endereço | `http://127.0.0.1:30303/mcp` (só leitura) |
-
-À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) ativa ou desativa a extensão neste workspace. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada aparece como **indisponível** (`(indisponível)` na lista e `indisponível (não instalada)` embaixo) e não pode ser ativada. As ativas ficam em `extensions.enabled` no `config.json` e valem a partir da próxima mensagem; sem a chave, nenhuma.
+À direita da seção Agente (embaixo, em telas com pouca largura), a seção **Extensões** lista as extensões no estilo da lista de modelos do `/model` (`1. RTK - descrição`), com `[x]` nas ativas nesta conta e `[*]` nas de usar sempre, 5 por página (`‹ Página 1/1 ›`). `Shift+Tab` leva o foco do Agente para as Extensões e de volta; nelas, `↑`/`↓` escolhem, `←`/`→` trocam de página e `Espaço` (ou `Enter`) passa a extensão de inativa para **ativa nesta conta**, **usar sempre** e inativa de novo. Embaixo da lista ficam a versão, se está ativa e o link da extensão em foco. Uma extensão que não está instalada aparece como **indisponível** (`(indisponível)` na lista e `indisponível (não instalada)` embaixo) e não pode ser ativada. As extensões são da conta do agente (o provedor e a conta da seção Agente), valem em todos os workspaces e ficam no banco (`~/.terraforme/terra.sqlite`); as de usar sempre continuam ativas ao trocar de conta. Valem a partir da próxima mensagem. Na primeira vez de uma conta, ela começa com as que estavam em `extensions.enabled` no `config.json` do workspace (de antes da v0.8.28).
 
 ### Aba Orquestrador
 
-O MCP do terra é um servidor [MCP](https://modelcontextprotocol.io) (JSON-RPC por HTTP) em `http://127.0.0.1:30303/mcp`, um só para a máquina, que orquestra os terra abertos. Ele vem **desativado**; para ativar, troque o Servidor na seção MCP das Configurações.
-
-Ativado, ao iniciar o `terra cli` verifica se já há um MCP na porta 30303: se houver, usa ele; se não, abre um num processo novo (`terra mcp`, que continua rodando depois que o terra fecha). Cada terra se registra nele e avisa, a cada 2 segundos, o workspace e se há uma sessão ativa com o agente; um terra que para de avisar por 6 segundos sai da lista.
-
-Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP ●`) e aparece a aba **Orquestrador**, entre as abas Extensões e Configurações. Em **Configurações**, ela mostra como o agente principal usa os chats que delega (os sub agentes), e em **Sessões**, ela mostra os spaces (os workspaces salvos e os abertos em algum terra) e, embaixo de cada um, os terra abertos nele, agrupados pelo workspace, com o pid de cada um:
+A aba **Orquestrador**, entre Extensões e Configurações, mostra as configurações dos chats delegados (os sub agentes): o provedor, o modelo, o modo e o que fazer ao abrir e ao terminar.
 
 ```
- Orquestrador · http://127.0.0.1:30303/mcp
-   3 terra cli abertos · 1 com sessão ativa
+ Orquestrador
 
  Configurações
    Provedor            Claude
@@ -232,31 +218,19 @@ Com o MCP online, a seção MCP das Configurações mostra uma bola verde (`MCP 
    Modo dos chats      Accept Edits
    Ao terminar         Fechar o chat
    Ao abrir            Em segundo plano
-
- Sessões
- ▌ ● terraforme-cli  sessão ativa      /home/eu/terraforme-cli
-       ● pid 4210     sessão ativa
-       ● pid 4388     terra cli aberto
-   ● site            terra cli aberto  /home/eu/site
-       ● pid 5120     terra cli aberto
-   ○ notas           fechado           /home/eu/notas
 ```
 
-A bola verde é um terra com uma conversa com o agente (no chat do terra ou na interface original do provedor), a amarela é só o terra cli aberto e a vazia, nenhum terra aberto. O space mostra o melhor estado entre os terra dele, e os terra com sessão ativa vêm primeiro. `↑`/`↓` passam pelas configurações e pelos spaces; a lista se atualiza a cada segundo.
+`↑`/`↓` passam pelas configurações; `←`/`→` (ou `Enter`) mudam a escolhida. No Provedor, `←`/`→` passam pelo do workspace e pelos provedores conhecidos. No Modelo, `Enter` abre o mesmo menu do `/model` (`↑`/`↓` escolhem o modelo, `←`/`→` o esforço, `Esc` fecha).
 
-As configurações, gravadas no `~/.terraforme/config.json` (valem para todos os terra), mudam com `←`/`→` ou `Enter`:
+As configurações ficam no `~/.terraforme/config.json` (`{"orchestrator": {...}}`), valem para todos os workspaces e, por enquanto, só ficam salvas: o terra ainda não delega chats. A antiga chave `mcp` ainda é lida e sai ao salvar.
 
 | Configuração | O que faz |
 | --- | --- |
-| Provedor | O provedor dos chats delegados. Por enquanto, só o **Claude** |
-| Modelo | O modelo e o esforço dos chats delegados. `Enter` abre o mesmo menu do `/model` (`↑`/`↓` escolhem o modelo, `←`/`→` o esforço, `Esc` fecha). **Default** (o padrão): no Claude, Sonnet com esforço médio; nos outros provedores, o modelo padrão |
-| Modo dos chats | O modo com que começam os chats delegados (o mesmo da seção MCP das Configurações). **Accept Edits** por padrão |
-| Ao terminar | **Fechar o chat** (o padrão): o chat delegado fecha sozinho quando termina a tarefa, e a resposta continua indo para quem delegou (o `wait` retorna `done`). **Manter aberto**: o chat fica na barra de chats até o `Alt+W` |
-| Ao abrir | **Em segundo plano** (o padrão): o chat delegado entra na barra de chats sem tirar você do chat atual. **Mostrar o chat**: a aba Chat passa para ele |
-
-Desativar o MCP nas Configurações fecha ele (para todos os terra) e esconde a aba. Para os agentes, o MCP tem a ferramenta `spaces`, a mesma lista.
-
-No Claude, o chat delegado roda enxuto, para gastar menos a cada chamada: sem os MCP, as skills, os plugins, os hooks e as permissões do seu Claude Code, só com as ferramentas `Bash`, `Read`, `Edit`, `Write`, `Glob` e `Grep` e com o MCP `ai-memory`. O prompt inicial dele cai de uns 27k para uns 11k tokens. Quem delega acrescenta o que a tarefa precisar nos campos `mcp` (servidores MCP do seu Claude Code, pelo nome, ex.: `git`) e `tools` (ferramentas embutidas, ex.: `WebFetch`) da ferramenta `chat`; se o delegado precisar de mais alguma, ele termina dizendo qual, e quem delegou delega de novo com ela. Do MCP do terra, o chat delegado só vê a ferramenta `permission`: ele não delega de novo. O `--mcp-config` dele fica num arquivo em `~/.terraforme/delegados/` (só do usuário), que some quando a resposta termina.
+| Provedor | O provedor dos chats delegados: o do workspace ou outro dos conhecidos |
+| Modelo | O modelo e o esforço dos chats delegados. `Enter` abre o mesmo menu do `/model`. **Default** (o padrão): no Claude, Sonnet com esforço médio; nos outros provedores, o modelo padrão |
+| Modo dos chats | O modo com que começam os chats delegados. **Accept Edits** por padrão |
+| Ao terminar | **Fechar o chat** (o padrão) ou **Manter aberto** |
+| Ao abrir | **Em segundo plano** (o padrão) ou **Mostrar o chat** |
 
 ### Navegação no `terra workspace`
 
@@ -298,7 +272,7 @@ As extensões ativas (aba Configurações) são a exceção: os servidores MCP d
 
 O modo fica sincronizado com o agente, menos o Yolo, que é só do terra: nele o agente pede permissão e o terra aceita tudo. O `terra cli` começa no `permissions.defaultMode` configurado no Claude (settings local, do projeto ou do usuário), e a cada resposta confere o modo em que o agente diz estar; se for outro, o terminal passa a mostrar o modo real. Trocar com `Shift+Tab` durante uma resposta mostra `Modo: atual → próximo`, e o novo modo vale a partir da próxima mensagem. Com o agente ativo, o badge de modo fica sempre visível.
 
-Fora do Yolo, quando o agente pede permissão para uma ferramenta, aparece acima do input uma caixa **Permissão** com a ferramenta e o que ela vai fazer (ex.: `Bash` e o comando), com os botões **Permitir** e **Negar**: `←`/`→` escolhem e `Enter` confirma; `s` permite direto, e `n` ou `Esc` negam. Enquanto a caixa está aberta, ela fica com as teclas (menos o `Tab`, que continua trocando de aba) e a atividade mostra `Aguardando permissão para Bash...`. Pedidos que chegam juntos entram numa fila e aparecem um de cada vez. Cada resposta fica no histórico (`Permitido: Bash (ls).` ou `Negado: ...`), e interromper a resposta descarta os pedidos abertos. Os pedidos chegam pelo `--permission-prompt-tool stdio`; num chat delegado pelo orquestrador, quem delegou continua decidindo, pelo MCP do terra.
+Fora do Yolo, quando o agente pede permissão para uma ferramenta, aparece acima do input uma caixa **Permissão** com a ferramenta e o que ela vai fazer (ex.: `Bash` e o comando), com os botões **Permitir** e **Negar**: `←`/`→` escolhem e `Enter` confirma; `s` permite direto, e `n` ou `Esc` negam. Enquanto a caixa está aberta, ela fica com as teclas (menos o `Tab`, que continua trocando de aba) e a atividade mostra `Aguardando permissão para Bash...`. Pedidos que chegam juntos entram numa fila e aparecem um de cada vez. Cada resposta fica no histórico (`Permitido: Bash (ls).` ou `Negado: ...`), e interromper a resposta descarta os pedidos abertos. Os pedidos chegam pelo `--permission-prompt-tool stdio`.
 
 No modo **Agente** (`auto`), quem decide é o classificador do próprio Claude, que não pergunta: quando ele bloqueia uma ferramenta, o agente segue sem ela. O terra mostra cada bloqueio na mesma caixa, com o título **Bloqueado pelo modo Agente** e o motivo, e ela continua aberta depois do fim da resposta. Com **Permitir**, quando todos os pedidos estiverem respondidos, o terra manda uma mensagem nova na mesma sessão pedindo ao agente para fazer o que foi bloqueado, com só aquela chamada liberada no `--allowedTools`: o comando exato no `Bash`, o arquivo nas ferramentas de arquivo e o domínio no `WebFetch` (nas outras, a ferramenta). O histórico mostra `Fazendo o que foi permitido...`. Ferramentas negadas por uma regra `deny` dos settings continuam negadas, sem caixa.
 
@@ -320,7 +294,7 @@ Tudo fica em `~/.terraforme/terra.sqlite`, criado na primeira execução.
 - `workspaces`: `id`, `name` (único), `path` (único), `created_at` (epoch em ms)
 - `settings`: as configurações globais de antes da 0.4.12; desde a 0.4.14 não são mais usadas
 
-As configurações de cada workspace ficam em `~/.terraforme/workspace/<nome>/config.json` e as da máquina (o MCP), em `~/.terraforme/config.json` (veja a aba Configurações).
+As configurações de cada workspace ficam em `~/.terraforme/workspace/<nome>/config.json` e as da máquina (as do orquestrador), em `~/.terraforme/config.json` (veja a aba Configurações).
 
 Os paths são canonicalizados antes de serem salvos: ficam absolutos, sem `..` e sem barra no final. No Windows, a comparação de paths não diferencia maiúsculas de minúsculas.
 
@@ -339,8 +313,6 @@ src/
 ├── upgrade.rs            # terra upgrade: roda o instalador do GitHub ou do repositório
 ├── settings.rs           # configurações da aba Configurações, salvas no banco
 ├── files.rs              # índice dos arquivos do diretório, atualizado em tempo real
-├── mcp.rs                # MCP do terra: abrir, cliente e o Link de cada terra
-│   └── server.rs         # o servidor (terra mcp): JSON-RPC por HTTP na 30303
 ├── extension.rs          # extensões do agente (Strategy + Registry)
 │   ├── contract.rs       # Extension (a estratégia), Contribution e Report
 │   ├── registry.rs       # Registry: as extensões e o que as ativas acrescentam
@@ -362,8 +334,8 @@ src/
 └── tui.rs                # loop da tela principal e do terminal
     ├── app.rs            # tela principal: abas, Sair e confirmação
     ├── workspace.rs      # navegador de workspaces
-    ├── config.rs         # aba Configurações: seções Agente, MCP e Extensões
-    ├── mcp.rs            # aba Orquestrador: as sessões, por workspace
+    ├── config.rs         # aba Configurações: seções Agente, Consumo, Extensões
+    ├── orchestrator.rs   # aba Orquestrador: as configurações dos chats delegados
     ├── extensions.rs     # aba Extensões: relatório de cada extensão
     ├── widgets.rs → widgets/badge.rs, widgets/popup.rs
     └── chat.rs           # aba Chat: liga o adapter, histórico, input e badges
@@ -385,7 +357,6 @@ src/
 | `src/db.rs` | SQLite, canonicalização de paths e regras de nome |
 | `src/agent/` | Agente do chat: eventos e integração com o Claude CLI |
 | `src/extension/` | Extensões do agente: o contrato (Strategy), o Registry e as extensões |
-| `src/mcp/` | MCP do terra: o servidor orquestrador e o registro de cada terra nele |
 | `src/platform/` | Área de transferência e estado do teclado |
 | `src/tui/` | Telas ratatui: tela principal, chat, consumo, extensões, configurações, orquestrador e workspaces |
 | `src/theme.rs` | Cores do Catppuccin; troque `FLAVOR` para mudar de variante |
