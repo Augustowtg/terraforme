@@ -95,11 +95,7 @@ pub fn check() -> Result<Option<Update>> {
 
 fn update_from(changelog: &str, current: &str) -> Option<Update> {
     let notes = newer_notes(changelog, current);
-    let version = notes
-        .strip_prefix("## [")?
-        .split(']')
-        .next()?
-        .to_string();
+    let version = notes.strip_prefix("## [")?.split(']').next()?.to_string();
     Some(Update { version, notes })
 }
 

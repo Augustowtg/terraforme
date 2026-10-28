@@ -46,6 +46,29 @@ pub struct McpServer {
     pub headers: Vec<(String, String)>,
 }
 
+/// Um programa que inicia o agente no lugar do terra (ex.: `rtk claude`,
+/// `ai-memory run claude`). Nos `args`, [`Launcher::HARNESS`] vira o nome do
+/// provedor no lançador e [`Launcher::BIN`], o executável dele; um lançador
+/// que cita o `HARNESS` inicia o agente sozinho, sem o executável no fim.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Launcher {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Vão antes do [`Launcher::HARNESS`] numa conversa nova (ex.: o
+    /// `--fresh` do `ai-memory run`, que sem ele retoma a última sessão).
+    pub fresh: Vec<String>,
+}
+
+impl Launcher {
+    pub const HARNESS: &'static str = "{harness}";
+    pub const BIN: &'static str = "{bin}";
+
+    /// Inicia o agente sozinho (cita o [`Launcher::HARNESS`]).
+    pub fn starts_agent(&self) -> bool {
+        self.args.iter().any(|a| a == Self::HARNESS)
+    }
+}
+
 /// O que as extensões acrescentam ao agente. O adapter traduz para o
 /// protocolo dele (no Claude, `--settings` e `--mcp-config`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,6 +78,8 @@ pub struct Contribution {
     /// Variáveis de ambiente do processo do agente: um segredo vai por
     /// aqui, e não pela linha de comando, que outros processos leem.
     pub env: Vec<(String, String)>,
+    /// Os lançadores, encadeados na ordem do registro (o primeiro por fora).
+    pub launchers: Vec<Launcher>,
 }
 
 impl Contribution {
@@ -63,6 +88,36 @@ impl Contribution {
         self.hooks.extend(other.hooks);
         self.mcp_servers.extend(other.mcp_servers);
         self.env.extend(other.env);
+        self.launchers.extend(other.launchers);
+    }
+
+    /// A linha de comando que inicia `bin` pelos lançadores: os que só
+    /// repassam o comando (ex.: `rtk`) por fora e o que inicia o agente
+    /// sozinho (ex.: `ai-memory run`) por dentro, já que ele não repassa
+    /// outro lançador. Sem lançadores, só o `bin`.
+    pub fn launch_line(&self, bin: &str, harness: &str, fresh: bool) -> Vec<String> {
+        let (starters, wrappers): (Vec<_>, Vec<_>) =
+            self.launchers.iter().partition(|l| l.starts_agent());
+        let mut line = Vec::new();
+        for launcher in wrappers.iter().chain(starters.iter().take(1)) {
+            line.push(launcher.program.clone());
+            for arg in &launcher.args {
+                match arg.as_str() {
+                    Launcher::HARNESS => {
+                        if fresh {
+                            line.extend(launcher.fresh.iter().cloned());
+                        }
+                        line.push(harness.to_string());
+                    }
+                    Launcher::BIN => line.push(bin.to_string()),
+                    _ => line.push(arg.clone()),
+                }
+            }
+        }
+        if starters.is_empty() {
+            line.push(bin.to_string());
+        }
+        line
     }
 }
 
@@ -126,5 +181,88 @@ pub trait Extension {
     /// `None` quando ela não tem relatório.
     fn load_report(&self) -> Option<Receiver<Result<Report, String>>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rtk() -> Launcher {
+        Launcher {
+            program: "rtk".into(),
+            args: Vec::new(),
+            fresh: vec!["--never".into()],
+        }
+    }
+
+    fn ai_memory() -> Launcher {
+        Launcher {
+            program: "ai-memory".into(),
+            args: ["run", "--executable", Launcher::BIN, Launcher::HARNESS]
+                .map(str::to_string)
+                .to_vec(),
+            fresh: vec!["--fresh".into()],
+        }
+    }
+
+    fn line(launchers: Vec<Launcher>) -> Vec<String> {
+        let contribution = Contribution {
+            launchers,
+            ..Contribution::default()
+        };
+        contribution.launch_line("/bin/claude", "claude", false)
+    }
+
+    #[test]
+    fn without_launchers_runs_the_agent() {
+        assert_eq!(line(Vec::new()), ["/bin/claude"]);
+    }
+
+    #[test]
+    fn a_wrapper_comes_before_the_agent() {
+        assert_eq!(line(vec![rtk()]), ["rtk", "/bin/claude"]);
+    }
+
+    #[test]
+    fn a_starter_runs_the_agent_by_its_harness() {
+        assert_eq!(
+            line(vec![ai_memory()]),
+            ["ai-memory", "run", "--executable", "/bin/claude", "claude"]
+        );
+    }
+
+    #[test]
+    fn both_chain_with_the_starter_inside() {
+        let expected = [
+            "rtk",
+            "ai-memory",
+            "run",
+            "--executable",
+            "/bin/claude",
+            "claude",
+        ];
+        assert_eq!(line(vec![rtk(), ai_memory()]), expected);
+        assert_eq!(line(vec![ai_memory(), rtk()]), expected);
+    }
+
+    #[test]
+    fn a_new_conversation_gets_the_fresh_args_before_the_harness() {
+        let contribution = Contribution {
+            launchers: vec![rtk(), ai_memory()],
+            ..Contribution::default()
+        };
+        assert_eq!(
+            contribution.launch_line("/bin/claude", "claude", true),
+            [
+                "rtk",
+                "ai-memory",
+                "run",
+                "--executable",
+                "/bin/claude",
+                "--fresh",
+                "claude"
+            ]
+        );
     }
 }

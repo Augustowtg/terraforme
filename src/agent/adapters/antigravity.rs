@@ -61,7 +61,7 @@ use self::plugin::Overlay;
 use self::stream::StreamParser;
 use crate::agent::{
     AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive, PermissionMode,
-    ProviderMcp, ProviderSkill, Request, Session, Usage,
+    ProviderMcp, ProviderSkill, Request, Session, Usage, kill_tree, launch, own_group,
 };
 use crate::extension::Contribution;
 
@@ -197,7 +197,16 @@ impl ChatAdapter for AntigravityAdapter {
     /// nada.
     fn interactive(&self, cwd: &Path, options: Interactive<'_>) -> Option<Command> {
         let bin = self.bin.as_ref()?;
-        let mut cmd = command(bin);
+        let mut cmd = match options.extensions {
+            Some(extensions) => launch(
+                bin,
+                HARNESS,
+                extensions,
+                options.session_id.is_none(),
+                command,
+            ),
+            None => command(bin),
+        };
         cmd.current_dir(cwd);
         if let Some(mode) = options.mode {
             cmd.args(mode_args(mode));
@@ -373,6 +382,9 @@ fn find_agy() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// O Antigravity no `ai-memory run`.
+const HARNESS: &str = "antigravity";
+
 /// O processo do `agy`. Um `.cmd` no Windows precisa do `cmd.exe`.
 fn command(agy: &Path) -> Command {
     if agy.extension().is_some_and(|ext| ext == "cmd") {
@@ -405,7 +417,18 @@ impl Run {
         overlay: Option<Overlay>,
         gate: Option<Gate>,
     ) -> Result<Run, String> {
-        let mut cmd = command(agy);
+        // O delegado não passa pelos lançadores: o `ai-memory run` só deixa
+        // um lançador por workstream, e ele roda junto com quem delegou.
+        let mut cmd = match request.delegated {
+            Some(_) => command(agy),
+            None => launch(
+                agy,
+                HARNESS,
+                request.extensions,
+                request.session_id.is_none(),
+                command,
+            ),
+        };
         cmd.args(cli_args(
             request.mode,
             request.session_id,
@@ -423,6 +446,9 @@ impl Run {
                 .arg(gate.dir());
         }
         cmd.envs(request.extensions.env.iter().map(|(k, v)| (k, v)));
+        // Num grupo próprio, para o fim do turno levar junto o que os
+        // lançadores abrem.
+        own_group(&mut cmd);
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -518,8 +544,7 @@ fn send_line(stdin: &Stdin, line: &str) {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        kill_tree(&mut self.child);
     }
 }
 
