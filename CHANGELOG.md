@@ -4,6 +4,17 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.27] - 2026-10-28
+
+### Adicionado
+
+- Lançadores das extensões: no chat e na Interface original do provedor (Claude e Antigravity), o agente passa a iniciar pelos lançadores das extensões ativas, encadeados com o que só repassa o comando por fora e o que inicia o agente por dentro (ex.: `rtk ai-memory run --no-autowire --executable <claude> claude`). O RTK inicia o agente pelo `rtk`; o ai-memory, pelo `ai-memory run`, que abre a sessão no workstream do projeto, com `--fresh` numa conversa nova (numa que continua, vale o `--resume` do terra). O chat delegado não passa pelos lançadores.
+- O agente de cada turno roda num grupo de processos próprio e, no fim do turno, o terra encerra o grupo inteiro, para não deixar rodando o que os lançadores abrem (ex.: o `claude` aberto pelo `ai-memory run`).
+
+### Corrigido
+
+- Crash da sessão do computador nas builds de desenvolvimento desta versão (não chegou a nenhuma release): no Linux, ao encerrar o agente, o terra chamava `kill -KILL -<pid>` sem o `--`, e o `kill` do procps-ng lia o `-<pid>` como opção. Com um PID começando por 1, o sinal ia para `kill(-1)` e matava todos os processos do usuário (navegador, editor, a sessão gráfica), voltando à tela de login; com outros PIDs, ia para um grupo qualquer. Agora a chamada é `kill -KILL -- -<pid>`, que só atinge o grupo do agente.
+
 ## [0.8.26] - 2026-10-28
 
 ### Adicionado

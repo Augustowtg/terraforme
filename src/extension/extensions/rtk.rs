@@ -13,7 +13,7 @@ use jiff::civil::Date;
 use serde_json::Value;
 
 use super::{find_program, run, version};
-use crate::extension::{Contribution, Extension, Hook, Report, Stat, StatValue, Status};
+use crate::extension::{Contribution, Extension, Hook, Launcher, Report, Stat, StatValue, Status};
 
 /// Quantos dias o gráfico mostra.
 const DAYS: usize = 14;
@@ -59,7 +59,8 @@ impl Extension for Rtk {
         }
     }
 
-    /// O hook roda pelo `PATH` do agente, que é o do terra.
+    /// O hook roda pelo `PATH` do agente, que é o do terra. O agente também
+    /// inicia pelo `rtk` (`rtk claude`), que repassa o comando.
     fn contribution(&self) -> Result<Contribution, String> {
         Ok(Contribution {
             hooks: vec![Hook {
@@ -69,6 +70,11 @@ impl Extension for Rtk {
             }],
             mcp_servers: Vec::new(),
             env: Vec::new(),
+            launchers: vec![Launcher {
+                program: "rtk".to_string(),
+                args: Vec::new(),
+                fresh: Vec::new(),
+            }],
         })
     }
 

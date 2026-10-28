@@ -14,7 +14,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use super::{find_program, first_json, run, version};
-use crate::extension::{Contribution, Extension, Hook, McpServer, Report, Stat, StatValue, Status};
+use crate::extension::{
+    Contribution, Extension, Hook, Launcher, McpServer, Report, Stat, StatValue, Status,
+};
 
 pub struct AiMemory {
     /// Executável; `None` quando não está instalado.
@@ -44,6 +46,7 @@ impl AiMemory {
             hooks: parse_hooks(&hooks)?,
             mcp_servers: parse_mcp(&mcp)?,
             env: Vec::new(),
+            launchers: vec![launcher()],
         })
     }
 }
@@ -88,6 +91,29 @@ impl Extension for AiMemory {
             let _ = tx.send(report);
         });
         Some(rx)
+    }
+}
+
+/// O agente inicia pelo `ai-memory run <provedor>`, que abre a sessão no
+/// workstream do projeto. O `--no-autowire` evita que ele grave os hooks e o
+/// MCP na configuração do usuário (o terra já os passa ao agente), e o
+/// `--executable` usa o mesmo executável que o terra acharia. Numa
+/// conversa nova, o `--fresh`: sem ele, o `ai-memory` retomaria a última
+/// sessão do workstream; numa que continua, ele respeita o `--resume` do
+/// terra.
+fn launcher() -> Launcher {
+    Launcher {
+        program: "ai-memory".to_string(),
+        args: [
+            "run",
+            "--no-autowire",
+            "--executable",
+            Launcher::BIN,
+            Launcher::HARNESS,
+        ]
+        .map(str::to_string)
+        .to_vec(),
+        fresh: vec!["--fresh".to_string()],
     }
 }
 

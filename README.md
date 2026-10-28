@@ -154,8 +154,8 @@ Extensões são aplicações secundárias que melhoram o agente do chat. Hoje:
 
 | Extensão | O que faz | Como entra no agente |
 | --- | --- | --- |
-| [RTK](https://github.com/rtk-ai/rtk) | Filtra e comprime a saída dos comandos antes de ela chegar ao agente (60-90% menos tokens) | Hook `PreToolUse` do Bash (`rtk hook claude`), que troca o comando pelo do RTK (ex.: `git status` → `rtk git status`) |
-| [ai-memory](https://github.com/akitaonrails/ai-memory) | Memória de longo prazo entre sessões e agentes, num wiki versionado com git | Servidor MCP e hooks do ciclo de vida, os que o próprio `ai-memory install-mcp`/`install-hooks` imprime para o Claude Code |
+| [RTK](https://github.com/rtk-ai/rtk) | Filtra e comprime a saída dos comandos antes de ela chegar ao agente (60-90% menos tokens) | Hook `PreToolUse` do Bash (`rtk hook claude`), que troca o comando pelo do RTK (ex.: `git status` → `rtk git status`); o agente também inicia pelo `rtk` (`rtk claude`) |
+| [ai-memory](https://github.com/akitaonrails/ai-memory) | Memória de longo prazo entre sessões e agentes, num wiki versionado com git | Servidor MCP e hooks do ciclo de vida, os que o próprio `ai-memory install-mcp`/`install-hooks` imprime para o Claude Code; o agente inicia pelo `ai-memory run --no-autowire` (com `--fresh` numa conversa nova), que abre a sessão no workstream do projeto |
 
 Cada extensão precisa estar instalada e no `PATH` (o instalador oferece instalar as duas); o terra em si não muda a configuração do Claude: ele só passa as extensões ativas para o agente, em cada mensagem (e para a Interface original do provedor).
 

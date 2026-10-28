@@ -33,7 +33,8 @@ use serde_json::Value;
 use self::stream::{StreamParser, text, tool_detail};
 use crate::agent::{
     AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
-    ModelOption, PermissionMode, ProviderMcp, ProviderSkill, Request, Session, Usage,
+    ModelOption, PermissionMode, ProviderMcp, ProviderSkill, Request, Session, Usage, kill_tree,
+    launch, own_group,
 };
 use crate::extension::{Contribution, Hook};
 
@@ -205,7 +206,16 @@ impl ChatAdapter for ClaudeAdapter {
     fn interactive(&self, cwd: &Path, options: Interactive<'_>) -> Option<Command> {
         let bin = self.bin.as_ref()?;
         let dir = self.account_dir(options.account).ok()?;
-        let mut cmd = command(bin);
+        let mut cmd = match options.extensions {
+            Some(extensions) => launch(
+                bin,
+                HARNESS,
+                extensions,
+                options.session_id.is_none(),
+                command,
+            ),
+            None => command(bin),
+        };
         cmd.current_dir(cwd);
         if let Some(mode) = options.mode {
             let name = match mode {
@@ -592,7 +602,19 @@ impl Run {
             ),
             _ => (request.model, request.effort),
         };
-        let mut cmd = command(claude);
+        // O delegado roda enxuto: sem os lançadores, como sem os hooks. O
+        // `ai-memory run` também só deixa um lançador por workstream, e os
+        // delegados rodam junto com o chat que delegou.
+        let mut cmd = match lean {
+            Some(_) => command(claude),
+            None => launch(
+                claude,
+                HARNESS,
+                request.extensions,
+                request.session_id.is_none(),
+                command,
+            ),
+        };
         cmd.args(cli_args(
             cli_mode(request.mode),
             request.session_id,
@@ -624,6 +646,9 @@ impl Run {
         if let Some(dir) = config_dir {
             cmd.env("CLAUDE_CONFIG_DIR", dir);
         }
+        // Num grupo próprio, para o fim do turno levar junto o que os
+        // lançadores abrem.
+        own_group(&mut cmd);
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -713,6 +738,9 @@ impl Session for Run {
     }
 }
 
+/// O Claude no `ai-memory run`.
+const HARNESS: &str = "claude";
+
 /// O processo do `claude`. Instalado pelo npm no Windows, ele é um `.cmd`,
 /// que precisa do `cmd.exe`.
 fn command(claude: &Path) -> Command {
@@ -739,8 +767,7 @@ fn send_line(stdin: &Stdin, line: &str) {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        kill_tree(&mut self.child);
     }
 }
 
@@ -828,6 +855,7 @@ mod tests {
                 ..Default::default()
             }],
             env: Vec::new(),
+            launchers: Vec::new(),
         };
         let settings: Value = serde_json::from_str(&hook_settings(&extensions.hooks)).unwrap();
         assert_eq!(settings.get("disableAllHooks"), None);
@@ -880,6 +908,7 @@ mod tests {
             }],
             mcp_servers: Vec::new(),
             env: Vec::new(),
+            launchers: Vec::new(),
         };
         let options = Interactive {
             extensions: Some(&extensions),
