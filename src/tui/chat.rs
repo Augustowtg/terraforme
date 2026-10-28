@@ -36,11 +36,10 @@ use self::permission::{Kind, Prompts};
 use super::usage;
 use super::widgets::badge;
 use crate::agent::{
-    self, AgentEvent, Catalog, ChatAdapter, CommandRoute, Delegated, Interactive, PermissionMode,
+    self, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, PermissionMode,
     ReportedMode, Request, Session, UsageWindow,
 };
 use crate::extension::Contribution;
-use crate::mcp;
 use crate::platform::clipboard;
 use crate::settings::{AgentSettings, ContextSettings, StartMode, UsageSettings};
 use crate::theme::{self, Variant};
@@ -107,13 +106,6 @@ pub struct Chat {
     extensions: Contribution,
     /// Sessão do agente, para continuar a conversa.
     session_id: Option<String>,
-    /// A delegação ([`mcp::ChatRequest::id`]) de um chat aberto por um
-    /// agente pelo orquestrador.
-    delegation: Option<u64>,
-    /// Os MCP e as ferramentas que quem delegou pediu
-    /// ([`mcp::ChatRequest::mcp`] e [`mcp::ChatRequest::tools`]).
-    delegated_mcp: Vec<String>,
-    delegated_tools: Vec<String>,
     /// Resposta em andamento.
     run: Option<Box<dyn Session>>,
     /// Pedidos de permissão do agente esperando o usuário.
@@ -178,9 +170,6 @@ impl Default for Chat {
             account: None,
             extensions: Contribution::default(),
             session_id: None,
-            delegation: None,
-            delegated_mcp: Vec::new(),
-            delegated_tools: Vec::new(),
             run: None,
             prompts: Prompts::default(),
             allowed: Vec::new(),
@@ -331,53 +320,11 @@ impl Chat {
             )
     }
 
-    /// Começa no modo `start` (ex.: o dos chats abertos pelo orquestrador),
-    /// no lugar do modo inicial da Config.
-    pub fn set_start_mode(&mut self, start: StartMode) {
-        self.permission_mode = self.start_mode(start);
-    }
-
-    /// Usa `model` e `effort` nesta conversa (ex.: os dos chats abertos pelo
-    /// orquestrador), no lugar dos padrões. Sem modelo, fica o padrão.
-    pub fn set_model(&mut self, model: Option<String>, effort: Option<String>) {
-        let Some(model) = model else {
-            return;
-        };
-        self.model = self.resolved_model(&model).or(Some(model.clone()));
-        self.session_model = Some(model);
-        self.session_effort = effort;
-    }
-
     /// O modelo padrão: o salvo na Config ou o do agente.
     pub fn default_model(&self) -> Option<String> {
         self.chosen_model
             .clone()
             .or_else(|| self.catalog.as_ref().and_then(|c| c.default_model.clone()))
-    }
-
-    /// Marca o chat como delegado pelo pedido `request`: os pedidos de
-    /// permissão do agente vão para quem delegou, e o agente roda enxuto,
-    /// só com os MCP e as ferramentas do pedido além do mínimo.
-    pub fn set_delegation(&mut self, request: &mcp::ChatRequest) {
-        self.delegation = Some(request.id);
-        self.delegated_mcp = request.mcp.clone();
-        self.delegated_tools = request.tools.clone();
-    }
-
-    pub fn delegation(&self) -> Option<u64> {
-        self.delegation
-    }
-
-    /// A última resposta do agente, para voltar a quem delegou.
-    pub fn last_reply(&self) -> Option<String> {
-        self.history
-            .entries()
-            .iter()
-            .rev()
-            .find_map(|entry| match entry {
-                Entry::Assistant(text) => Some(text.clone()),
-                _ => None,
-            })
     }
 
     /// O modo de um modo inicial. "Do provedor" segue a configuração dele,
@@ -406,20 +353,6 @@ impl Chat {
     /// Os tokens gastos neste chat (entrada e saída, sem os de cache).
     pub fn tokens_used(&self) -> u64 {
         self.tokens_used
-    }
-
-    /// Os tokens de cache gastos neste chat (criação e leitura).
-    pub fn cache_tokens_used(&self) -> u64 {
-        self.cache_tokens_used
-    }
-
-    /// O agente está respondendo.
-    pub fn is_busy(&self) -> bool {
-        self.run.is_some()
-    }
-
-    pub fn has_session(&self) -> bool {
-        self.session_id.is_some()
     }
 
     pub fn extensions(&self) -> &Contribution {
@@ -656,13 +589,6 @@ impl Chat {
                 ));
             }
         }
-    }
-
-    /// O agente terminou de responder `text`.
-    #[cfg(test)]
-    pub fn reply_for_test(&mut self, text: &str) {
-        self.run = None;
-        self.history.push(Entry::Assistant(text.to_string()));
     }
 
     #[cfg(test)]
@@ -954,22 +880,7 @@ impl Chat {
                 .or(self.default_effort.as_deref()),
             subagent_model: self.subagent_model.as_deref(),
             extensions: &self.extensions,
-            // Num chat delegado, quem delegou decide os pedidos de permissão
-            // (pelo MCP do terra, quando ele está ligado ao chat).
-            permission_tool: self
-                .delegation
-                .filter(|_| {
-                    self.extensions
-                        .mcp_servers
-                        .iter()
-                        .any(|s| s.name == mcp::SERVER_NAME)
-                })
-                .map(|_| (mcp::SERVER_NAME, mcp::PERMISSION_TOOL)),
             allowed_tools: &self.allowed,
-            delegated: self.delegation.map(|_| Delegated {
-                mcp: &self.delegated_mcp,
-                tools: &self.delegated_tools,
-            }),
         });
         self.allowed.clear();
         let ok = started.is_ok();

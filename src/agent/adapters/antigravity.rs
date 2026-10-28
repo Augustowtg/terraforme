@@ -10,8 +10,8 @@
 //! `--permission-prompt-tool` é um gancho `PreToolUse` num plugin temporário
 //! (veja [`permission`]). Nos modos Manual e Accept Edits, ele leva cada
 //! pedido ao chat do terra, que o mostra ao usuário como o do Claude (um
-//! [`AgentEvent::PermissionRequest`], respondido em [`Session::respond`]);
-//! nos chats delegados, leva a quem delegou. No Yolo, o `agy` aprova tudo;
+//! [`AgentEvent::PermissionRequest`], respondido em [`Session::respond`]).
+//! No Yolo, o `agy` aprova tudo;
 //! no Plan e no Agente, ele decide sozinho pelo modo.
 //!
 //! O que o `agy` (1.4.8) não tem, e por isso fica de fora:
@@ -61,7 +61,7 @@ use self::plugin::Overlay;
 use self::stream::StreamParser;
 use crate::agent::{
     AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive, PermissionMode,
-    ProviderMcp, ProviderSkill, Request, Session, Usage, kill_tree, launch, own_group,
+    ProviderSkill, Request, Session, Usage, kill_tree, launch, own_group,
 };
 use crate::extension::Contribution;
 
@@ -163,13 +163,6 @@ impl ChatAdapter for AntigravityAdapter {
     /// O `agentMode` salvo no `/config` do `agy` (é um só, sem conta).
     fn configured_mode(&self, _cwd: &Path, _account: Option<&str>) -> Option<PermissionMode> {
         config::configured_mode(self.home.as_deref()?)
-    }
-
-    fn mcp_servers(&self, _cwd: &Path, _account: Option<&str>) -> Vec<ProviderMcp> {
-        self.home
-            .as_deref()
-            .map(config::mcp_servers)
-            .unwrap_or_default()
     }
 
     fn skills(&self, cwd: &Path, _account: Option<&str>) -> Vec<ProviderSkill> {
@@ -290,30 +283,20 @@ impl AntigravityAdapter {
         let user: HashSet<String> = self
             .home
             .as_deref()
-            .map(config::mcp_servers)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|mcp| mcp.server.name)
-            .collect();
+            .map(config::mcp_server_names)
+            .unwrap_or_default();
         Overlay::create(extensions, &user)
     }
 }
 
-/// O gancho de permissão da mensagem: leva os pedidos a quem delegou, num
-/// chat delegado, ou ao usuário, no Manual e no Accept Edits (o `agy` não
-/// tem um `--permission-prompt-tool`). `None`: o `agy` decide sozinho.
+/// O gancho de permissão da mensagem: leva os pedidos ao usuário, no Manual
+/// e no Accept Edits (o `agy` não tem um `--permission-prompt-tool`). `None`:
+/// o `agy` decide sozinho.
 fn permission_gate(request: &Request<'_>) -> Result<Option<Gate>, String> {
-    let delegated = match request.permission_tool {
-        Some((server, _)) if permission::gated(request.mode) => {
-            Gate::create(request.extensions, server, request.mode)?
-        }
-        _ => None,
-    };
-    match delegated {
-        None if permission::asks_user(request.mode) => {
-            Gate::create_for_user(request.mode).map(Some)
-        }
-        gate => Ok(gate),
+    if permission::asks_user(request.mode) {
+        Gate::create_for_user(request.mode).map(Some)
+    } else {
+        Ok(None)
     }
 }
 
@@ -417,18 +400,13 @@ impl Run {
         overlay: Option<Overlay>,
         gate: Option<Gate>,
     ) -> Result<Run, String> {
-        // O delegado não passa pelos lançadores: o `ai-memory run` só deixa
-        // um lançador por workstream, e ele roda junto com quem delegou.
-        let mut cmd = match request.delegated {
-            Some(_) => command(agy),
-            None => launch(
-                agy,
-                HARNESS,
-                request.extensions,
-                request.session_id.is_none(),
-                command,
-            ),
-        };
+        let mut cmd = launch(
+            agy,
+            HARNESS,
+            request.extensions,
+            request.session_id.is_none(),
+            command,
+        );
         cmd.args(cli_args(
             request.mode,
             request.session_id,
@@ -709,9 +687,7 @@ mod tests {
             effort: None,
             subagent_model: None,
             extensions,
-            permission_tool: None,
             allowed_tools: &[],
-            delegated: None,
         }
     }
 

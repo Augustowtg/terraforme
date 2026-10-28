@@ -17,7 +17,7 @@ use std::thread::{self, ThreadId};
 
 use super::{
     AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
-    ModelOption, PermissionMode, ProviderMcp, ProviderSkill, Request, Session, Usage,
+    ModelOption, PermissionMode, ProviderSkill, Request, Session, Usage,
 };
 
 thread_local! {
@@ -134,10 +134,6 @@ impl ChatAdapter for Guarded {
 
     fn accounts(&self) -> Vec<AccountOption> {
         catch(|| self.inner.accounts()).unwrap_or_default()
-    }
-
-    fn mcp_servers(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderMcp> {
-        catch(|| self.inner.mcp_servers(cwd, account)).unwrap_or_default()
     }
 
     fn skills(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderSkill> {
@@ -271,9 +267,7 @@ mod tests {
                 effort: None,
                 subagent_model: None,
                 extensions: &crate::extension::Contribution::default(),
-                permission_tool: None,
                 allowed_tools: &[],
-                delegated: None,
             })
             .err()
             .unwrap();

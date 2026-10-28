@@ -2,7 +2,8 @@
 //! leitura; o terra não grava nada do `agy`):
 //!
 //! - o modo do agente: `agentMode` do `~/.gemini/antigravity-cli/settings.json`;
-//! - os MCP: `mcpServers` do `~/.gemini/config/mcp_config.json`;
+//! - os nomes dos MCP do usuário: `mcpServers` do
+//!   `~/.gemini/config/mcp_config.json`, para as extensões não repetirem;
 //! - as skills: as embutidas (`~/.gemini/antigravity-cli/builtin/skills`),
 //!   as do usuário (`~/.gemini/config/skills`) e as do projeto (o
 //!   `.agents/skills` do `cwd` e das pastas acima dele).
@@ -13,8 +14,8 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::agent::adapters::claude::{mcp, skills};
-use crate::agent::{PermissionMode, ProviderMcp, ProviderSkill};
+use crate::agent::adapters::claude::skills;
+use crate::agent::{PermissionMode, ProviderSkill};
 
 /// O modo do agente salvo no `/config` do `agy` (`agentMode`).
 pub fn configured_mode(home: &Path) -> Option<PermissionMode> {
@@ -34,20 +35,13 @@ pub fn parse_mode(name: &str) -> Option<PermissionMode> {
     })
 }
 
-/// Os MCP globais do `agy`. Um servidor HTTP pode usar a chave antiga
-/// `serverUrl` no lugar de `url`.
-pub fn mcp_servers(home: &Path) -> Vec<ProviderMcp> {
-    let mut config = read(&home.join(".gemini/config/mcp_config.json"));
-    if let Some(servers) = config["mcpServers"].as_object_mut() {
-        for server in servers.values_mut() {
-            if server.get("url").is_none()
-                && let Some(url) = server.get("serverUrl").cloned()
-            {
-                server["url"] = url;
-            }
-        }
-    }
-    mcp::servers(&config["mcpServers"], "usuário")
+/// Os nomes dos MCP globais do `agy`.
+pub fn mcp_server_names(home: &Path) -> HashSet<String> {
+    let config = read(&home.join(".gemini/config/mcp_config.json"));
+    config["mcpServers"]
+        .as_object()
+        .map(|servers| servers.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// As skills embutidas, as do usuário e as do projeto, nessa ordem; um nome
@@ -164,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_servers_accept_stdio_and_http() {
+    fn mcp_server_names_come_from_the_user_config() {
         let home = tempfile::tempdir().unwrap();
         write(
             &home.path().join(".gemini/config/mcp_config.json"),
@@ -173,13 +167,8 @@ mod tests {
                 "web":{"serverUrl":"https://example.com/mcp"}
             }}"#,
         );
-        let servers = mcp_servers(home.path());
-        assert_eq!(servers.len(), 2);
-        let mem = servers.iter().find(|s| s.server.name == "mem").unwrap();
-        assert_eq!(mem.server.command, "ai-memory");
-        assert_eq!(mem.scope, "usuário");
-        let web = servers.iter().find(|s| s.server.name == "web").unwrap();
-        assert_eq!(web.server.url.as_deref(), Some("https://example.com/mcp"));
+        let names = mcp_server_names(home.path());
+        assert_eq!(names, HashSet::from(["mem".to_string(), "web".to_string()]));
     }
 
     #[test]
@@ -189,11 +178,9 @@ mod tests {
             &home.path().join(".gemini/config/mcp_config.json"),
             "// servidores\n{\"mcpServers\": {\n  /* um */\n  \"web\": {\"url\": \"https://example.com/mcp\", // fim\n  },\n}, }\n",
         );
-        let servers = mcp_servers(home.path());
-        assert_eq!(servers.len(), 1);
         assert_eq!(
-            servers[0].server.url.as_deref(),
-            Some("https://example.com/mcp")
+            mcp_server_names(home.path()),
+            HashSet::from(["web".to_string()])
         );
         assert_eq!(strip_jsonc(r#"["a,]", "b//c"]"#), r#"["a,]", "b//c"]"#);
     }
