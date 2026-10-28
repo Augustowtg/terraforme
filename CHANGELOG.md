@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.20] - 2026-10-27
+
+### Corrigido
+
+- Windows: depois de instalar, o `terra` não era reconhecido no PowerShell nem no CMD (`O termo 'terra' não é reconhecido...`), porque o instalador só configurava o Git Bash. Agora o `install-win.sh` tem o passo **Adicionar o terra ao PowerShell e ao CMD**: põe `~/.terraforme/bin` no `PATH` do usuário (sem trocar as variáveis `%...%` dele pelos valores de hoje) e grava a função `terra` nos perfis do PowerShell 5.1 e 7, que faz o `terra workspace` entrar no diretório escolhido. Com a política de execução `Restricted` ou `AllSigned`, os perfis ficam como estão e o resumo diz como liberar. Rodar de novo não duplica nada.
+- `install.ps1`: o `terra` já funciona na janela do PowerShell em que foi instalado, sem abrir outra.
+
 ## [0.8.19] - 2026-10-27
 
 ### Corrigido

@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.
 ```
 
 ```powershell
-# Windows (PowerShell; precisa do Git for Windows, o terra roda no Git Bash)
+# Windows (PowerShell; precisa do Git for Windows, que roda o instalador)
 irm https://raw.githubusercontent.com/Augustowtg/terraforme/main/install.ps1 | iex
 ```
 
@@ -64,9 +64,11 @@ O script:
 - compila o projeto;
 - copia `terra.exe` para `~/.terraforme/bin`;
 - adiciona ao `~/.bashrc` essa pasta no `PATH` e a função `terra`, com os mesmos marcadores;
-- garante que o `~/.bash_profile` carregue o `~/.bashrc`.
+- garante que o `~/.bash_profile` carregue o `~/.bashrc`;
+- põe `~/.terraforme/bin` no `PATH` do usuário, para o `terra` funcionar no PowerShell e no CMD;
+- grava a função `terra` nos perfis do PowerShell (5.1 e 7, em `Documentos\WindowsPowerShell` e `Documentos\PowerShell`), com os mesmos marcadores, para o `terra workspace` entrar no diretório escolhido. Com a política de execução `Restricted` ou `AllSigned`, que não carrega o perfil, o passo pula os perfis e avisa: o `terra` funciona, mas o `terra workspace` só mostra o path (`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` e o instalador de novo resolvem). No CMD, o `terra workspace` também só mostra o path.
 
-Depois, feche e reabra o Git Bash. PowerShell e CMD não são suportados nesta versão.
+Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex`, o `terra` já fica no `PATH` da janela do PowerShell em que você instalou.
 
 ## Uso
 
@@ -374,5 +376,6 @@ O chat usa o padrão **Adapter**: ele só conhece o trait `ChatAdapter` (`src/ag
 
 Nada na interface muda: o histórico, os modos, o consumo e a sincronia do modo funcionam com qualquer adapter. O `src/tui/chat/tests.rs` tem um `FakeAdapter` que serve de exemplo mínimo.
 | `install.sh` / `install.ps1` | Instalação direto do GitHub (`curl ... \| bash` e `irm ... \| iex`) |
+| `install-powershell.ps1` | Põe o `terra` no `PATH` do usuário e nos perfis do PowerShell (chamado pelo `install-win.sh`) |
 | `.github/workflows/release.yml` | Compila o `terra` para Linux e Windows a cada tag e anexa os binários à release |
 | `install-ui.sh` | Interface dos instaladores (banner, progresso e confirmação) |
