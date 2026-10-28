@@ -4,8 +4,9 @@
 //! Cada mensagem roda `claude -p` com entrada e saída em `stream-json`; a
 //! partir da segunda, com `--resume <sessão>` para manter a conversa. Uma
 //! thread lê a saída (um JSON por linha) e a transforma em [`AgentEvent`]s,
-//! que a interface consome sem travar. No modo Yolo, a mesma thread aprova os
-//! pedidos de permissão do agente.
+//! que a interface consome sem travar. Os pedidos de permissão do agente
+//! chegam pela mesma saída: no modo Yolo, a thread aprova; nos outros, viram
+//! [`AgentEvent::PermissionRequest`] e o usuário decide no chat.
 
 mod accounts;
 mod catalog;
@@ -16,17 +17,19 @@ mod skills;
 mod stream;
 mod usage;
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use serde_json::Value;
 
-use self::stream::{StreamParser, text};
+use self::stream::{StreamParser, text, tool_detail};
 use crate::agent::{
     AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
     ModelOption, PermissionMode, ProviderMcp, ProviderSkill, Request, Session, Usage,
@@ -286,15 +289,16 @@ fn find_claude() -> Option<PathBuf> {
 /// usuário, os locais e os do projeto) e as skills e os comandos ficam
 /// ligados, como no `claude` interativo.
 ///
-/// Com `auto_allow`, os pedidos de permissão do agente chegam pelo stdin/stdout
-/// (`--permission-prompt-tool stdio`) e são aprovados por [`control_response`].
+/// Com `stdio`, os pedidos de permissão do agente chegam pelo stdin/stdout
+/// (`--permission-prompt-tool stdio`): o terra aprova (Yolo) ou pergunta ao
+/// usuário (ver [`Run::start`]).
 ///
 /// `settings` vai no `--settings` (ver [`hook_settings`]); os servidores MCP
 /// das extensões, em [`mcp_args`], somam aos do usuário.
 fn cli_args<'a>(
     mode: &'a str,
     session: Option<&'a str>,
-    auto_allow: bool,
+    stdio: bool,
     model: Option<&'a str>,
     effort: Option<&'a str>,
     settings: &'a str,
@@ -312,7 +316,7 @@ fn cli_args<'a>(
         "--settings",
         settings,
     ];
-    if auto_allow {
+    if stdio {
         args.extend(["--permission-prompt-tool", "stdio"]);
     }
     if let Some(model) = model {
@@ -384,30 +388,49 @@ fn user_message(prompt: &str) -> String {
     .to_string()
 }
 
-/// Resposta a um pedido de controle do agente (`control_request`), ou `None`
-/// se a linha não é um. Com `auto_allow`, todo pedido de permissão é aprovado
-/// como veio; sem ele, é negado. Outros pedidos não são suportados.
-fn control_response(line: &str, auto_allow: bool) -> Option<String> {
+/// Um pedido de permissão (`can_use_tool`) do agente: o id do pedido, a
+/// ferramenta e a entrada dela. `None` se a linha não é um.
+fn tool_request(line: &str) -> Option<(String, String, Value)> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let request = &value["request"];
+    if value["type"] != "control_request" || request["subtype"] != "can_use_tool" {
+        return None;
+    }
+    Some((
+        text(&value["request_id"]),
+        text(&request["tool_name"]),
+        request["input"].clone(),
+    ))
+}
+
+/// A resposta a um pedido de permissão: aprovado com a entrada como veio, ou
+/// negado.
+fn permission_response(request_id: &str, allow: bool, input: &Value) -> String {
+    let decision = if allow {
+        serde_json::json!({ "behavior": "allow", "updatedInput": input })
+    } else {
+        serde_json::json!({ "behavior": "deny", "message": "negado pelo usuário no terra" })
+    };
+    serde_json::json!({
+        "type": "control_response",
+        "response": { "subtype": "success", "request_id": request_id, "response": decision },
+    })
+    .to_string()
+}
+
+/// Resposta de erro a um pedido de controle do agente (`control_request`) que
+/// o terra não suporta, ou `None` se a linha não é um. Os pedidos de
+/// permissão vêm antes, por [`tool_request`].
+fn unsupported_response(line: &str) -> Option<String> {
     let value: Value = serde_json::from_str(line).ok()?;
     if value["type"] != "control_request" {
         return None;
     }
-    let request_id = &value["request_id"];
-    let request = &value["request"];
-    let response = if request["subtype"] == "can_use_tool" {
-        let decision = if auto_allow {
-            serde_json::json!({ "behavior": "allow", "updatedInput": request["input"] })
-        } else {
-            serde_json::json!({ "behavior": "deny", "message": "negado pelo terra" })
-        };
-        serde_json::json!({ "subtype": "success", "request_id": request_id, "response": decision })
-    } else {
-        serde_json::json!({
-            "subtype": "error",
-            "request_id": request_id,
-            "error": format!("pedido não suportado pelo terra: {}", text(&request["subtype"])),
-        })
-    };
+    let response = serde_json::json!({
+        "subtype": "error",
+        "request_id": value["request_id"],
+        "error": format!("pedido não suportado pelo terra: {}", text(&value["request"]["subtype"])),
+    });
     Some(serde_json::json!({ "type": "control_response", "response": response }).to_string())
 }
 
@@ -456,28 +479,44 @@ fn configured_mode_in(config_dir: &Path, cwd: &Path) -> Option<String> {
 struct Run {
     child: Child,
     events: Receiver<AgentEvent>,
+    /// O stdin do `claude`, para responder aos pedidos de permissão; `None`
+    /// depois do fim da resposta.
+    stdin: Stdin,
+    /// Os pedidos de permissão esperando o usuário: a entrada da ferramenta
+    /// de cada um, que volta na aprovação.
+    pending: Arc<Mutex<HashMap<String, Value>>>,
 }
+
+type Stdin = Arc<Mutex<Option<ChildStdin>>>;
 
 impl Run {
     /// Inicia o `claude` com a mensagem, na conta da pasta `config_dir`. No
-    /// Yolo, o terra aprova tudo o que o agente pedir.
+    /// Yolo, o terra aprova tudo o que o agente pedir; num chat delegado, quem
+    /// delegou decide (pela ferramenta `permission_tool`); nos outros, cada
+    /// pedido vira um [`AgentEvent::PermissionRequest`] para o usuário.
     fn start(
         claude: &Path,
         request: Request<'_>,
         config_dir: Option<&Path>,
     ) -> Result<Run, String> {
         let auto_allow = request.mode == PermissionMode::Yolo;
+        let delegated = !auto_allow && request.permission_tool.is_some();
         let settings = hook_settings(&request.extensions.hooks);
         let mut cmd = command(claude);
         cmd.args(cli_args(
             cli_mode(request.mode),
             request.session_id,
-            auto_allow,
+            !delegated,
             request.model,
             request.effort,
             &settings,
         ));
         cmd.args(mcp_args(request.extensions));
+        // As ferramentas que o usuário liberou depois de o modo bloquear: uma
+        // regra por argumento, porque a do Bash tem espaços.
+        if !request.allowed_tools.is_empty() {
+            cmd.arg("--allowedTools").args(request.allowed_tools);
+        }
         if let (false, Some((server, tool))) = (auto_allow, request.permission_tool) {
             cmd.args([
                 "--permission-prompt-tool",
@@ -497,7 +536,8 @@ impl Run {
 
         // O stdin fica aberto durante a resposta, para responder aos pedidos
         // de permissão; fechar no fim é o que encerra o `claude`.
-        let mut stdin = child.stdin.take();
+        let stdin: Stdin = Arc::new(Mutex::new(child.stdin.take()));
+        let pending = Arc::new(Mutex::new(HashMap::new()));
         let message = user_message(request.prompt);
 
         let mut stderr = child.stderr.take().expect("stderr configurado como pipe");
@@ -509,19 +549,36 @@ impl Run {
 
         let stdout = child.stdout.take().expect("stdout configurado como pipe");
         let (tx, events) = mpsc::channel();
+        let (thread_stdin, thread_pending) = (Arc::clone(&stdin), Arc::clone(&pending));
         thread::spawn(move || {
-            send_line(&mut stdin, &message);
+            let (stdin, pending) = (thread_stdin, thread_pending);
+            send_line(&stdin, &message);
             let mut parser = StreamParser::default();
             let mut done = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some(response) = control_response(&line, auto_allow) {
-                    send_line(&mut stdin, &response);
+                if let Some((id, name, input)) = tool_request(&line) {
+                    if auto_allow {
+                        send_line(&stdin, &permission_response(&id, true, &input));
+                        continue;
+                    }
+                    let detail = tool_detail(&input);
+                    pending.lock().unwrap().insert(id.clone(), input);
+                    if tx
+                        .send(AgentEvent::PermissionRequest { id, name, detail })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
+                if let Some(response) = unsupported_response(&line) {
+                    send_line(&stdin, &response);
                     continue;
                 }
                 for event in parser.parse(&line) {
                     if matches!(event, AgentEvent::Done { .. }) {
                         done = true;
-                        stdin = None;
+                        *stdin.lock().unwrap() = None;
                     }
                     if tx.send(event).is_err() {
                         return;
@@ -536,13 +593,25 @@ impl Run {
             }
         });
 
-        Ok(Run { child, events })
+        Ok(Run {
+            child,
+            events,
+            stdin,
+            pending,
+        })
     }
 }
 
 impl Session for Run {
     fn poll(&mut self) -> Vec<AgentEvent> {
         self.events.try_iter().collect()
+    }
+
+    fn respond(&mut self, id: &str, allow: bool) {
+        let Some(input) = self.pending.lock().unwrap().remove(id) else {
+            return;
+        };
+        send_line(&self.stdin, &permission_response(id, allow, &input));
     }
 }
 
@@ -559,8 +628,9 @@ fn command(claude: &Path) -> Command {
 }
 
 /// Escreve uma linha JSON no stdin do `claude`. Se ele já fechou, desiste.
-fn send_line(stdin: &mut Option<std::process::ChildStdin>, line: &str) {
-    if let Some(pipe) = stdin
+fn send_line(stdin: &Stdin, line: &str) {
+    let mut stdin = stdin.lock().unwrap();
+    if let Some(pipe) = stdin.as_mut()
         && writeln!(pipe, "{line}")
             .and_then(|()| pipe.flush())
             .is_err()
@@ -737,9 +807,13 @@ mod tests {
     }
 
     #[test]
-    fn control_requests_are_allowed_only_with_auto_allow() {
+    fn permission_requests_are_parsed_and_answered() {
         let request = r#"{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}"#;
-        let allow: Value = serde_json::from_str(&control_response(request, true).unwrap()).unwrap();
+        let (id, name, input) = tool_request(request).unwrap();
+        assert_eq!((id.as_str(), name.as_str()), ("r1", "Bash"));
+        assert_eq!(input["command"], "ls");
+
+        let allow: Value = serde_json::from_str(&permission_response(&id, true, &input)).unwrap();
         assert_eq!(allow["type"], "control_response");
         assert_eq!(allow["response"]["request_id"], "r1");
         assert_eq!(allow["response"]["response"]["behavior"], "allow");
@@ -748,15 +822,18 @@ mod tests {
             "ls"
         );
 
-        let deny: Value = serde_json::from_str(&control_response(request, false).unwrap()).unwrap();
+        let deny: Value = serde_json::from_str(&permission_response(&id, false, &input)).unwrap();
         assert_eq!(deny["response"]["response"]["behavior"], "deny");
 
         let other =
             r#"{"type":"control_request","request_id":"r2","request":{"subtype":"hook_callback"}}"#;
-        let error: Value = serde_json::from_str(&control_response(other, true).unwrap()).unwrap();
+        assert_eq!(tool_request(other), None);
+        let error: Value = serde_json::from_str(&unsupported_response(other).unwrap()).unwrap();
         assert_eq!(error["response"]["subtype"], "error");
+        assert_eq!(error["response"]["request_id"], "r2");
 
-        assert_eq!(control_response(r#"{"type":"assistant"}"#, true), None);
+        assert_eq!(tool_request(r#"{"type":"assistant"}"#), None);
+        assert_eq!(unsupported_response(r#"{"type":"assistant"}"#), None);
     }
 
     #[test]
@@ -825,6 +902,7 @@ mod tests {
             effort: None,
             extensions: &Contribution::default(),
             permission_tool: None,
+            allowed_tools: &[],
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
         assert!(adapter.accounts().is_empty());

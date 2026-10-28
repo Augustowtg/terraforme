@@ -30,6 +30,25 @@ pub enum AgentEvent {
     Text(String),
     /// O agente chamou uma ferramenta (ex.: `Bash` com `ls -la`).
     ToolUse { name: String, detail: String },
+    /// O agente pede permissão para usar uma ferramenta: o chat pergunta ao
+    /// usuário e responde com [`Session::respond`](super::Session::respond)
+    /// e o `id`.
+    PermissionRequest {
+        id: String,
+        name: String,
+        detail: String,
+    },
+    /// O modo do agente bloqueou uma ferramenta sem perguntar (ex.: o
+    /// classificador do modo Agente). O agente segue sem ela; se o usuário
+    /// permitir, `allow` vai em
+    /// [`Request::allowed_tools`](super::Request::allowed_tools) numa
+    /// mensagem nova, que libera a ferramenta.
+    Blocked {
+        name: String,
+        detail: String,
+        reason: String,
+        allow: String,
+    },
     /// Resultado de uma ferramenta (primeira linha).
     ToolResult { is_error: bool, summary: String },
     /// Tamanho do contexto da sessão na última chamada ao modelo (entrada e

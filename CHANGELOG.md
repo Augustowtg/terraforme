@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.8.18] - 2026-10-27
+
+### Corrigido
+
+- Chat: os pedidos de permissão do agente (nos modos Agente, Manual, Accept Edits e Plan) eram negados em silêncio, sem aparecer para aprovar, e só no fim o histórico dizia quantas ferramentas foram bloqueadas. Agora cada pedido abre, acima do input, a caixa **Permissão** com a ferramenta e o que ela vai fazer e os botões **Permitir** e **Negar** (`←`/`→` e `Enter`; `s` permite, `n` ou `Esc` negam); os pedidos simultâneos aparecem um de cada vez, e cada resposta fica no histórico. Num chat delegado pelo orquestrador, quem delegou continua decidindo.
+- Chat, modo Agente: os bloqueios do classificador do modo automático do Claude não apareciam (ele não pergunta, nega e o agente segue sem a ferramenta). Agora cada bloqueio aparece na caixa como **Bloqueado pelo modo Agente**, com o motivo, e continua aberto depois do fim da resposta; com **Permitir**, o terra manda uma mensagem nova na mesma sessão com só aquela chamada liberada (`--allowedTools`: o comando exato no `Bash`, o arquivo nas ferramentas de arquivo, o domínio no `WebFetch`). As negadas por uma regra `deny` dos settings continuam negadas.
+
 ## [0.8.17] - 2026-10-27
 
 ### Adicionado
