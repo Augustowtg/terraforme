@@ -3,11 +3,10 @@
 //! confirmação de saída. Saindo de um workspace que não está salvo, a tela
 //! pergunta se ele deve ser salvo (Sim, Não ou Não, sem perguntar de novo).
 //!
-//! Com o MCP ativado na Config, o terra abre o MCP ao iniciar (se ninguém
-//! abriu) e se registra nele; com ele online, aparece a aba MCP, o
-//! orquestrador. O agente recebe o MCP do terra, e com a ferramenta `chat`
-//! abre um chat novo num terra: ele aparece numa barra de chats embaixo da
-//! barra de abas, no mesmo tema, e `Alt+←/→` troca de chat.
+//! O orquestrador é a aba com as configurações dos chats delegados (os sub
+//! agentes): por enquanto, só ficam salvas. Chats além do principal se abrem
+//! com `Alt+N`: aparecem numa barra de chats embaixo da barra de abas, no
+//! mesmo tema, e `Alt+←/→` troca de chat.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -22,7 +21,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use super::chat::Chat;
 use super::config::{self, ConfigView};
 use super::extensions::{self, ExtensionsView};
-use super::mcp::{self as mcp_tab, McpView};
+use super::orchestrator::{self as orchestrator_tab, OrchestratorView};
 use super::term::Term;
 use super::update::{self, UpdateView};
 use super::usage::{SessionUsage, UsageView};
@@ -30,9 +29,10 @@ use crate::agent::Interactive;
 use crate::agent::adapters::ProviderOption;
 use crate::db::Db;
 use crate::extension::Registry;
-use crate::mcp;
 use crate::platform::keyboard;
-use crate::settings::{AgentSettings, ExtensionSettings, Interface, McpSettings, StartMode};
+use crate::settings::{
+    AgentSettings, ExtensionSettings, Interface, OrchestratorSettings, StartMode,
+};
 use crate::theme;
 
 const QUIT_LABEL: &str = " Sair ";
@@ -63,8 +63,8 @@ pub enum Tab {
     Atualizacao,
     Consumo,
     Extensoes,
-    /// O orquestrador: só com o MCP online.
-    Mcp,
+    /// As configurações dos chats delegados.
+    Orquestrador,
     Config,
 }
 
@@ -74,7 +74,7 @@ impl Tab {
         Tab::Atualizacao,
         Tab::Consumo,
         Tab::Extensoes,
-        Tab::Mcp,
+        Tab::Orquestrador,
         Tab::Config,
     ];
 
@@ -85,24 +85,22 @@ impl Tab {
             Tab::Consumo => "Consumo",
             Tab::Extensoes => "Extensões",
             Tab::Config => "Configurações",
-            Tab::Mcp => "Orquestrador",
+            Tab::Orquestrador => "Orquestrador",
         }
     }
 
-    /// Próxima aba, voltando para a primeira depois da última. A aba MCP
-    /// só entra com o MCP online (`mcp`); a Atualização, com versão nova
-    /// (`update`).
-    fn next(self, mcp: bool, update: bool) -> Tab {
+    /// Próxima aba, voltando para a primeira depois da última. A aba
+    /// Atualização só entra com versão nova (`update`).
+    fn next(self, update: bool) -> Tab {
         let next = Self::ALL[(self as usize + 1) % Self::ALL.len()];
-        if !next.visible(mcp, update) {
-            return next.next(mcp, update);
+        if !next.visible(update) {
+            return next.next(update);
         }
         next
     }
 
-    fn visible(self, mcp: bool, update: bool) -> bool {
+    fn visible(self, update: bool) -> bool {
         match self {
-            Tab::Mcp => mcp,
             Tab::Atualizacao => update,
             _ => true,
         }
@@ -147,13 +145,14 @@ struct Workspace {
     saved: bool,
 }
 
-/// Os `config.json` do terra: o do workspace e o global (o do MCP).
+/// Os `config.json` do terra: o do workspace (as configurações) e o global
+/// (as do orquestrador).
 pub struct ConfigFiles {
     pub workspace: PathBuf,
     pub global: PathBuf,
 }
 
-/// Um chat aberto pelo orquestrador, a pedido de um agente.
+/// Um chat novo, aberto com `Alt+N`, além do principal.
 struct ChatTab {
     title: String,
     chat: Chat,
@@ -164,13 +163,10 @@ pub struct App {
     tab: Tab,
     focus: Focus,
     chat: Chat,
-    /// Os chats abertos pelo orquestrador, depois do chat do terra.
+    /// Os chats além do principal, abertos com `Alt+N`.
     chats: Vec<ChatTab>,
     /// Os tokens dos chats já fechados, que continuam no consumo geral.
     closed_tokens: u64,
-    /// Os chats delegados que fecharam ao terminar a tarefa: continuam indo
-    /// para o MCP, para quem delegou receber a resposta.
-    finished: Vec<mcp::ChatStats>,
     /// O chat que aparece na aba Chat: 0 é o do terra, os outros são os
     /// de [`App::chats`].
     active_chat: usize,
@@ -184,25 +180,21 @@ pub struct App {
     settings: AgentSettings,
     /// As extensões conhecidas (estratégias), já detectadas.
     registry: Registry,
-    /// As extensões ativas no workspace.
+    /// As extensões ativas na conta do agente (e as de usar sempre).
     extensions: ExtensionSettings,
     /// O `config.json` do workspace, onde as configurações são salvas
     /// (`None` nos testes).
     config: Option<PathBuf>,
-    /// O MCP, do `config.json` global.
-    mcp: McpSettings,
+    /// As configurações do orquestrador, do `config.json` global.
+    orchestrator: OrchestratorSettings,
     /// O `config.json` global (`None` nos testes).
     global_config: Option<PathBuf>,
-    /// A ligação com o MCP, com ele ativado.
-    mcp_link: Option<mcp::Link>,
-    mcp_view: McpView,
+    orchestrator_view: OrchestratorView,
     /// O provedor dos chats delegados, com o catálogo dele, quando não é o
     /// do workspace.
-    delegated: Option<mcp_tab::Delegated>,
+    delegated: Option<orchestrator_tab::Delegated>,
     /// Os provedores conhecidos (Config e Orquestrador), detectados ao abrir.
     providers: Vec<ProviderOption>,
-    /// O nome do workspace, para o MCP.
-    name: String,
     /// O diretório aberto (`None` nos testes).
     workspace: Option<Workspace>,
     /// Onde o workspace é salvo, se o usuário pedir ao sair.
@@ -222,10 +214,9 @@ impl App {
     /// Tela principal com o chat ligado ao provedor disponível e as
     /// configurações do workspace `name`, em `dir`, lidas dos arquivos
     /// `files` (sem eles, o padrão do router) e salvas neles.
-    pub fn new(db: Db, dir: PathBuf, name: String, files: ConfigFiles) -> Self {
+    pub fn new(db: Db, dir: PathBuf, _name: String, files: ConfigFiles) -> Self {
         let config = files.workspace;
         let settings = AgentSettings::load_file(&config).unwrap_or_default();
-        let extensions = ExtensionSettings::load_file(&config);
         let saved = db.workspace_name(&dir).ok().flatten().is_some();
         let mut app = Self {
             chat: Chat::connect(&settings),
@@ -233,65 +224,16 @@ impl App {
             open_provider: settings.interface == Interface::Provider,
             settings,
             registry: Registry::detect(),
-            extensions,
             config: Some(config),
-            mcp: McpSettings::load_file(&files.global),
+            orchestrator: OrchestratorSettings::load_file(&files.global),
             global_config: Some(files.global),
-            name,
             workspace: Some(Workspace { dir, saved }),
             db: Some(db),
             ..Self::default()
         };
-        app.apply_extensions();
+        app.load_extensions();
         app.update_view.check();
-        if app.mcp.enabled {
-            app.start_mcp();
-        }
         app
-    }
-
-    /// Abre o MCP, se ainda não há um na porta, e liga este terra a ele.
-    fn start_mcp(&mut self) {
-        // Sem workspace (nos testes), nada abre.
-        let Some(workspace) = &self.workspace else {
-            return;
-        };
-        let dir = workspace.dir.clone();
-        if let Err(err) = mcp::ensure_running() {
-            self.chat.warn(format!("MCP: {err:#}"));
-        }
-        self.mcp_link = Some(mcp::Link::start(mcp::Instance {
-            pid: std::process::id(),
-            name: self.name.clone(),
-            dir,
-            session: self.has_session(),
-            chats: Vec::new(),
-        }));
-        self.apply_extensions();
-    }
-
-    /// Sai do MCP e o fecha (desativado, ele fecha para todos os terra).
-    fn stop_mcp(&mut self) {
-        if self.mcp_link.take().is_some() {
-            let _ = mcp::shutdown();
-            self.apply_extensions();
-        }
-        if self.tab == Tab::Mcp {
-            self.tab = Tab::Config;
-        }
-    }
-
-    /// Se o MCP está online (e a aba MCP aparece).
-    fn mcp_online(&self) -> bool {
-        self.mcp_link.as_ref().is_some_and(mcp::Link::is_online)
-    }
-
-    /// Há uma conversa com o agente: no chat do terra ou na interface
-    /// original do provedor.
-    fn has_session(&self) -> bool {
-        self.chat.has_session()
-            || self.chats.iter().any(|c| c.chat.has_session())
-            || self.term.as_ref().is_some_and(Term::has_session)
     }
 
     /// O chat que aparece na aba Chat.
@@ -309,38 +251,10 @@ impl App {
         }
     }
 
-    /// Abre um chat novo, pedido por um agente pelo orquestrador, com as
-    /// configurações do workspace, e manda a primeira mensagem.
-    fn open_chat(&mut self, request: &mcp::ChatRequest) {
-        let mut chat = Chat::connect(&self.delegated_settings());
-        chat.set_delegation(request);
-        chat.set_extensions(delegated(self.chat.extensions().clone(), request.id));
-        chat.set_session_usage(self.session_usage.window().cloned());
-        chat.set_start_mode(self.mcp.spawn_mode);
-        // O modelo e o esforço salvos podem ser de outro provedor.
-        self.sync_delegated();
-        let (model, effort) = mcp_tab::valid_choice(
-            self.delegated_catalog(),
-            self.mcp.model.as_deref(),
-            self.mcp.effort.as_deref(),
-        );
-        chat.set_model(model, effort);
-        chat.submit(&request.prompt());
-        let title = request
-            .title
-            .clone()
-            .or_else(|| request.from.as_ref().map(|from| format!("De {from}")))
-            .unwrap_or_else(|| format!("Chat {}", self.chats.len() + 2));
-        self.chats.push(ChatTab { title, chat });
-        if self.mcp.focus_delegated {
-            self.active_chat = self.chats.len();
-        }
-    }
-
     /// O provedor escolhido no Orquestrador é o do chat do workspace (ou
     /// não há escolha).
     fn delegated_is_own(&self) -> bool {
-        self.mcp
+        self.orchestrator
             .provider
             .as_deref()
             .is_none_or(|id| self.chat.provider_id() == Some(id))
@@ -349,59 +263,11 @@ impl App {
     /// Carrega o catálogo do provedor dos chats delegados, quando é outro.
     fn sync_delegated(&mut self) {
         let own = self.delegated_is_own();
-        mcp_tab::Delegated::sync(&mut self.delegated, self.mcp.provider.as_deref(), own);
-    }
-
-    /// O catálogo do provedor dos chats delegados (o do chat do workspace
-    /// ou o do outro provedor escolhido).
-    fn delegated_catalog(&self) -> Option<&crate::agent::Catalog> {
-        match &self.delegated {
-            Some(d) if !self.delegated_is_own() => d.catalog(),
-            _ => self.chat.catalog(),
-        }
-    }
-
-    /// As configurações dos chats delegados: as do workspace ou, com outro
-    /// provedor no Orquestrador, as dele, sem a conta, o modelo e o esforço
-    /// do workspace (são ids do outro provedor).
-    fn delegated_settings(&self) -> AgentSettings {
-        let mut settings = self.settings.clone();
-        if let Some(provider) = &self.mcp.provider
-            && self.chat.provider_id() != Some(provider.as_str())
-        {
-            settings.provider = Some(provider.clone());
-            settings.account = None;
-            settings.model = None;
-            settings.effort = None;
-            settings.subagent_model = None;
-        }
-        settings
-    }
-
-    /// Com "Ao terminar: Fechar o chat", fecha os chats delegados que já
-    /// responderam e não trabalham mais. A resposta fica guardada em
-    /// [`App::finished`] e continua indo para quem delegou.
-    fn close_finished_chats(&mut self) {
-        if !self.mcp.close_finished {
-            return;
-        }
-        let mut i = 0;
-        while i < self.chats.len() {
-            let chat = &self.chats[i].chat;
-            let done =
-                chat.delegation().is_some() && !chat.is_busy() && chat.last_reply().is_some();
-            if !done {
-                i += 1;
-                continue;
-            }
-            let tab = self.chats.remove(i);
-            self.finished.push(chat_stats(&tab.title, &tab.chat));
-            self.closed_tokens += tab.chat.tokens_used();
-            // O chat da aba Chat continua o mesmo; se era o fechado, fica o anterior.
-            if self.active_chat > i {
-                self.active_chat -= 1;
-            }
-        }
+        orchestrator_tab::Delegated::sync(
+            &mut self.delegated,
+            self.orchestrator.provider.as_deref(),
+            own,
+        );
     }
 
     /// Abre um chat novo e vazio neste terra, com as configurações do
@@ -415,8 +281,8 @@ impl App {
         self.active_chat = self.chats.len();
     }
 
-    /// Fecha o chat aberto pelo orquestrador que está na aba Chat (o do
-    /// terra não fecha).
+    /// Fecha o chat além do principal que está na aba Chat (o do terra
+    /// não fecha).
     fn close_chat(&mut self) {
         if self.active_chat > 0 {
             let tab = self.chats.remove(self.active_chat - 1);
@@ -425,28 +291,60 @@ impl App {
         }
     }
 
-    /// Passa aos chats o que as extensões ativas acrescentam ao agente (vale
-    /// a partir da próxima mensagem), mais o MCP do terra quando ligado; as
-    /// que falharem viram avisos.
-    fn apply_extensions(&mut self) {
-        let (mut contribution, warnings) = self.registry.contribution(&self.extensions.enabled);
-        if self.mcp_link.is_some() {
-            // O MCP só atende com o token: o agente o manda no cabeçalho e o
-            // recebe pelo ambiente, fora da linha de comando.
-            match mcp::token() {
-                Ok(token) => contribution.merge(mcp::agent_server(
-                    mcp::agent_url(std::process::id()),
-                    &token,
-                )),
-                Err(err) => self.chat.warn(format!("MCP do terra sem o token: {err:#}")),
+    /// A conta das extensões: o provedor e a conta do agente (ex.:
+    /// `claude:.claude-trabalho`; a Default fica sem nada depois do `:`).
+    fn extension_account(&self) -> String {
+        format!(
+            "{}:{}",
+            self.chat.provider_id().unwrap_or_default(),
+            self.settings.account.as_deref().unwrap_or_default()
+        )
+    }
+
+    /// Lê do banco as extensões da conta do agente e as aplica. Na primeira
+    /// vez da conta, ela fica com as do `config.json` do workspace, de antes
+    /// de as extensões irem para o banco.
+    fn load_extensions(&mut self) {
+        if let Some(db) = &self.db {
+            let legacy = self
+                .config
+                .as_deref()
+                .map(ExtensionSettings::load_file)
+                .unwrap_or_default();
+            match db.extension_settings(&self.extension_account(), &legacy) {
+                Ok(extensions) => self.extensions = extensions,
+                Err(err) => self.chat.warn(format!("Extensões: {err:#}")),
             }
         }
+        self.apply_extensions();
+    }
+
+    /// Grava no banco as extensões que mudaram de modo desde `previous`.
+    fn save_extensions(&mut self, previous: &ExtensionSettings) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        let account = self.extension_account();
+        let mut ids = previous.active();
+        ids.extend(self.extensions.active());
+        for id in ids {
+            let mode = self.extensions.mode(&id);
+            if mode != previous.mode(&id)
+                && let Err(err) = db.set_extension(&account, &id, mode)
+            {
+                // Sem conseguir salvar, a mudança vale só nesta execução.
+                self.chat.warn(format!("Extensões: {err:#}"));
+                return;
+            }
+        }
+    }
+
+    /// Passa aos chats o que as extensões ativas acrescentam ao agente (vale
+    /// a partir da próxima mensagem); as que falharem viram avisos.
+    fn apply_extensions(&mut self) {
+        let (contribution, warnings) = self.registry.contribution(&self.extensions.active());
         for tab in &mut self.chats {
-            let extensions = match tab.chat.delegation() {
-                Some(id) => delegated(contribution.clone(), id),
-                None => contribution.clone(),
-            };
-            tab.chat.set_extensions(extensions);
+            tab.chat.set_extensions(contribution.clone());
         }
         self.chat.set_extensions(contribution);
         for warning in warnings {
@@ -492,13 +390,11 @@ impl App {
     fn handle_config_key(&mut self, key: KeyEvent) -> bool {
         let choices = self.choices();
         let previous = self.settings.clone();
-        match self.config_view.handle_key(
-            key,
-            &mut self.settings,
-            &mut self.extensions,
-            &mut self.mcp,
-            &choices,
-        ) {
+        let previous_extensions = self.extensions.clone();
+        match self
+            .config_view
+            .handle_key(key, &mut self.settings, &mut self.extensions, &choices)
+        {
             config::Outcome::Ignored => false,
             config::Outcome::Moved => true,
             config::Outcome::Changed => {
@@ -506,29 +402,8 @@ impl App {
                 true
             }
             config::Outcome::ExtensionsChanged => {
-                if let Some(config) = &self.config {
-                    // Sem conseguir salvar, a mudança vale só nesta execução.
-                    let _ = self.extensions.save_file(config);
-                }
+                self.save_extensions(&previous_extensions);
                 self.apply_extensions();
-                true
-            }
-            config::Outcome::McpSpawnModeChanged => {
-                if let Some(global) = &self.global_config {
-                    let _ = self.mcp.save_file(global);
-                }
-                true
-            }
-            config::Outcome::McpChanged => {
-                if let Some(global) = &self.global_config {
-                    // Sem conseguir salvar, a mudança vale só nesta execução.
-                    let _ = self.mcp.save_file(global);
-                }
-                if self.mcp.enabled {
-                    self.start_mcp();
-                } else {
-                    self.stop_mcp();
-                }
                 true
             }
         }
@@ -559,11 +434,6 @@ impl App {
                     status: e.status(),
                 })
                 .collect(),
-            mcp: config::McpState {
-                settings: self.mcp.clone(),
-                online: self.mcp_online(),
-                servers: self.mcp_servers(),
-            },
             skills: self.skills(),
         }
     }
@@ -600,46 +470,9 @@ impl App {
         skills
     }
 
-    /// Os servidores MCP conectados ao agente: os configurados no provedor e
-    /// os que o terraforme acrescenta (extensões e o MCP do terra). Um que
-    /// está nos dois aparece uma vez, com as duas origens.
-    fn mcp_servers(&self) -> Vec<config::McpServerInfo> {
-        let detail = |server: &crate::extension::McpServer| {
-            server.url.clone().unwrap_or_else(|| {
-                std::iter::once(server.command.as_str())
-                    .chain(server.args.iter().map(String::as_str))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-        };
-        let provider = self.chat.adapter().map_or_else(Vec::new, |adapter| {
-            std::env::current_dir()
-                .map(|cwd| adapter.mcp_servers(&cwd, self.settings.account.as_deref()))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|mcp| config::McpServerInfo {
-                    name: mcp.server.name.clone(),
-                    origin: format!("{} · {}", adapter.name(), mcp.scope),
-                    detail: detail(&mcp.server),
-                })
-                .collect()
-        });
-        let mut servers: Vec<config::McpServerInfo> = provider;
-        for server in &self.chat.extensions().mcp_servers {
-            match servers.iter_mut().find(|s| s.name == server.name) {
-                Some(known) => known.origin.push_str(" · terraforme"),
-                None => servers.push(config::McpServerInfo {
-                    name: server.name.clone(),
-                    origin: "terraforme".to_string(),
-                    detail: detail(server),
-                }),
-            }
-        }
-        servers
-    }
-
     /// Salva as configurações e as aplica ao chat.
     fn save_settings(&mut self, previous: &AgentSettings) {
+        let provider = self.chat.provider_id().map(str::to_string);
         if let Some(config) = &self.config {
             // Sem conseguir salvar, a mudança vale só nesta execução.
             let _ = self.settings.save_file(config);
@@ -647,6 +480,12 @@ impl App {
         self.chat.apply_settings(&self.settings, Some(previous));
         for tab in &mut self.chats {
             tab.chat.apply_settings(&self.settings, Some(previous));
+        }
+        // Outra conta (ou provedor): as extensões passam a ser as dela.
+        if self.settings.account != previous.account
+            || self.chat.provider_id() != provider.as_deref()
+        {
+            self.load_extensions();
         }
     }
 
@@ -825,20 +664,23 @@ impl App {
         {
             return false;
         }
-        if self.tab == Tab::Mcp && self.focus == Focus::Tabs {
+        if self.tab == Tab::Orquestrador && self.focus == Focus::Tabs {
             self.sync_delegated();
             let chat = &self.chat;
             let delegated = self.delegated.as_ref();
-            let settings = self.mcp.clone();
+            let settings = self.orchestrator.clone();
             let label = |id: &str| delegated_label(chat, delegated, &settings, id);
             let agent = delegated_agent(chat, &settings, &self.providers, delegated, &label);
-            match self.mcp_view.handle_key(key, &mut self.mcp, &agent) {
-                mcp_tab::Outcome::Ignored => {}
-                mcp_tab::Outcome::Moved => return false,
-                mcp_tab::Outcome::Changed => {
+            match self
+                .orchestrator_view
+                .handle_key(key, &mut self.orchestrator, &agent)
+            {
+                orchestrator_tab::Outcome::Ignored => {}
+                orchestrator_tab::Outcome::Moved => return false,
+                orchestrator_tab::Outcome::Changed => {
                     if let Some(global) = &self.global_config {
                         // Sem conseguir salvar, a mudança vale só nesta execução.
-                        let _ = self.mcp.save_file(global);
+                        let _ = self.orchestrator.save_file(global);
                     }
                     return false;
                 }
@@ -859,11 +701,7 @@ impl App {
             return false;
         }
         match (self.focus, key.code) {
-            (Focus::Tabs, KeyCode::Tab) => {
-                self.tab = self
-                    .tab
-                    .next(self.mcp_online(), self.update_view.available())
-            }
+            (Focus::Tabs, KeyCode::Tab) => self.tab = self.tab.next(self.update_view.available()),
             (Focus::Tabs, KeyCode::Esc) => self.focus = Focus::Quit,
             (Focus::Quit, KeyCode::Enter) => self.focus = Focus::Confirm(true),
             (Focus::Quit, KeyCode::Tab | KeyCode::Esc) => self.focus = Focus::Tabs,
@@ -940,7 +778,7 @@ impl App {
             Tab::Chat if self.uses_provider() => {}
             Tab::Chat => self.current_chat_mut().handle_mouse(mouse),
             Tab::Consumo => self.usage.handle_mouse(mouse),
-            Tab::Extensoes | Tab::Config | Tab::Mcp | Tab::Atualizacao => {}
+            Tab::Extensoes | Tab::Config | Tab::Orquestrador | Tab::Atualizacao => {}
         }
     }
 
@@ -979,62 +817,14 @@ impl App {
         }
         self.extensions_view.tick();
         self.update_view.tick();
-        self.tick_mcp();
-    }
-
-    /// Avisa o MCP se há uma sessão e, com a aba MCP aberta, recarrega os
-    /// spaces. Com o MCP offline, a aba some.
-    /// Os chats deste terra e o consumo de cada um, para o MCP.
-    /// Os delegados que fecharam ao terminar vão no fim, com a resposta.
-    fn chat_stats(&self) -> Vec<mcp::ChatStats> {
-        std::iter::once(chat_stats(MAIN_CHAT_TITLE, &self.chat))
-            .chain(
-                self.chats
-                    .iter()
-                    .map(|tab| chat_stats(&tab.title, &tab.chat)),
-            )
-            .chain(self.finished.iter().cloned())
-            .collect()
-    }
-
-    fn tick_mcp(&mut self) {
-        let session = self.has_session();
-        let Some(link) = &self.mcp_link else {
-            return;
-        };
-        link.set_session(session);
-        self.close_finished_chats();
-        let Some(link) = &self.mcp_link else {
-            return;
-        };
-        link.set_chats(self.chat_stats());
-        for request in link.take_chats() {
-            self.open_chat(&request);
-        }
-        if self.tab != Tab::Mcp {
-            return;
-        }
-        // O menu do modelo, aberto, acompanha o catálogo quando ele chega.
-        self.sync_delegated();
-        let own = self.delegated_is_own();
-        self.mcp_view.sync(match &self.delegated {
-            Some(d) if !own => d.catalog(),
-            _ => self.chat.catalog(),
-        });
-        let Some(link) = &self.mcp_link else {
-            return;
-        };
-        let Some(instances) = link.instances() else {
-            self.tab = Tab::Config;
-            return;
-        };
-        if self.mcp_view.is_stale() {
-            let saved = self
-                .db
-                .as_ref()
-                .and_then(|db| db.workspaces(0, usize::from(u16::MAX)).ok())
-                .unwrap_or_default();
-            self.mcp_view.refresh(&saved, &instances);
+        // No Orquestrador, a aba carrega o catálogo do provedor escolhido.
+        if self.tab == Tab::Orquestrador {
+            self.sync_delegated();
+            let own = self.delegated_is_own();
+            self.orchestrator_view.sync(match &self.delegated {
+                Some(d) if !own => d.catalog(),
+                _ => self.chat.catalog(),
+            });
         }
     }
 
@@ -1056,7 +846,7 @@ impl App {
             }
             Focus::Tabs if self.tab == Tab::Config => self.config_view.help().into(),
             Focus::Tabs if self.tab == Tab::Extensoes => extensions::HELP.into(),
-            Focus::Tabs if self.tab == Tab::Mcp => self.mcp_view.help().into(),
+            Focus::Tabs if self.tab == Tab::Orquestrador => self.orchestrator_view.help().into(),
             Focus::Tabs if self.tab == Tab::Consumo => self.usage.help().into(),
             Focus::Tabs if self.tab == Tab::Atualizacao => update::HELP.into(),
             Focus::Tabs => HELP.into(),
@@ -1099,7 +889,7 @@ impl App {
         let mut spans = Vec::new();
         let tabs = Tab::ALL
             .into_iter()
-            .filter(|tab| tab.visible(self.mcp_online(), self.update_view.available()));
+            .filter(|tab| tab.visible(self.update_view.available()));
         for (i, tab) in tabs.enumerate() {
             if i > 0 {
                 spans.push(Span::raw(TAB_GAP));
@@ -1140,7 +930,7 @@ impl App {
     }
 
     /// A barra de chats, embaixo da barra de abas e no mesmo tema: o chat
-    /// do terra e os abertos pelo orquestrador.
+    /// do terra e os abertos com `Alt+N`.
     fn draw_chats(&self, frame: &mut Frame, area: Rect) {
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -1199,11 +989,18 @@ impl App {
             );
             return;
         }
-        if self.tab == Tab::Mcp {
+        if self.tab == Tab::Orquestrador {
             let delegated = self.delegated.as_ref();
-            let label = |id: &str| delegated_label(&self.chat, delegated, &self.mcp, id);
-            let agent = delegated_agent(&self.chat, &self.mcp, &self.providers, delegated, &label);
-            self.mcp_view.draw(frame, area, &self.mcp, &agent);
+            let label = |id: &str| delegated_label(&self.chat, delegated, &self.orchestrator, id);
+            let agent = delegated_agent(
+                &self.chat,
+                &self.orchestrator,
+                &self.providers,
+                delegated,
+                &label,
+            );
+            self.orchestrator_view
+                .draw(frame, area, &self.orchestrator, &agent);
             return;
         }
         if self.tab == Tab::Atualizacao {
@@ -1280,33 +1077,17 @@ fn content_area(screen: Rect) -> Rect {
     layout(screen)[1]
 }
 
-/// As extensões de um chat delegado (`id` é a delegação): o MCP do terra
-/// fica no endereço da delegação, para os pedidos de permissão do chat irem
-/// para quem delegou.
-/// O consumo de um chat, para o MCP.
-fn chat_stats(title: &str, chat: &Chat) -> mcp::ChatStats {
-    mcp::ChatStats {
-        title: title.to_string(),
-        tokens: chat.tokens_used(),
-        cache_tokens: chat.cache_tokens_used(),
-        busy: chat.is_busy(),
-        // Só os delegados mandam a resposta: ela volta a quem delegou.
-        id: chat.delegation(),
-        reply: chat.delegation().and_then(|_| chat.last_reply()),
-    }
-}
-
 /// O agente dos chats delegados, para a aba Orquestrador: o provedor e o
 /// catálogo do chat do terra ou, com outro provedor escolhido para os
 /// delegados, o catálogo dele (`None` até chegar).
 fn delegated_agent<'a>(
     chat: &'a Chat,
-    mcp: &McpSettings,
+    settings: &OrchestratorSettings,
     providers: &'a [ProviderOption],
-    delegated: Option<&'a mcp_tab::Delegated>,
+    delegated: Option<&'a orchestrator_tab::Delegated>,
     label: &'a dyn Fn(&str) -> String,
-) -> mcp_tab::Agent<'a> {
-    let own = mcp
+) -> orchestrator_tab::Agent<'a> {
+    let own = settings
         .provider
         .as_deref()
         .is_none_or(|id| chat.provider_id() == Some(id));
@@ -1315,7 +1096,7 @@ fn delegated_agent<'a>(
     } else {
         delegated.and_then(|d| d.catalog())
     };
-    mcp_tab::Agent {
+    orchestrator_tab::Agent {
         provider: chat.adapter().map_or("Sem agente", |a| a.name()),
         providers,
         catalog,
@@ -1331,11 +1112,11 @@ fn delegated_agent<'a>(
 /// O nome de um modelo dos chats delegados para a tela.
 fn delegated_label(
     chat: &Chat,
-    delegated: Option<&mcp_tab::Delegated>,
-    mcp: &McpSettings,
+    delegated: Option<&orchestrator_tab::Delegated>,
+    settings: &OrchestratorSettings,
     id: &str,
 ) -> String {
-    let own = mcp
+    let own = settings
         .provider
         .as_deref()
         .is_none_or(|p| chat.provider_id() == Some(p));
@@ -1343,18 +1124,6 @@ fn delegated_label(
         Some(d) if !own => d.label(id),
         _ => chat.model_label_of(id),
     }
-}
-
-fn delegated(
-    mut extensions: crate::extension::Contribution,
-    id: u64,
-) -> crate::extension::Contribution {
-    for server in &mut extensions.mcp_servers {
-        if server.name == mcp::SERVER_NAME {
-            server.url = Some(mcp::delegated_url(std::process::id(), id));
-        }
-    }
-    extensions
 }
 
 fn is_ctrl(key: &KeyEvent, c: char) -> bool {
@@ -1450,6 +1219,7 @@ mod tests {
         assert_eq!(app.tab, Tab::Chat);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Consumo);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Extensoes);
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Orquestrador);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Chat);
     }
@@ -1474,41 +1244,42 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tab_only_shows_with_the_mcp_online() {
-        // O Orquestrador fica entre Extensões e Configurações.
-        assert_eq!(Tab::Extensoes.next(false, false), Tab::Config);
-        assert_eq!(Tab::Extensoes.next(true, false), Tab::Mcp);
-        assert_eq!(Tab::Mcp.next(true, false), Tab::Config);
-        assert_eq!(Tab::Config.next(true, false), Tab::Chat);
-        assert_eq!(Tab::Chat.next(false, false), Tab::Consumo);
-        assert_eq!(Tab::Chat.next(false, true), Tab::Atualizacao);
-        assert_eq!(Tab::Atualizacao.next(false, true), Tab::Consumo);
+    fn orquestrador_tab_is_always_between_extensions_and_config() {
+        assert_eq!(Tab::Extensoes.next(false), Tab::Orquestrador);
+        assert_eq!(Tab::Orquestrador.next(false), Tab::Config);
+        assert_eq!(Tab::Config.next(false), Tab::Chat);
+        assert_eq!(Tab::Chat.next(false), Tab::Consumo);
+        assert_eq!(Tab::Chat.next(true), Tab::Atualizacao);
+        assert_eq!(Tab::Atualizacao.next(true), Tab::Consumo);
     }
 
     #[test]
-    fn turning_the_mcp_on_in_config_saves_it_in_the_global_file() {
+    fn changing_the_orquestrador_saves_it_in_the_global_file() {
         let dir = tempfile::tempdir().unwrap();
         let global = crate::settings::global_file(dir.path());
+        // A antiga chave `mcp` ainda está no arquivo de outro terra.
+        std::fs::write(
+            &global,
+            r#"{"outra": 1, "mcp": {"enabled": true, "model": "opus"}}"#,
+        )
+        .unwrap();
         let mut app = App {
             global_config: Some(global.clone()),
-            tab: Tab::Config,
+            tab: Tab::Orquestrador,
+            orchestrator: OrchestratorSettings::load_file(&global),
             ..App::default()
         };
-        // O MCP vem antes dos servidores conectados e das skills, a última
-        // configuração.
-        for _ in 0..20 {
-            key(&mut app, KeyCode::Down);
-        }
-        for _ in 0..3 {
-            key(&mut app, KeyCode::Up);
-        }
-        key(&mut app, KeyCode::Enter);
-        assert!(app.mcp.enabled);
-        assert!(McpSettings::load_file(&global).enabled);
-        // Sem workspace (nos testes), não se liga ao MCP.
-        assert!(app.mcp_link.is_none());
-        key(&mut app, KeyCode::Enter);
-        assert!(!McpSettings::load_file(&global).enabled);
+        // O Provedor é a primeira configuração, e ←/→ muda e salva.
+        assert!(!key(&mut app, KeyCode::Right));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&global).unwrap()).unwrap();
+        // A antiga chave `mcp` saiu; os modos do orquestrador ficaram.
+        assert!(saved.get("orchestrator").is_some());
+        assert!(saved.get("mcp").is_none(), "{}", saved);
+        assert_eq!(
+            OrchestratorSettings::load_file(&global).model.as_deref(),
+            Some("opus")
+        );
     }
 
     #[test]
@@ -1568,6 +1339,7 @@ mod tests {
         use crate::settings::StartMode;
 
         let mut app = App::default();
+        press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Tab);
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
@@ -1660,13 +1432,19 @@ mod tests {
         let config = crate::settings::config_file(dir.path(), "terra");
         let mut app = App {
             config: Some(config.clone()),
+            db: Some(Db::open_in_memory().unwrap()),
             registry: Registry::new(vec![Box::new(Fake)]),
             tab: Tab::Config,
             ..App::default()
         };
+        let saved = |app: &App| {
+            let db = app.db.as_ref().unwrap();
+            db.extension_settings(&app.extension_account(), &[])
+                .unwrap()
+        };
         assert!(!key(&mut app, KeyCode::BackTab));
         assert!(!key(&mut app, KeyCode::Char(' ')));
-        assert_eq!(ExtensionSettings::load_file(&config).enabled, ["fake"]);
+        assert_eq!(saved(&app).enabled, ["fake"]);
         assert_eq!(app.chat.extensions().hooks[0].command, "fake");
         // O agente continua igual.
         assert_eq!(
@@ -1674,15 +1452,36 @@ mod tests {
             AgentSettings::default()
         );
 
+        // Na outra conta, só fica a de usar sempre.
+        let previous = app.settings.clone();
+        app.settings.account = Some(".claude-trabalho".into());
+        app.save_settings(&previous);
+        assert!(app.extensions.active().is_empty());
+        assert_eq!(app.chat.extensions(), &Contribution::default());
+        let previous = app.settings.clone();
+        app.settings.account = None;
+        app.save_settings(&previous);
+        assert_eq!(app.extensions.enabled, ["fake"]);
+
         key(&mut app, KeyCode::Char(' '));
-        assert!(ExtensionSettings::load_file(&config).enabled.is_empty());
+        assert_eq!(saved(&app).always, ["fake"]);
+        let previous = app.settings.clone();
+        app.settings.account = Some(".claude-trabalho".into());
+        app.save_settings(&previous);
+        assert_eq!(app.chat.extensions().hooks[0].command, "fake");
+        let previous = app.settings.clone();
+        app.settings.account = None;
+        app.save_settings(&previous);
+
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(saved(&app), ExtensionSettings::default());
         assert_eq!(app.chat.extensions(), &Contribution::default());
 
-        // A aba Extensões fica entre Consumo e Config.
+        // A aba Extensões fica entre Consumo e o Orquestrador.
         app.tab = Tab::Consumo;
         assert_eq!(press(&mut app, KeyCode::Tab), Tab::Extensoes);
         assert!(!key(&mut app, KeyCode::Down));
-        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
+        assert_eq!(press(&mut app, KeyCode::Tab), Tab::Orquestrador);
     }
 
     #[test]
@@ -1869,122 +1668,57 @@ mod tests {
     fn nav_bar_highlights_active_tab_and_right_aligns_quit() {
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
         let mut app = App::default();
         press(&mut app, KeyCode::Tab);
         terminal.draw(|frame| app.draw(frame)).unwrap();
 
         let buffer = terminal.backend().buffer();
-        let row = |y: u16| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>();
-        assert_eq!(row(0), format!("╭{}╮", "─".repeat(58)));
+        let row = |y: u16| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(0), format!("╭{}╮", "─".repeat(78)));
         assert_eq!(
             row(1),
-            "│  Chat   Consumo   Extensões   Configurações        Sair  │"
+            "│  Chat   Consumo   Extensões   Orquestrador   Configurações             Sair  │"
         );
-        assert_eq!(row(2), format!("╰{}╯", "─".repeat(58)));
+        assert_eq!(row(2), format!("╰{}╯", "─".repeat(78)));
 
         // O pill " Consumo " (x = 9..18) usa o estilo da aba ativa; "Chat" não.
         let active_bg = theme::tab_active().bg;
         assert!((9..18).all(|x| buffer[(x, 1)].bg == active_bg.unwrap()));
         assert_ne!(buffer[(3, 1)].bg, active_bg.unwrap());
 
-        // "Sair" (x = 52..58) é vermelho, sem fundo até receber foco.
+        // "Sair" (x = 72..78) é vermelho, sem fundo até receber foco.
         let red = theme::quit().fg.unwrap();
-        assert!((52..58).all(|x| buffer[(x, 1)].fg == red));
+        assert!((72..78).all(|x| buffer[(x, 1)].fg == red));
     }
 
     #[test]
-    fn chats_opened_by_the_orchestrator_show_up_below_the_nav_bar() {
+    fn new_chats_show_up_below_the_nav_bar() {
         use crossterm::event::KeyModifiers;
         use ratatui::{Terminal, backend::TestBackend};
 
         let mut app = App::default();
-        app.open_chat(&mcp::ChatRequest {
-            id: 4,
-            from: Some("a".into()),
-            title: None,
-            message: "oi".into(),
-            ..Default::default()
-        });
-        let delegated = &app.chats[0].chat;
-        assert_eq!(delegated.delegation(), Some(4));
-        assert_eq!(app.chat_stats()[1].id, Some(4));
-        assert_eq!(app.chat_stats()[0].id, None, "o Principal não é delegado");
+        app.new_chat();
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let buffer = terminal.backend().buffer();
         let row = |y: u16| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>();
-        assert!(row(4).starts_with("│  Principal   De a "), "{}", row(4));
-        assert_eq!(buffer[(3, 4)].bg, theme::tab_active().bg.unwrap());
+        assert!(row(4).starts_with("│  Principal   Chat 2 "), "{}", row(4));
+        // Com Alt+N, o chat novo fica ativo; o Principal não.
+        assert_eq!(buffer[(17, 4)].bg, theme::tab_active().bg.unwrap());
+        assert_ne!(buffer[(3, 4)].bg, theme::tab_active().bg.unwrap());
 
         let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+        // Alt+N deixa o chat novo ativo; Alt+→ dá a volta ao Principal.
         app.handle_key(alt(KeyCode::Right));
-        assert_eq!(app.active_chat, 1);
+        assert_eq!(app.active_chat, 0);
         app.handle_key(alt(KeyCode::Left));
+        assert_eq!(app.active_chat, 1);
+        app.handle_key(alt(KeyCode::Char('w')));
+        assert_eq!(app.chats.len(), 0, "o chat novo fecha");
         assert_eq!(app.active_chat, 0);
         app.handle_key(alt(KeyCode::Char('w')));
-        assert_eq!(app.chats.len(), 1, "o chat do terra não fecha");
-        app.handle_key(alt(KeyCode::Right));
-        app.handle_key(alt(KeyCode::Char('w')));
-        assert!(app.chats.is_empty());
-        assert_eq!(app.active_chat, 0);
-    }
-
-    #[test]
-    fn delegated_chats_close_when_they_finish_and_keep_the_reply() {
-        let mut app = App::default();
-        assert!(app.mcp.close_finished, "fecha ao terminar por padrão");
-        let tab = |title: &str, id: Option<u64>| {
-            let mut chat = Chat::default();
-            if let Some(id) = id {
-                chat.set_delegation(&mcp::ChatRequest {
-                    id,
-                    ..Default::default()
-                });
-            }
-            ChatTab {
-                title: title.into(),
-                chat,
-            }
-        };
-        app.chats = vec![tab("A", Some(1)), tab("Novo", None), tab("B", Some(2))];
-        app.active_chat = 3;
-        app.close_finished_chats();
-        assert_eq!(app.chats.len(), 3, "sem resposta, ninguém fecha");
-
-        app.chats[0].chat.reply_for_test("feito");
-        app.chats[1].chat.reply_for_test("oi");
-        app.close_finished_chats();
-        let titles: Vec<_> = app.chats.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(titles, ["Novo", "B"], "o chat não delegado não fecha");
-        assert_eq!(app.active_chat, 2, "a aba Chat continua no B");
-        let stats = app.chat_stats();
-        let a = stats.iter().find(|s| s.id == Some(1)).unwrap();
-        assert_eq!(a.reply.as_deref(), Some("feito"));
-        assert!(!a.busy);
-
-        // Com "Manter aberto", o chat fica.
-        app.mcp.close_finished = false;
-        app.chats[1].chat.reply_for_test("pronto");
-        app.close_finished_chats();
-        assert_eq!(app.chats.len(), 2);
-    }
-
-    #[test]
-    fn delegated_chats_open_in_the_background_unless_asked() {
-        let request = mcp::ChatRequest {
-            id: 4,
-            from: None,
-            title: None,
-            message: "oi".into(),
-            ..Default::default()
-        };
-        let mut app = App::default();
-        app.open_chat(&request);
-        assert_eq!(app.active_chat, 0, "em segundo plano por padrão");
-        app.mcp.focus_delegated = true;
-        app.open_chat(&request);
-        assert_eq!(app.active_chat, 2);
+        assert_eq!(app.chats.len(), 0, "o chat do terra não fecha");
     }
 
     #[test]

@@ -101,12 +101,19 @@ impl Extension for AiMemory {
 /// conversa nova, o `--fresh`: sem ele, o `ai-memory` retomaria a última
 /// sessão do workstream; numa que continua, ele respeita o `--resume` do
 /// terra.
+///
+/// O `--force-unlock` é o que evita o `409 Conflict: workstream is already
+/// active` na mensagem seguinte: no fim do turno o terra encerra o grupo do
+/// lançador, e o `ai-memory run` não chega a liberar o workstream, que fica
+/// preso até o TTL. O `ai-memory` só deixa retomar o workstream do mesmo
+/// operador (ou do dono único, sem atribuição).
 fn launcher() -> Launcher {
     Launcher {
         program: "ai-memory".to_string(),
         args: [
             "run",
             "--no-autowire",
+            "--force-unlock",
             "--executable",
             Launcher::BIN,
             Launcher::HARNESS,

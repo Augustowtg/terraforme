@@ -3,6 +3,8 @@
 Este documento mapeia todos os pontos em que o terraforme fala com o provedor de agente (hoje, só o **Claude**, pelo CLI `claude`), para servir de guia na adição de novos provedores. Cada seção termina com **Para um provedor novo**: o que implementar e o que hoje está preso ao Claude.
 
 > Mapeamento feito na v0.8.23. As referências `arquivo:linha` são dessa versão e podem andar com o código.
+>
+> Desde a v0.8.29 o terra **não tem mais um MCP próprio** nem chats delegados: o comando `terra mcp`, o `src/mcp/`, o `permission_tool` e a delegação saíram. As seções que ainda os descrevem ficam como histórico do que existia até a v0.8.28; hoje o Orquestrador só guarda as configurações (`src/tui/orchestrator.rs`).
 
 ## Mapa geral
 
@@ -12,8 +14,8 @@ Este documento mapeia todos os pontos em que o terraforme fala com o provedor de
 | [Comandos `/` e menções `@`](#comandos--e-menções-) | `Catalog`, `CommandRoute`, `ModelMenu` (`src/tui/chat/`) | `claude/catalog.rs` (`initialize` do Agent SDK) e `claude/interactive.rs` (comandos do modo interativo) |
 | [Consumo](#consumo) | `load_usage`, `load_daily`, eventos `Context`/`Done` | `claude/usage.rs` (`/api/oauth/usage`) e `claude/daily.rs` (`projects/**/*.jsonl`) |
 | [Extensões, MCP e skills](#extensões-mcp-e-skills) | `Contribution` (hooks, MCPs, env) e `mcp_servers`/`skills` | `--settings`, `--mcp-config`, env; `claude/mcp.rs` e `claude/skills.rs` |
-| [Orquestrador](#orquestrador) | MCP do terra (`src/mcp.rs`, `src/mcp/server.rs`) | `--permission-prompt-tool mcp__terra__permission` e o formato `behavior` de resposta |
-| [Configurações, contas e login](#configurações-contas-e-login) | `AgentSettings`, `McpSettings`, `accounts`, `login` | `CLAUDE_CONFIG_DIR`, pastas `~/.claude*`, `claude auth login` |
+| [Orquestrador](#orquestrador) | `OrchestratorSettings` (`src/settings.rs`) e a aba `src/tui/orchestrator.rs` | por enquanto, só configurações salvas; não há delegação |
+| [Configurações, contas e login](#configurações-contas-e-login) | `AgentSettings`, `OrchestratorSettings`, `accounts`, `login` | `CLAUDE_CONFIG_DIR`, pastas `~/.claude*`, `claude auth login` |
 
 ## Checklist para um provedor novo
 
@@ -31,21 +33,19 @@ Este documento mapeia todos os pontos em que o terraforme fala com o provedor de
 **Para ter paridade com o Claude:**
 - `load_catalog` (comandos, skills, modelos, esforços e modelo padrão), `command_route` + `interactive` (interface original), `login`, `model_label` e `models`.
 - `load_usage` e `load_daily` (aba Consumo e barra de consumo).
-- `accounts`, `configured_mode`, `mcp_servers` e `skills` (Config).
+- `accounts`, `configured_mode` e `skills` (Config).
 - Traduzir a `Contribution`: hooks, servidores MCP stdio/HTTP com `${VAR}` nos headers, e env.
-- Um equivalente ao `--permission-prompt-tool` para os chats delegados.
 
 **Acoplamentos ao Claude fora do adapter, para resolver antes ou junto:**
 - **Escolha do provedor:**
   - não há troca de provedor: só se usa `adapters::default()`, e o router não troca (`src/tui/chat.rs:1356`);
   - a aba Orquestrador só exibe o provedor;
-  - `AgentSettings` e `McpSettings` não guardam de qual provedor são a conta, o modelo e o esforço.
+  - `AgentSettings` e `OrchestratorSettings` não guardam de qual provedor são a conta, o modelo e o esforço.
 - **Hooks e extensões:**
   - `Hook.event` e `matcher` usam os nomes do Claude Code;
   - o RTK usa `rtk hook claude`;
   - a ai-memory usa `--agent claude-code` / `--client claude-code`;
   - `contribution()` não recebe o provedor ativo.
-- **Formato de permissão:** a ferramenta `permission` do MCP do terra responde no formato do `--permission-prompt-tool` do Claude, e o nome segue a convenção `mcp__<server>__<tool>`.
 - **Prompt e comandos:**
   - o `/compact` manda o texto literal `/compact` ao agente;
   - as menções saem como `@caminho` e `/skill` dentro do prompt;
@@ -82,7 +82,6 @@ Ainda não dá para trocar de provedor na tela. O botão do router mostra só `n
 | `unavailable_hint()` | Texto mostrado quando o provedor não está disponível | `"{name} não está disponível."` | `NOT_FOUND`, com o link de instalação (`:39`) |
 | `configured_mode(cwd, account)` | Modo de permissão com que o chat começa | `None` | Lê `permissions.defaultMode` na ordem `.claude/settings.local.json` → `.claude/settings.json` → `<config_dir>/settings.json` (`:466-502`) e traduz com `parse_mode` |
 | `accounts()` | Contas que aparecem na Config | vazio | Default e as pastas `~/.claude*` com credenciais (`accounts::discover`, `:93`) |
-| `mcp_servers(cwd, account)` | MCPs do provedor, mostrados na Config | vazio | `.claude.json` da conta e `.mcp.json` do `cwd` (`:102`) |
 | `skills(cwd, account)` | Skills do provedor, mostradas na Config | vazio | Pasta da conta, `~/.agents/skills` e `.claude/skills` do `cwd` e das pastas acima dele (`:117`) |
 | `command_route(name)` | Diz onde roda uma `/` que o terra não implementa | `CommandRoute::Agent` | `BILLING` → `Blocked`; comandos que só existem no modo interativo → `Original`; o resto → `Agent` (`:154`) |
 | `models()` | Apelidos de modelo na Config | vazio | `opus`, `sonnet`, `haiku` (`:239`) |
@@ -110,7 +109,6 @@ Ainda não dá para trocar de provedor na tela. O botão do router mostra só `n
 | `account` | `AccountOption::id` | Variável `CLAUDE_CONFIG_DIR=<pasta da conta>` |
 | `subagent_model` | Modelo dos sub agentes | Variável `CLAUDE_CODE_SUBAGENT_MODEL` (`SUBAGENT_MODEL_ENV`, `:42`) |
 | `extensions` (`Contribution`) | Hooks, MCPs e env das extensões | `--settings` (`hook_settings`, `:351`; sem hooks vai `{"disableAllHooks":true}`), `--mcp-config` (`mcp_args`, `:372`), e as variáveis `extensions.env` |
-| `permission_tool` | Ferramenta MCP que decide os pedidos de permissão (chat delegado) | `--permission-prompt-tool mcp__{server}__{tool}` (`:550`) |
 | `allowed_tools` | Regras liberadas só nesta mensagem (vêm de `Blocked`) | `--allowedTools <regra>…`, uma regra por argumento (`:547`) |
 
 A linha de comando fixa sai de `cli_args` (`claude.rs:311`):
@@ -137,14 +135,13 @@ Um modo que o terra não conhece (ex.: `dontAsk`) vira `ReportedMode::Unknown`, 
 
 Os pedidos de permissão seguem três caminhos (`Run::start`, `claude.rs:528-555`):
 - **Yolo**: `--permission-prompt-tool stdio`. A thread de leitura aprova cada `control_request/can_use_tool` na hora.
-- **Chat delegado** (com `permission_tool` e sem Yolo): não usa `stdio`. O `claude` chama `mcp__terra__permission`, e quem delegou decide (`src/mcp/server.rs:575`).
 - **Outros modos**: `stdio`. Cada pedido vira `AgentEvent::PermissionRequest`, e a resposta volta por `Session::respond`, que manda `control_response` com `{"behavior":"allow","updatedInput":…}` ou `deny` (`permission_response`, `:434`).
 
 Qualquer outro `control_request` recebe uma resposta de erro (`unsupported_response`, `:450`).
 
 ### Fluxo de uma mensagem
 
-1. **Envio**: `Chat::start` (`src/tui/chat.rs:882`) monta o `Request` com sessão, modelo, esforço, conta, extensões e `permission_tool` (só se o MCP `terra` estiver nas extensões), e chama `adapter.start`. O resultado vai para `self.run`, e o status passa a "Pensando".
+1. **Envio**: `Chat::start` (`src/tui/chat.rs:882`) monta o `Request` com sessão, modelo, esforço, conta e extensões, e chama `adapter.start`. O resultado vai para `self.run`, e o status passa a "Pensando".
 2. **Processo**: `Run::start` (`claude.rs:523`) cria o processo com stdin, stdout e stderr em pipe. Uma thread grava o `user_message` e lê o stdout linha a linha (`:583-624`):
    - os pedidos `can_use_tool` são aprovados (Yolo) ou guardados em `pending` e viram `PermissionRequest`;
    - os outros `control_request` recebem erro;
@@ -202,16 +199,15 @@ O que precisa ser implementado nesta área:
 5. Permissões: emitir `PermissionRequest` e implementar `respond`. Se o provedor bloqueia ferramentas sem perguntar, emitir `Blocked` com uma regra `allow` que ele aceite em `allowed_tools`.
 6. Uso: emitir `Context` e `Compacted` quando o provedor informar, e preencher `tokens`, `cache_tokens` e `denied` no `Done`.
 7. Traduzir `Contribution` (hooks, MCPs e env das extensões), `subagent_model`, `effort` e `account` para o mecanismo do provedor, ou ignorá-los.
-8. Opcionais: `interactive` + `command_route`, `login`, `load_catalog`, `load_usage`, `load_daily`, `accounts`, `mcp_servers`, `skills`, `configured_mode`, `models`, `model_label`.
+8. Opcionais: `interactive` + `command_route`, `login`, `load_catalog`, `load_usage`, `load_daily`, `accounts`, `skills`, `configured_mode`, `models`, `model_label`.
 
 O que hoje é específico do Claude fora do adapter:
-- **`permission_tool`**: o chat sempre manda `("terra","permission")` (`src/tui/chat.rs:903-912`). O MCP responde no formato do `--permission-prompt-tool` do Claude (`{"behavior":"allow"/"deny",…}`, `src/mcp/server.rs:573`). Um provedor novo precisa aceitar esse formato ou adaptá-lo.
 - **Hooks das extensões**: `Hook::event` usa os nomes de evento do Claude Code (ex.: `PreToolUse`, `src/extension/contract.rs:25`). A extensão RTK registra `rtk hook claude` (`src/extension/extensions/rtk.rs:68`), e a ai-memory gera os hooks e o MCP com `--agent claude-code` / `--client claude-code` (`src/extension/extensions/ai_memory.rs:41-42`).
 - **`/compact`**: a compactação, manual ou automática, manda o texto `/compact` como prompt e conta que o agente compacte (`src/tui/chat.rs:809`). `INTERFACES` e `TERRA_COMMANDS` partem do princípio de que existem `/compact` e `/login` do Claude (`src/tui/chat/commands.rs:15-22`).
 - **Login**: `src/tui/login.rs:19-23` procura na saída do `claude auth login` o texto `visit: `, `Invalid code` e o prompt `Paste code here if prompted >`. `hint_login` procura as palavras `authenticate`, `oauth` e `log in again` nas mensagens de erro (`src/tui/chat.rs:651`).
 - **Contas e config**: a conta é o nome de uma pasta `.claude-*` (`src/settings.rs:13`), e `settings.rs:43` fala do `defaultMode` do Claude.
 - **Interface original**: o pseudo-terminal foi ajustado para o `claude` interativo (`src/tui/term.rs:2`, `:105`).
-- **Aba Orquestrador**: a aba de MCP diz, em comentário, que "por enquanto o único provedor é o Claude" (`src/tui/mcp.rs:30`). Os chats delegados usam o provedor e o catálogo do chat principal (`src/tui/app.rs:1189`).
+- **Aba Orquestrador**: as configurações dos chats delegados ficam em `src/tui/orchestrator.rs` (por enquanto, só salvas).
 - **Troca de provedor**: ainda não existe. Só o `default()` é usado (`src/tui/chat.rs:206`), e o router não troca de provedor (`src/tui/chat.rs:1356`).
 
 ## Comandos / e menções @
@@ -303,7 +299,7 @@ Fica em `src/tui/chat/model_menu.rs`. A tela é do terra; os modelos e os nívei
 | `Session` | `/model` (`chat.rs:504`) | `session_model` e `session_effort` desta conversa (`chat.rs:685-693`) | sim |
 | `Default` | Enter no Default do menu da conversa (`model_menu.rs:213`) | `default_choice`, que vai para a Config via `take_default_choice` (`chat.rs:694-702`, `chat.rs:713`). Esc volta ao menu da conversa. | sim |
 | `Subagent` | Config (`src/tui/config.rs:276`, `ModelMenu::subagents`) | modelo dos sub agentes; no Claude vai em `CLAUDE_CODE_SUBAGENT_MODEL` (`claude.rs:42`). Default é "o agente escolhe" (`Outcome::Unset`). | não |
-| `Delegated` | aba Orquestrador (`src/tui/mcp.rs:326`, `ModelMenu::delegated`) | modelo e esforço dos chats delegados, salvos no `config.json` global | sim |
+| `Delegated` | aba Orquestrador (`src/tui/orchestrator.rs`, `ModelMenu::delegated`) | modelo e esforço dos chats delegados, salvos no `config.json` global | sim |
 
 - **Para o provedor.** O modelo e o esforço vão no `Request.model`/`effort`: primeiro os da sessão, senão os da Config (`chat.rs:886-899`). No Claude viram `--model` e `--effort` (`claude.rs:336-339`), e também na interface original (`claude.rs:180-185`).
 - **Rótulos.** `Chat::model_label_of` (`chat.rs:734-748`): se o `ModelInfo` tem `resolved`, usa `adapter.model_label(resolved)`; senão, o `label` do catálogo; senão, o próprio id. No Claude, `display_model` transforma `claude-opus-5-5` em `Opus - 5.5` e tira as datas do id (`claude.rs:249`, `claude.rs:685-702`). O padrão do trait devolve o id (`adapter.rs:258`).
@@ -498,15 +494,11 @@ Cada extensão é uma estratégia que implementa o trait `Extension` (`src/exten
 
 ### Da extensão ao processo do agente
 
-1. A Config liga e desliga uma extensão por workspace: `handle_extension_key` faz `settings.toggle(id)` (`src/tui/config.rs:324-330`). Os ids ficam em `ExtensionSettings.enabled`, no `config.json` do workspace (`src/settings.rs:292`).
-2. `App::apply_extensions` (`src/tui/app.rs:359-379`) chama `registry.contribution(&enabled)`.
-   - Com o MCP do terra ligado, acrescenta o servidor `terra` (HTTP, `mcp::agent_url(pid)`) (`app.rs:361-366`).
-   - Num chat delegado, `delegated()` troca a URL por `delegated_url(pid, id)` (`app.rs:1199-1209`).
+1. A Config muda o modo de uma extensão (inativa → ativa nesta conta → usar sempre): `handle_extension_key` faz `settings.toggle(id)` (`src/tui/config.rs`). Os ids ficam em `ExtensionSettings.enabled` (da conta) e `ExtensionSettings.always`, no banco (`Db::extension_settings` / `Db::set_extension`, `src/db.rs`), por conta do agente (`App::extension_account`).
+2. `App::apply_extensions` (`src/tui/app.rs`) chama `registry.contribution(&extensions.active())`.
    - O resultado vai para cada chat com `chat.set_extensions` (`src/tui/chat.rs:351`).
 3. O chat passa a Contribution em `Request.extensions` (`src/agent/adapter.rs:52`, `src/tui/chat.rs:900`). A interface original recebe a mesma coisa em `Interactive.extensions` (`adapter.rs:190`, `app.rs:629`).
-4. Se o chat é delegado e há um servidor `terra` na Contribution, `permission_tool = ("terra", PERMISSION_TOOL)` (`chat.rs:903-911`).
 
-> Token (v0.8.23): `App::apply_extensions` junta `mcp::agent_server(url, token)` (`src/mcp.rs`) à Contribution: o servidor `terra` vai com `Authorization: Bearer ${TERRA_MCP_TOKEN}` e o token em `env`. O MCP recusa quem não o traz (ver Orquestrador).
 
 ### Tradução para o Claude (`src/agent/adapters/claude.rs`)
 
@@ -515,7 +507,6 @@ Cada extensão é uma estratégia que implementa o trait `Extension` (`src/exten
 | `hooks` | Vai sempre `--settings <json>` (`cli_args`, `:329`). `hook_settings` (`:351-368`) agrupa por evento: `{"hooks":{evento:[{matcher, hooks:[{type:"command",command}]}]}}`. **Sem nenhum hook, vai `{"disableAllHooks":true}`**, o que desliga também os hooks do usuário | `--settings` só quando há hooks (`:190-192`). Sem eles, os hooks do usuário continuam ligados |
 | `mcp_servers` | `mcp_args` (`:372-406`) gera `--mcp-config '{"mcpServers":{...}}'`: `type:"stdio"` (command/args) ou `type:"http"` (url e, se houver, headers). Os servidores somam aos do usuário: não se usa `--strict-mcp-config` | Igual (`:193`) |
 | `env` | `cmd.envs(...)` (`:541`). O `claude` resolve os `${NOME}` dos headers | Igual (`:194`) |
-| delegação | `--permission-prompt-tool mcp__terra__permission` (`:550-555`). Sem delegação, `--permission-prompt-tool stdio` (`:332`) | — |
 | conta | `CLAUDE_CONFIG_DIR=<pasta da conta>` (`:557`) | Igual (`:202`) |
 
 O terra **não grava arquivos** do Claude. Tudo vai por flags e variáveis de ambiente de cada processo.
@@ -527,9 +518,9 @@ O terra **não grava arquivos** do Claude. Tudo vai por flags e variáveis de am
 | **RTK** (`src/extension/extensions/rtk.rs`) | `rtk` no PATH (`:29`) | Um hook fixo, `PreToolUse` com matcher `Bash` e comando `rtk hook claude` (`:63-73`). Ele reescreve o comando do Bash (`git status` → `rtk git status`). O argumento `claude` é específico do provedor | `rtk gain --all --format json`, com gráfico de 14 dias (`:75-133`) |
 | **ai-memory** (`src/extension/extensions/ai_memory.rs`) | `ai-memory` no PATH (`:29`) | Roda uma vez (num `OnceCell`) `ai-memory install-hooks --agent claude-code` e `install-mcp --client claude-code` (`:39-48`). `parse_hooks` (`:95-118`) lê o bloco `hooks` no formato dos settings do Claude Code: SessionStart, prompts, ferramentas, Stop etc. `parse_mcp` (`:122-143`) lê o `mcpServers` sugerido para o `.claude.json` (stdio, ex.: `ai-memory mcp-bridge`). A configuração do Claude não é alterada (não usa `--apply`) | `ai-memory status --json` (`:146-188`) |
 
-### Como a Config lê MCP e skills do provedor
+### Como a Config lê as skills do provedor
 
-O trait `ChatAdapter` tem dois métodos opcionais, que por padrão devolvem vazio: `mcp_servers(cwd, account) -> Vec<ProviderMcp>` e `skills(cwd, account) -> Vec<ProviderSkill>` (`src/agent/adapter.rs:237-245`). Os tipos estão em `adapter.rs:18-31`: `ProviderMcp { server, scope }` e `ProviderSkill { name, description, scope, path }`.
+O trait `ChatAdapter` tem o método opcional `skills(cwd, account) -> Vec<ProviderSkill>` (`src/agent/adapter.rs`), que por padrão devolve vazio. O tipo está em `adapter.rs: `ProviderSkill { name, description, scope, path }`.
 
 **MCP do Claude** (`claude.rs:102-112` → `src/agent/adapters/claude/mcp.rs:14-63`):
 
@@ -607,6 +598,8 @@ RTK e ai-memory:
 **Config do Antigravity** (`antigravity/config.rs`): `mcpServers` do `~/.gemini/config/mcp_config.json` (aceita comentários e vírgula sobrando, como o `agy`; `serverUrl` vale como `url`) e as skills de `~/.gemini/antigravity-cli/builtin/skills`, `~/.gemini/config/skills` e `.agents/skills` do `cwd` para cima. Não lê ainda os plugins do `agy` (`~/.gemini/config/plugins/*` e `.agents/plugins/*`, com MCP e skills próprios) nem o `skills.json`/`plugins.json`.
 
 ## Orquestrador
+
+> **Removido na v0.8.29.** O MCP do terra e os chats delegados não existem mais; esta seção descreve o que existia até a v0.8.28 e fica como histórico. Hoje a aba Orquestrador só guarda as configurações (`OrchestratorSettings`, `src/tui/orchestrator.rs`).
 
 O orquestrador é o **MCP do terra**: um servidor MCP (JSON-RPC 2.0 sobre HTTP) que roda uma vez por máquina. Ele lista os terra abertos e deixa um agente delegar tarefas a chats novos. Quem delega recebe a resposta final e também aprova ou nega os pedidos de permissão do chat delegado.
 

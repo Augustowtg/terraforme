@@ -35,32 +35,20 @@ enum Command {
     Cli,
     /// Lista os workspaces recentes e salvos e entra no escolhido
     Workspace(WorkspaceArgs),
-    /// Roda o MCP do terra (o orquestrador) em http://127.0.0.1:30303/mcp
-    Mcp,
     /// Atualiza o terra pelo instalador do GitHub (a última release)
     Upgrade(UpgradeArgs),
 
     /// O gancho de permissão do Antigravity (`agy`): o `agy` o roda antes de
-    /// cada ferramenta e ele leva o pedido a quem delegou o chat ou ao
-    /// usuário (uso interno)
+    /// cada ferramenta e ele leva o pedido ao usuário (uso interno)
     #[command(hide = true)]
     AgyPermissionHook(AgyHookArgs),
 }
 
 #[derive(Args)]
-#[command(group(clap::ArgGroup::new("route").required(true).args(["from", "channel"])))]
 struct AgyHookArgs {
-    /// O processo do terra do chat delegado
-    #[arg(long, requires = "chat")]
-    from: Option<u32>,
-
-    /// A delegação do chat
-    #[arg(long, requires = "from")]
-    chat: Option<u64>,
-
-    /// O arquivo do canal do chat do terra, quando o usuário decide
+    /// O arquivo do canal do chat do terra, onde o usuário decide
     #[arg(long, value_name = "ARQUIVO")]
-    channel: Option<PathBuf>,
+    channel: PathBuf,
 
     /// Edições de arquivo passam sem perguntar (modo Accept Edits)
     #[arg(long)]
@@ -100,16 +88,10 @@ pub fn run() -> Result<()> {
         Command::Cli => open_app()?,
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,
-        Command::Mcp => crate::mcp::server::run()?,
         Command::Upgrade(args) => crate::upgrade::run(args.repo, &args.args)?,
         Command::AgyPermissionHook(args) => {
-            use crate::agent::adapters::antigravity::permission::{self, Route};
-            let route = match (args.from, args.chat, args.channel) {
-                (Some(pid), Some(chat), _) => Route::Delegator { pid, chat },
-                (_, _, Some(file)) => Route::User(file),
-                _ => unreachable!("o clap exige o --from com o --chat, ou o --channel"),
-            };
-            permission::hook(&route, args.accept_edits);
+            use crate::agent::adapters::antigravity::permission;
+            permission::hook(&args.channel, args.accept_edits);
         }
     }
     Ok(())
