@@ -6,7 +6,9 @@
 //!  "cwd":"/proj/x","workspace":"x","args":["cli"],"started":1730120000,
 //!  "status":{"state":"idle","task":null,"chats":1,"agents":0}}
 //! {"t":"heartbeat"}
-//! {"t":"status","state":"running","task":"Pensando...","chats":2,"agents":1}
+//! {"t":"status","state":"running","task":"Pensando...","chats":2,"agents":1,
+//!  "tabs":[{"id":"9c1e…","title":"Principal","kind":"manual","task":"Pensando..."},
+//!          {"id":"41d0…","title":"Chat 2","kind":"manual","task":null}]}
 //! {"t":"bye","reason":"exit"}
 //!
 //! // hub → instância
@@ -24,10 +26,12 @@
 //! {"t":"instance_removed","id":"7f3a…","reason":"exit"}
 //! ```
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
+
+use super::MAX_LINE;
 
 /// O estado de uma instância que ela mesma manda.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,6 +44,34 @@ pub struct Status {
     pub chats: usize,
     /// Os sub agentes: os chats além do principal.
     pub agents: usize,
+    /// As abas com agente desta janela: o chat principal e os do `Alt+N`.
+    pub tabs: Vec<Tab>,
+}
+
+/// Uma aba com agente numa janela do terra (um chat).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tab {
+    /// Um id aleatório, criado com o chat ([`new_id`]).
+    pub id: String,
+    /// O título na barra de chats (`Principal`, `Chat 2`…).
+    pub title: String,
+    /// O que o agente desta aba está fazendo; `None` quando parado.
+    pub task: Option<String>,
+}
+
+impl Tab {
+    fn to_json(&self) -> Value {
+        // Toda aba de hoje é manual: o usuário a abriu e conversa nela.
+        json!({"id": self.id, "title": self.title, "kind": "manual", "task": self.task})
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            id: value["id"].as_str()?.to_string(),
+            title: value["title"].as_str().unwrap_or_default().to_string(),
+            task: value["task"].as_str().map(str::to_string),
+        })
+    }
 }
 
 impl Status {
@@ -49,6 +81,7 @@ impl Status {
             "task": self.task,
             "chats": self.chats,
             "agents": self.agents,
+            "tabs": self.tabs.iter().map(Tab::to_json).collect::<Vec<_>>(),
         })
     }
 
@@ -58,6 +91,10 @@ impl Status {
             task: value["task"].as_str().map(str::to_string),
             chats: value["chats"].as_u64().unwrap_or(0) as usize,
             agents: value["agents"].as_u64().unwrap_or(0) as usize,
+            tabs: value["tabs"]
+                .as_array()
+                .map(|tabs| tabs.iter().filter_map(Tab::from_json).collect())
+                .unwrap_or_default(),
         }
     }
 }
@@ -170,24 +207,37 @@ pub fn status_message(status: &Status) -> Value {
     Value::Object(msg)
 }
 
-/// Escreve `msg` numa linha.
+/// Escreve `msg` numa linha. Uma mensagem acima de [`MAX_LINE`] não sai: o
+/// outro lado a recusaria.
 pub fn send(out: &mut impl Write, msg: &Value) -> io::Result<()> {
     let mut line = msg.to_string();
+    if line.len() >= MAX_LINE {
+        return Err(too_long());
+    }
     line.push('\n');
     out.write_all(line.as_bytes())?;
     out.flush()
 }
 
 /// Lê a próxima linha como JSON. `Ok(None)` quando a conexão fechou; uma
-/// linha que não é JSON vira `{}` (o `t` vazio é ignorado).
+/// linha que não é JSON vira `{}` (o `t` vazio é ignorado), e uma acima de
+/// [`MAX_LINE`] é um erro (quem lê fecha a conexão).
 pub fn recv(input: &mut impl BufRead) -> io::Result<Option<Value>> {
-    let mut line = String::new();
-    if input.read_line(&mut line)? == 0 {
+    let mut line = Vec::new();
+    let limit = MAX_LINE as u64 + 1;
+    if input.take(limit).read_until(b'\n', &mut line)? == 0 {
         return Ok(None);
     }
+    if line.len() > MAX_LINE {
+        return Err(too_long());
+    }
     Ok(Some(
-        serde_json::from_str(&line).unwrap_or_else(|_| json!({})),
+        serde_json::from_slice(&line).unwrap_or_else(|_| json!({})),
     ))
+}
+
+fn too_long() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "linha acima de 1 MB")
 }
 
 /// Agora, em segundos Unix.
@@ -222,8 +272,14 @@ mod tests {
             task: Some("Pensando...".into()),
             chats: 3,
             agents: 2,
+            tabs: vec![Tab {
+                id: "9c1e".into(),
+                title: "Principal".into(),
+                task: Some("Pensando...".into()),
+            }],
         };
         assert_eq!(Status::from_json(&status.to_json()), status);
+        assert_eq!(status.to_json()["tabs"][0]["kind"], "manual");
         let msg = status_message(&status);
         assert_eq!(msg["t"], "status");
         assert_eq!(msg["state"], "running");
@@ -245,5 +301,24 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+}
+
+#[cfg(test)]
+mod limits {
+    use super::*;
+
+    #[test]
+    fn lines_above_one_megabyte_are_refused_both_ways() {
+        let big = json!({"t": "status", "task": "x".repeat(MAX_LINE)});
+        assert!(send(&mut Vec::new(), &big).is_err());
+
+        let mut line = big.to_string().into_bytes();
+        line.push(b'\n');
+        let err = recv(&mut line.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let ok = b"{\"t\":\"heartbeat\"}\n";
+        assert_eq!(recv(&mut &ok[..]).unwrap().unwrap()["t"], "heartbeat");
     }
 }

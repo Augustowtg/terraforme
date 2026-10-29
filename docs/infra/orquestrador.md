@@ -2,8 +2,7 @@
 
 O orquestrador é um processo só por usuário (o **hub**) que acompanha todos os
 terminais do terra abertos na máquina. Ele é a base para monitorar e,
-depois, controlar os terminais e os sub agentes. Nesta primeira versão
-(v0.9.0), o hub:
+depois, controlar os terminais e os sub agentes. Hoje (v0.10.0), o hub:
 
 - sobe sozinho quando o primeiro `terra cli` abre e fecha sozinho quando o último fecha;
 - recebe de cada terminal o que ele está fazendo (parado ou rodando, a tarefa do agente, os chats abertos);
@@ -36,6 +35,7 @@ O código fica em `src/hub/`:
 | `src/hub/client.rs` | `Reporter` (a instância), `Monitor` (a aba) e `snapshot` (o `terra status`) |
 | `src/hub/protocol.rs` | As mensagens NDJSON, o `Status` e a `Instance` |
 | `src/hub/view.rs` | A lista para pessoas: agrupada por workspace, com o resumo e a linha de cada instância |
+| `src/hub/tests.rs` | Testes com hubs em processos próprios: `kill -9`, dez janelas juntas, cliente lento |
 
 ## Papéis
 
@@ -57,7 +57,17 @@ Todos os papéis usam o mesmo `Endpoint::current()`:
 
 O `<uid>` ou o `<usuario>` no nome garante que dois usuários na mesma máquina
 não se misturem. No Unix, a pasta do socket é criada com permissão `0700`.
-O log do hub (`hub.log`) fica ao lado do lock: o hub não tem terminal.
+No Windows, o pipe é criado com uma DACL só para o usuário do hub e para o
+sistema (`D:P(A;;GA;;;<SID do usuário>)(A;;GA;;;SY)`), desde a v0.10.0.
+
+Ao lado do lock ficam:
+
+- o **`hub.log`**, porque o hub não tem terminal. Passando de 1 MB, ele vira `hub.log.1` (o anterior sai) e recomeça;
+- o **`hub.guard`**, a trava que elege o hub (veja o ciclo de vida).
+
+Com a variável `TERRAFORME_HUB_DIR`, o socket, o lock, o guard e o log ficam
+todos nessa pasta. O hub iniciado por um cliente com ela a recebe também.
+É assim que os testes sobem hubs de verdade sem tocar no do usuário.
 
 O transporte é o crate [`interprocess`](https://crates.io/crates/interprocess)
 (`local_socket`): socket Unix no Linux e no macOS, named pipe no Windows, com
@@ -67,13 +77,12 @@ a mesma API síncrona.
 
 ```
 serve():
-    se já conecta no endpoint → outro hub está vivo → sai(0)
-    bind(endpoint)
-    se falhou por "endereço em uso" (no Windows, "acesso negado"):
-        se conseguir conectar → outro hub está vivo → sai(0)
-        senão → socket órfão → apaga o arquivo → bind de novo
-                 (se perder a corrida de novo → sai(0))
     pasta 0700 (Unix)
+    trava o hub.guard (try_lock)
+    outro processo tem a trava → outro hub está vivo → sai(0)
+    se conecta no endpoint → um hub de antes da trava (v0.9) está vivo → sai(0)
+    apaga o socket que sobrou (Unix): com a trava, ele só pode ser de um hub morto
+    bind(endpoint) (no Windows, com a DACL do usuário)
     grava o hub.lock de forma atômica (hub.lock.tmp + rename):
         { pid, start_time, endpoint, proto: 1, versao_app }
     log em hub.log
@@ -83,7 +92,7 @@ serve():
         0 conexões por 5 s → apaga o lock (se ainda é dele) → sai
 ```
 
-- **Corrida de dois hubs**: dois terras abrindo juntos podem iniciar dois hubs; só um consegue o `bind` e o outro sai. No Windows, o pipe é criado com `FILE_FLAG_FIRST_PIPE_INSTANCE`, então o segundo também falha.
+- **Corrida de hubs**: dois terras abrindo juntos podem iniciar dois hubs, mas só um consegue a trava do `hub.guard`; o outro sai. O SO solta a trava quando o processo morre, até num `kill -9`. Antes da v0.10.0, quem decidia era o `bind`. Depois de um `kill -9`, as janelas reconectando juntas iniciavam vários hubs: cada um achava o socket órfão, apagava o do outro e ficava vivo, e as janelas se dividiam entre hubs que não se viam. O teste `hub::tests` com o `kill -9` pegou isso.
 - **Fecha com o último terminal**: o pedido foi que o hub feche assim que todos os terminais fecharem. Por isso a espera é de **5 s** sem nenhuma conexão (e não os 10 min do rascunho): o intervalo só cobre quem fecha um terra e abre outro em seguida. A aba Orquestrador e o `terra status` também contam como conexão enquanto estão abertos.
 - **Um hub só**: o primeiro terra que abre inicia o hub; os seguintes só se conectam a ele.
 
@@ -95,6 +104,9 @@ Os tempos ficam em `src/hub.rs`:
 | `STALE_AFTER` | 6 s | Sem sinal (3 heartbeats perdidos), a instância fica `stale` |
 | `GONE_KEEP` | 30 s | Quanto tempo uma instância `gone` continua na lista |
 | `IDLE_EXIT` | 5 s | Sem nenhuma conexão por esse tempo, o hub sai |
+| `MAX_LINE` | 1 MB | A maior linha do protocolo; uma maior derruba a conexão |
+| `OUTBOX` | 256 | Mensagens na fila de saída de cada cliente; cheia, ele é desconectado |
+| `LOG_MAX` | 1 MB | O tamanho em que o `hub.log` vira `hub.log.1` |
 
 ## 3. Lado da instância (`Reporter`)
 
@@ -146,7 +158,9 @@ recolhe o processo se ele sair antes do terra (sem zumbi).
  "app":"0.9.0","cwd":"/proj/x","workspace":"x","args":["cli"],"started":1730120000,
  "status":{"state":"idle","task":null,"chats":1,"agents":0}}
 {"t":"heartbeat"}
-{"t":"status","state":"running","task":"Pensando...","chats":2,"agents":1}
+{"t":"status","state":"running","task":"Pensando...","chats":2,"agents":1,
+ "tabs":[{"id":"9c1e…","title":"Principal","kind":"manual","task":"Pensando..."},
+         {"id":"41d0…","title":"Chat 2","kind":"manual","task":null}]}
 {"t":"bye","reason":"exit"}
 
 // hub → instância
@@ -171,6 +185,9 @@ recolhe o processo se ele sair antes do terra (sem zumbi).
 - O hub acrescenta ao objeto da instância: `health` (`alive`, `stale`, `gone`), `last_seen` (segundos Unix do último sinal) e `reason` (`exit`, `crash` ou `null`).
 - `changes` traz só os campos que mudaram; o monitor os copia por cima do objeto.
 - O `workspace` é o nome salvo do diretório ou, sem um, o nome da pasta (o mesmo das configurações do workspace). É por ele que a lista é separada.
+- Cada instância é uma **janela** (um `terra cli`). Em `tabs` vão as **abas com agente** dela: o chat principal e os do `Alt+N`, cada um com um id aleatório criado com o chat, o título e o que o agente faz (`task`, `null` quando parado). O `kind` é sempre `manual` por enquanto: o usuário abriu a aba e conversa nela.
+- **Uma linha tem no máximo 1 MB.** Quem recebe uma linha maior fecha a conexão, e quem envia não chega a mandá-la.
+- **O hub nunca escreve direto num cliente.** Cada conexão tem uma fila de saída de 256 mensagens e uma thread que escreve. Um cliente que não lê enche a fila e é desconectado (`cliente lento` no log), sem segurar o hub nem os outros. No Unix, a conexão fecha com um `shutdown`; no Windows, com o `DisconnectNamedPipe`.
 - O `bye` do monitor faz o hub fechar a conexão: no Windows, o pipe não tem tempo limite de leitura, e é assim que a thread do monitor termina quando a aba é fechada.
 
 **Versões**: um hub e uma instância com `proto` diferentes não conversam, e o
@@ -202,7 +219,7 @@ O monitor é só mais um cliente, com `role: monitor`: faz o `subscribe`,
 recebe o `snapshot` e aplica os deltas. Se o hub não existir, o monitor
 também o inicia.
 
-- **`terra status [--json]`**: pega o snapshot, imprime e sai. Serve para scripts e testa o protocolo inteiro. Sem terminais, mostra `Nenhuma instância ativa.` (o hub que ele iniciou fecha 5 s depois).
+- **`terra status [--json]`**: pega o snapshot, imprime e sai. Embaixo de cada janela vêm as abas com agente (`Principal    parado`). No JSON, elas ficam em `status.tabs`. Serve para scripts e testa o protocolo inteiro. Sem terminais, mostra `Nenhuma instância ativa.` (o hub que ele iniciou fecha 5 s depois).
 
   ```
   $ terra status
@@ -218,7 +235,14 @@ também o inicia.
 ## Testes
 
 - `hub::daemon::tests`: sobe um hub numa pasta temporária, conecta um monitor e uma instância e confere a entrada, a mudança de estado, o `snapshot`, o `bye` (`gone` com `exit`) e a saída sozinho sem conexões (levando o lock).
-- `hub::protocol::tests` e `hub::view::tests`: as mensagens, o agrupamento por workspace e os textos.
+- `hub::protocol::tests` e `hub::view::tests`: as mensagens, o limite de 1 MB nos dois sentidos, o agrupamento por workspace e os textos.
+- `hub::daemon::tests::the_log_turns_into_log_1_past_the_limit`: a rotação do `hub.log`.
+- `hub::tests`: hubs de verdade, em processos próprios. O hub é o próprio executável de testes rodando só o teste ignorado `hub_process`, com a pasta do teste em `TERRAFORME_HUB_DIR`:
+  - **`kill -9` no hub** com três janelas abertas: todas reconectam ao hub novo, que nasce de uma delas, e reenviam o estado, até o que mudou com o hub fora do ar;
+  - **dez janelas no mesmo segundo**: dez hubs disputam e só um sobe (uma linha de início no `hub.log`);
+  - **cliente que não lê**: é desconectado, e o monitor que lê recebe as 5000 mudanças até a última.
+
+O CI roda os testes no Linux, no Windows e no macOS.
 
 Para ver no terminal:
 
@@ -233,4 +257,3 @@ tail -f ~/.terraforme/hub.log
 
 - **Controlar** os terminais pelo hub (mensagens hub → instância, ex.: focar, encerrar um chat, abrir um chat delegado).
 - Os chats delegados de verdade, com as configurações da seção Configurações da aba.
-- No Windows, restringir a DACL do pipe ao usuário (hoje vale a DACL padrão do named pipe).

@@ -1,4 +1,4 @@
-# Testa o terra no Linux e no Windows a cada PR e push na main.
+# Testa o terra no Linux, no Windows e no macOS a cada PR e push na main.
 name: ci
 
 on:
@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest]
+        os: [ubuntu-22.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

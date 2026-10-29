@@ -7,13 +7,19 @@
 //! | Linux   | `$XDG_RUNTIME_DIR/terraforme/hub.sock` (sem ele, `/tmp/terraforme-<uid>/`)  | `~/.terraforme/hub.lock`             |
 //! | macOS   | `/tmp/terraforme-<uid>/hub.sock` (curto de propósito)                       | `~/.terraforme/hub.lock`             |
 //! | Windows | `\\.\pipe\terraforme-<usuario>-hub`                                         | `%LOCALAPPDATA%\terraforme\hub.lock` |
+//!
+//! No Windows, o pipe só abre para o usuário e para o sistema
+//! ([`owner_only`]). Com [`DIR_ENV`], tudo fica numa pasta só (os testes).
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
+
+use super::DIR_ENV;
 
 /// Os endereços do hub deste usuário.
 #[derive(Debug, Clone)]
@@ -26,11 +32,21 @@ pub struct Endpoint {
     pub lock: PathBuf,
     /// O log do hub, que não tem terminal.
     pub log: PathBuf,
+    /// A trava do hub vivo: só um processo a tem (ver `daemon::bind`).
+    pub guard: PathBuf,
+    /// A pasta de [`DIR_ENV`], quando é ela: o hub iniciado a recebe.
+    pub dir: Option<PathBuf>,
+    /// Como iniciar o hub em vez do `terra __hub` deste executável (os
+    /// testes, que não são o `terra`).
+    pub launcher: Option<Vec<OsString>>,
 }
 
 impl Endpoint {
-    /// Os endereços deste usuário neste SO.
+    /// Os endereços deste usuário neste SO (ou os da pasta de [`DIR_ENV`]).
     pub fn current() -> Result<Self> {
+        if let Some(dir) = std::env::var_os(DIR_ENV).filter(|d| !d.is_empty()) {
+            return Ok(Self::in_dir(Path::new(&dir)));
+        }
         let data = data_dir()?;
         let (socket, socket_dir) = socket_path();
         Ok(Self {
@@ -38,12 +54,14 @@ impl Endpoint {
             socket_dir,
             lock: data.join("hub.lock"),
             log: data.join("hub.log"),
+            guard: data.join("hub.guard"),
+            dir: None,
+            launcher: None,
         })
     }
 
-    /// Tudo dentro de `dir` (para os testes).
-    #[cfg(test)]
-    pub fn in_dir(dir: &std::path::Path) -> Self {
+    /// Tudo dentro de `dir`.
+    pub fn in_dir(dir: &Path) -> Self {
         #[cfg(unix)]
         let (socket, socket_dir) = (dir.join("hub.sock"), Some(dir.to_path_buf()));
         #[cfg(windows)]
@@ -59,6 +77,9 @@ impl Endpoint {
             socket_dir,
             lock: dir.join("hub.lock"),
             log: dir.join("hub.log"),
+            guard: dir.join("hub.guard"),
+            dir: Some(dir.to_path_buf()),
+            launcher: None,
         }
     }
 
@@ -131,4 +152,53 @@ fn socket_path() -> (PathBuf, Option<PathBuf>) {
         PathBuf::from(format!(r"\\.\pipe\terraforme-{user}-hub")),
         None,
     )
+}
+
+/// O descritor de segurança do pipe: acesso total ao usuário deste
+/// processo e ao sistema, e a mais ninguém (`P` bloqueia a herança da
+/// DACL padrão).
+#[cfg(windows)]
+pub fn owner_only() -> io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor>
+{
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    let sddl = format!("D:P(A;;GA;;;{})(A;;GA;;;SY)", user_sid()?);
+    let sddl = widestring::U16CString::from_str(&sddl).map_err(io::Error::other)?;
+    SecurityDescriptor::deserialize(&sddl)
+}
+
+/// O SID do usuário deste processo, em texto (`S-1-5-21-…`).
+#[cfg(windows)]
+fn user_sid() -> io::Result<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // SAFETY: as chamadas seguem a documentação do Win32: o buffer tem o
+    // tamanho que a primeira chamada pediu (em u64, alinhado para o
+    // TOKEN_USER), o token fecha e o texto do SID é liberado com LocalFree.
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut len = 0u32;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+        let ok = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
+        let err = io::Error::last_os_error();
+        CloseHandle(token);
+        if ok == 0 {
+            return Err(err);
+        }
+        let user = &*buf.as_ptr().cast::<TOKEN_USER>();
+        let mut text: *mut u16 = std::ptr::null_mut();
+        if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+        LocalFree(text.cast());
+        Ok(sid)
+    }
 }

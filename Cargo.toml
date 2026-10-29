@@ -1,6 +1,6 @@
 [package]
 name = "terraforme"
-version = "0.9.2"
+version = "0.10.0"
 edition = "2024"
 
 [[bin]]
@@ -30,7 +30,15 @@ vt100 = "0.18.1"
 tempfile = "3.27.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+widestring = "1"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"

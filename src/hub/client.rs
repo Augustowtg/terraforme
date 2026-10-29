@@ -6,7 +6,7 @@
 //! hub fica numa thread. Com o hub fora do ar, a fila fica só com o estado
 //! mais novo e o terra segue normalmente.
 
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use super::endpoint::Endpoint;
 use super::protocol::{self, Instance, Status, recv, send};
-use super::{Conn, HEARTBEAT, PROTO};
+use super::{Conn, DIR_ENV, HEARTBEAT, MAX_LINE, PROTO};
 
 /// Quanto o cliente espera o hub que ele iniciou subir.
 const START_WAIT: Duration = Duration::from_secs(3);
@@ -38,7 +38,7 @@ pub fn connect(endpoint: &Endpoint, start: bool) -> io::Result<Stream> {
         Err(err) if !start => return Err(err),
         Err(_) => {}
     }
-    spawn_hub()?;
+    spawn_hub(endpoint)?;
     let deadline = Instant::now() + START_WAIT;
     let mut wait = Duration::from_millis(50);
     loop {
@@ -54,10 +54,23 @@ pub fn connect(endpoint: &Endpoint, start: bool) -> io::Result<Stream> {
 /// Inicia o `terra __hub` desacoplado: numa sessão nova (Unix) ou sem
 /// console e num grupo próprio (Windows), com a entrada e as saídas no
 /// nada. Fechar o terminal ou um `Ctrl+C` não derrubam o hub.
-fn spawn_hub() -> io::Result<()> {
-    let mut cmd = Command::new(std::env::current_exe()?);
-    cmd.arg("__hub")
-        .stdin(Stdio::null())
+fn spawn_hub(endpoint: &Endpoint) -> io::Result<()> {
+    let mut cmd = match endpoint.launcher.as_deref() {
+        Some([program, args @ ..]) => {
+            let mut cmd = Command::new(program);
+            cmd.args(args);
+            cmd
+        }
+        _ => {
+            let mut cmd = Command::new(std::env::current_exe()?);
+            cmd.arg("__hub");
+            cmd
+        }
+    };
+    if let Some(dir) = &endpoint.dir {
+        cmd.env(DIR_ENV, dir);
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(unix)]
@@ -362,8 +375,12 @@ fn follow(endpoint: &Endpoint, autostart: bool, view: &std::sync::Weak<Mutex<Vie
     loop {
         // O `read_until` guarda o que já leu quando a leitura estoura o
         // tempo; a linha continua na próxima volta.
-        match input.read_until(b'\n', &mut line) {
+        let left = (MAX_LINE + 1).saturating_sub(line.len()) as u64;
+        match (&mut input).take(left).read_until(b'\n', &mut line) {
             Ok(0) => return,
+            // Uma linha acima do limite: o hub não manda isso.
+            Ok(_) if line.len() > MAX_LINE => return,
+            Ok(_) if line.last() != Some(&b'\n') => {}
             Ok(_) => {
                 let msg = serde_json::from_slice(&line).unwrap_or(Value::Null);
                 line.clear();
