@@ -9,6 +9,7 @@
 
 mod commands;
 mod history;
+mod inbox;
 mod input;
 mod mention;
 mod mode;
@@ -148,6 +149,12 @@ pub struct Chat {
     catalog: Option<Catalog>,
     /// Carregamento do catálogo em andamento.
     catalog_loading: Option<Receiver<Result<Catalog, String>>>,
+    /// O nome de agente do chat, dado no `/agente` (ver [`inbox`]).
+    agent_name: Option<String>,
+    /// As mensagens de outros agentes que chegaram ao chat.
+    inbox: Vec<crate::orchestrator::message::Message>,
+    /// Quantas da caixa o usuário ainda não leu.
+    unread: usize,
 }
 
 /// Sem agente (Desconectado). Use [`Chat::connect`] para usar o provedor
@@ -192,6 +199,9 @@ impl Default for Chat {
             auto_compact_armed: false,
             catalog: None,
             catalog_loading: None,
+            agent_name: None,
+            inbox: Vec::new(),
+            unread: 0,
         }
     }
 }
@@ -482,6 +492,8 @@ impl Chat {
             "clear" => self.clear_conversation(),
             "compact" => self.compact(),
             "login" => self.start_login(),
+            "agente" => self.agent_command(""),
+            "mensagens" => self.show_messages(),
             // O consumo é a aba Consumo do terra.
             "usage" => self.open_usage = true,
             "model" => {
@@ -833,6 +845,14 @@ impl Chat {
         if prompt.is_empty() || self.run.is_some() {
             return;
         }
+        // O `/agente <nome>` é o único comando do terra com argumento.
+        if let Some(arg) = prompt.strip_prefix("/agente ") {
+            self.input.remember();
+            self.input.clear();
+            self.agent_command(arg.trim());
+            self.history.follow();
+            return;
+        }
         if let Some(name) = prompt.strip_prefix('/')
             && commands::has_interface(name)
         {
@@ -870,6 +890,7 @@ impl Chat {
             self.history.push(Entry::Error(self.unavailable_hint()));
             return false;
         };
+        let extensions = self.agent_extensions();
         let started = adapter.start(Request {
             prompt,
             mode: self.permission_mode,
@@ -884,9 +905,10 @@ impl Chat {
                 .as_deref()
                 .or(self.default_effort.as_deref()),
             subagent_model: self.subagent_model.as_deref(),
-            extensions: &self.extensions,
+            extensions: &extensions,
             allowed_tools: &self.allowed,
         });
+        drop(extensions);
         self.allowed.clear();
         let ok = started.is_ok();
         match started {

@@ -35,11 +35,14 @@ use serde_json::{Value, json};
 use super::endpoint::Endpoint;
 use super::protocol::{Health, now, recv, send};
 use super::{APP_VERSION, Conn, GONE_KEEP, LOG_MAX, OUTBOX, PROTO, STALE_AFTER};
+use crate::orchestrator::config::Config;
 
 /// De quanto em quanto tempo o hub revê a saúde das instâncias.
 const SWEEP: Duration = Duration::from_secs(1);
 /// A espera entre um `accept` vazio e o próximo.
 const POLL: Duration = Duration::from_millis(50);
+
+mod mail;
 
 /// Roda o hub deste usuário até ele ficar sem conexões.
 pub fn run() -> Result<()> {
@@ -62,6 +65,8 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
     ));
     let hub = Arc::new(Hub {
         state: Mutex::default(),
+        home: endpoint.home.clone(),
+        config: Mutex::default(),
         quit: AtomicBool::new(false),
         clients: AtomicU64::new(0),
         idle_since: Mutex::new(Some(Instant::now())),
@@ -277,6 +282,8 @@ struct Entry {
     /// A conexão dona do registro: uma instância que reconecta troca de
     /// conexão, e o fim da antiga não pode marcá-la como `gone`.
     conn: u64,
+    /// A fila de saída da instância (as mensagens para as abas dela).
+    outbox: Outbox,
 }
 
 #[derive(Default)]
@@ -306,6 +313,11 @@ impl State {
 
 struct Hub {
     state: Mutex<State>,
+    /// A pasta do orquestrador (o `orchestrator.toml` e as mensagens).
+    home: PathBuf,
+    /// A última configuração válida e o último erro dela (ver
+    /// [`Hub::config`]).
+    config: Mutex<(Config, Option<String>)>,
     /// Pedido de saída (um terra com o protocolo mais novo).
     quit: AtomicBool,
     /// As conexões abertas, de qualquer papel.
@@ -334,6 +346,7 @@ impl Hub {
         match hello["role"].as_str() {
             Some("instance") => self.instance(conn, hello, input, &output),
             Some("monitor") => self.monitor(conn, input, output),
+            Some("sender") => self.sender(input, &output),
             _ => {}
         }
         // A conexão fecha quando a thread da fila termina de escrever o que
@@ -361,6 +374,7 @@ impl Hub {
             return;
         };
         let mut info = hello;
+        let rejected = self.claim_names(&id, &mut info["status"]);
         if let Some(fields) = info.as_object_mut() {
             for key in ["t", "proto", "role"] {
                 fields.remove(key);
@@ -381,19 +395,27 @@ impl Hub {
                     last_signal: Instant::now(),
                     gone_at: None,
                     conn,
+                    outbox: output.clone(),
                 },
             ));
         }
         if !output.push(json!({"t": "welcome", "proto": PROTO, "hub": APP_VERSION})) {
             return self.gone(&id, conn, None);
         }
+        for msg in rejected {
+            output.push(msg);
+        }
         let mut reason = None;
         while let Ok(Some(msg)) = recv(&mut input) {
             match msg["t"].as_str() {
                 Some("heartbeat") => self.signal(&id, None),
                 Some("status") => self.signal(&id, Some(&msg)),
+                Some("ack") => self.ack(msg["id"].as_str().unwrap_or_default()),
+                // Depois do `bye`, a instância não manda mais nada; a
+                // conexão fecha no `gone` (a janela ainda a lê numa thread).
                 Some("bye") => {
                     reason = Some(msg["reason"].as_str().unwrap_or("exit").to_string());
+                    break;
                 }
                 _ => {}
             }
@@ -421,6 +443,13 @@ impl Hub {
             if let Some(fields) = fields.as_object_mut() {
                 fields.remove("t");
             }
+            let rejected = self.claim_names_in(&state, id, &mut fields);
+            let Some(entry) = state.entry(id) else {
+                return;
+            };
+            for msg in rejected {
+                entry.outbox.push(msg);
+            }
             entry.info["status"] = fields.clone();
             changes.insert("status".into(), fields);
         }
@@ -438,6 +467,8 @@ impl Hub {
             return;
         };
         let reason = reason.unwrap_or_else(|| "crash".into());
+        // Fecha a conexão: a thread da janela que lê o hub vê o fim.
+        entry.outbox.conn.close();
         entry.health = Health::Gone;
         entry.gone_at = Some(Instant::now());
         entry.info["health"] = Health::Gone.as_str().into();
@@ -506,6 +537,7 @@ impl Hub {
 mod tests {
     use super::*;
     use crate::hub::client;
+
     use crate::hub::protocol::Status;
 
     #[test]
