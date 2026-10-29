@@ -19,6 +19,9 @@ pub mod endpoint;
 pub mod protocol;
 pub mod view;
 
+#[cfg(test)]
+mod tests;
+
 use std::time::Duration;
 
 /// A versão do protocolo. Um hub e uma instância com versões diferentes não
@@ -37,6 +40,16 @@ pub const GONE_KEEP: Duration = Duration::from_secs(30);
 /// hub fecha junto com o último terminal, e o intervalo só cobre quem
 /// fecha um terra e abre outro em seguida.
 pub const IDLE_EXIT: Duration = Duration::from_secs(5);
+/// A maior linha do protocolo. Uma linha maior derruba a conexão.
+pub const MAX_LINE: usize = 1 << 20;
+/// Quantas mensagens esperam a vez na fila de saída de cada cliente. Cheia,
+/// o cliente é lento demais e o hub o desconecta.
+pub const OUTBOX: usize = 256;
+/// O tamanho em que o `hub.log` vira `hub.log.1` e recomeça.
+pub const LOG_MAX: u64 = 1 << 20;
+/// Com ela, o hub e os clientes usam essa pasta em vez da do usuário (o
+/// socket, o lock e o log); é como os testes sobem hubs de verdade.
+pub const DIR_ENV: &str = "TERRAFORME_HUB_DIR";
 
 /// Uma conexão com o hub, que lê de um lado e escreve do outro (`&Stream`
 /// lê e escreve; clonar a conexão é só clonar o `Arc`).
@@ -51,6 +64,29 @@ impl Conn {
     pub fn set_recv_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
         use interprocess::local_socket::traits::Stream as _;
         self.0.set_recv_timeout(timeout)
+    }
+
+    /// Fecha a conexão dos dois lados: a leitura que está esperando nela
+    /// (em outra thread) acaba, e o cliente vê o fim.
+    pub fn close(&self) {
+        use interprocess::local_socket::Stream;
+        match &*self.0 {
+            #[cfg(unix)]
+            Stream::UdSocket(stream) => {
+                let _ = stream.inner().shutdown(std::net::Shutdown::Both);
+            }
+            #[cfg(windows)]
+            Stream::NamedPipe(stream) => {
+                use std::os::windows::io::{AsHandle, AsRawHandle};
+                // SAFETY: o handle é do pipe vivo (o `Arc` o segura); do
+                // lado do cliente, a chamada só falha.
+                unsafe {
+                    windows_sys::Win32::System::Pipes::DisconnectNamedPipe(
+                        stream.as_handle().as_raw_handle(),
+                    );
+                }
+            }
+        }
     }
 }
 

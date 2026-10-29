@@ -175,6 +175,11 @@ fn status(as_json: bool) -> Result<()> {
         println!("{}  ·  {}", workspace.name, workspace.summary());
         for instance in &workspace.instances {
             println!("  {}", hub::view::instance_line(instance));
+            if instance.health != hub::protocol::Health::Gone {
+                for tab in &instance.status.tabs {
+                    println!("    {}", hub::view::tab_line(tab));
+                }
+            }
         }
     }
     Ok(())

@@ -4,6 +4,26 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.10.0] - 2026-10-28
+
+### Adicionado
+
+- O `terra status` mostra as abas com agente de cada janela (o chat principal e os do `Alt+N`), com o que cada uma está fazendo. No `--json`, elas ficam em `status.tabs`, cada uma com um id, o título, o tipo (`manual`) e a tarefa.
+- No Windows, o pipe do hub só abre para o usuário dele e para o sistema (DACL com o SID do usuário).
+- O `hub.log` passa a ter rotação: acima de 1 MB, vira `hub.log.1` e recomeça.
+- Variável `TERRAFORME_HUB_DIR`: o hub e os clientes usam essa pasta (socket, lock e log) em vez da do usuário. É como os testes sobem hubs de verdade.
+- Testes com hubs em processos próprios: `kill -9` no hub com várias janelas abertas (todas reconectam e reenviam o estado), dez janelas abrindo no mesmo segundo (sobe um hub só) e um cliente que não lê (é desconectado sem segurar os outros).
+- O CI também roda no macOS.
+
+### Alterado
+
+- O protocolo limita a linha a 1 MB: quem recebe uma linha maior fecha a conexão, e quem envia não a manda.
+- O hub não escreve mais direto nos clientes: cada conexão tem uma fila de saída de 256 mensagens e uma thread que escreve. Um cliente lento enche a fila e é desconectado, em vez de travar o hub e os outros.
+
+### Corrigido
+
+- Depois de um `kill -9` no hub, as janelas que reconectavam juntas podiam iniciar vários hubs ao mesmo tempo. Cada um apagava o socket do outro, e as janelas ficavam divididas entre hubs que não se viam. Agora quem vira hub é quem pega a trava do `hub.guard`, que o SO solta quando o processo morre.
+
 ## [0.9.2] - 2026-10-28
 
 ### Removido

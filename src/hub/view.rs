@@ -1,7 +1,7 @@
 //! A lista do hub para pessoas: as instâncias separadas por workspace,
 //! usada pela aba Orquestrador e pelo `terra status`.
 
-use super::protocol::{Health, Instance, now};
+use super::protocol::{Health, Instance, Tab, now};
 
 /// As instâncias de um workspace.
 pub struct Workspace<'a> {
@@ -84,6 +84,13 @@ pub fn instance_line(instance: &Instance) -> String {
         duration(now.saturating_sub(instance.started)),
         duration(now.saturating_sub(instance.last_seen)),
     )
+}
+
+/// A linha de uma aba de uma janela no `terra status`: o título e o que o
+/// agente dela está fazendo (ex.: `Chat 2       parado`).
+pub fn tab_line(tab: &Tab) -> String {
+    let doing = tab.task.as_deref().unwrap_or("parado");
+    format!("{:<12} {}", truncate(&tab.title, 12), truncate(doing, 40))
 }
 
 /// As colunas de uma instância na aba Orquestrador: o que faz, as sessões
@@ -170,6 +177,21 @@ mod tests {
         assert_eq!(groups[0].name, "a");
         assert_eq!(groups[0].summary(), "3 instâncias ativas + 2 sub agentes");
         assert_eq!(groups[1].summary(), "1 instância ativa");
+    }
+
+    #[test]
+    fn tab_lines_show_what_the_agent_does() {
+        let tab = Tab {
+            id: "1".into(),
+            title: "Principal".into(),
+            task: None,
+        };
+        assert_eq!(tab_line(&tab), "Principal    parado");
+        let busy = Tab {
+            task: Some("Usando Bash...".into()),
+            ..tab
+        };
+        assert_eq!(tab_line(&busy), "Principal    Usando Bash...");
     }
 
     #[test]

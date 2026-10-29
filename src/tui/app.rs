@@ -160,6 +160,8 @@ pub struct ConfigFiles {
 
 /// Um chat novo, aberto com `Alt+N`, além do principal.
 struct ChatTab {
+    /// O id do chat no hub.
+    id: String,
     title: String,
     chat: Chat,
 }
@@ -169,6 +171,8 @@ pub struct App {
     tab: Tab,
     focus: Focus,
     chat: Chat,
+    /// O id do chat principal no hub.
+    chat_id: String,
     /// Os chats além do principal, abertos com `Alt+N`.
     chats: Vec<ChatTab>,
     /// Os tokens dos chats já fechados, que continuam no consumo geral.
@@ -238,6 +242,7 @@ impl App {
         );
         let mut app = Self {
             chat: Chat::connect(&settings),
+            chat_id: hub::protocol::new_id(),
             providers: crate::agent::adapters::options(),
             open_provider: settings.interface == Interface::Provider,
             settings,
@@ -296,7 +301,11 @@ impl App {
         chat.set_extensions(self.chat.extensions().clone());
         chat.set_session_usage(self.session_usage.window().cloned());
         let title = format!("Chat {}", self.chats.len() + 2);
-        self.chats.push(ChatTab { title, chat });
+        self.chats.push(ChatTab {
+            id: hub::protocol::new_id(),
+            title,
+            chat,
+        });
         self.active_chat = self.chats.len();
     }
 
@@ -856,13 +865,26 @@ impl App {
     /// o agente faz e os chats abertos (os além do principal são os sub
     /// agentes).
     fn hub_status(&self) -> hub::protocol::Status {
-        let chats = std::iter::once(&self.chat).chain(self.chats.iter().map(|c| &c.chat));
-        let task = chats.clone().find_map(Chat::activity);
+        let main = (&self.chat_id, MAIN_CHAT_TITLE, &self.chat);
+        let chats = std::iter::once(main).chain(
+            self.chats
+                .iter()
+                .map(|tab| (&tab.id, tab.title.as_str(), &tab.chat)),
+        );
+        let tabs: Vec<_> = chats
+            .map(|(id, title, chat)| hub::protocol::Tab {
+                id: id.clone(),
+                title: title.to_string(),
+                task: chat.activity().map(str::to_string),
+            })
+            .collect();
+        let task = tabs.iter().find_map(|tab| tab.task.clone());
         hub::protocol::Status {
             running: task.is_some(),
-            task: task.map(str::to_string),
-            chats: self.chats.len() + 1,
-            agents: self.chats.len(),
+            task,
+            chats: tabs.len(),
+            agents: tabs.len() - 1,
+            tabs,
         }
     }
 
