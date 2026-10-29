@@ -193,6 +193,7 @@ mod tests {
     fn tab_lines_show_what_the_agent_does() {
         let tab = Tab {
             id: "1".into(),
+            run: None,
             title: "Principal".into(),
             name: None,
             task: None,

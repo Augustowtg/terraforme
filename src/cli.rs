@@ -46,6 +46,11 @@ enum Command {
     /// Notas de handoff entre agentes
     #[command(subcommand)]
     Handoff(HandoffCommand),
+    /// Conclui a execução despachada em que o agente roda, com um resumo
+    Done {
+        /// O resumo do que foi feito
+        summary: Vec<String>,
+    },
 
     /// O daemon orquestrador: um por usuário, iniciado pelo primeiro terra e
     /// fechado com o último (uso interno)
@@ -139,6 +144,7 @@ pub fn run() -> Result<()> {
         Command::Upgrade(args) => crate::upgrade::run(args.repo, &args.args)?,
         Command::Status(args) => status(args.json)?,
         Command::Send(args) => send(args)?,
+        Command::Done { summary } => done(&summary.join(" "))?,
         Command::Handoff(HandoffCommand::New { agent }) => {
             let (from, _) = orchestrator::sender();
             let home = hub::endpoint::Endpoint::current()?.home;
@@ -257,6 +263,26 @@ fn send(args: SendArgs) -> Result<()> {
             reply["text"].as_str().unwrap_or("sem motivo")
         ),
     }
+}
+
+/// O `terra done`: o resumo da execução do `TERRA_RUN`. A execução termina
+/// quando o `claude` sai; o resumo fica no registro dela.
+fn done(summary: &str) -> Result<()> {
+    let Ok(run) = env::var(orchestrator::RUN_ENV) else {
+        anyhow::bail!("o terra done só funciona dentro de uma execução do orquestrador");
+    };
+    let endpoint = hub::endpoint::Endpoint::current()?;
+    let summary = (!summary.trim().is_empty()).then_some(summary.trim());
+    let reply = hub::client::send_done(&endpoint, &run, summary)
+        .context("não foi possível falar com o orquestrador")?;
+    if reply["t"] != "ok" {
+        anyhow::bail!(
+            "recusado: {}",
+            reply["text"].as_str().unwrap_or("sem motivo")
+        );
+    }
+    println!("ok");
+    Ok(())
 }
 
 fn save_workspace(name: Option<&str>) -> Result<()> {

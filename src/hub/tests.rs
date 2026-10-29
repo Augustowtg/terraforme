@@ -240,7 +240,9 @@ mod messages {
         fn start(config: &str) -> Self {
             let dir = tempfile::tempdir().unwrap();
             fs::write(dir.path().join("orchestrator.toml"), config).unwrap();
-            let endpoint = Endpoint::in_dir(dir.path());
+            let mut endpoint = Endpoint::in_dir(dir.path());
+            // Nenhum teste roda o claude de verdade.
+            endpoint.claude = Some(dir.path().join("sem-claude"));
             let server = {
                 let endpoint = endpoint.clone();
                 thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
@@ -258,6 +260,7 @@ mod messages {
                 chats: 1,
                 tabs: vec![Tab {
                     id: tab.into(),
+                    run: None,
                     title: "Principal".into(),
                     name: Some(name.into()),
                     task: None,
@@ -346,7 +349,8 @@ mod messages {
 
     #[test]
     fn a_name_belongs_to_one_tab_and_never_to_a_configured_agent() {
-        let hub = Hub::start("[agents.backend]\ncwd = \"/proj/api\"\n");
+        // Pausado: a mensagem fica na fila (o despacho é testado em `dispatch`).
+        let hub = Hub::start("[global]\npausado = true\n[agents.backend]\ncwd = \"/proj/api\"\n");
         let first = hub.window("t1", "frontend");
         let second = hub.window("t2", "frontend");
         let Event::NameRejected { tab, name, .. } = next_event(&second) else {
@@ -395,5 +399,291 @@ mod messages {
         thread::sleep(Duration::from_millis(200));
         assert!(window.events().is_empty());
         drop(window);
+    }
+}
+
+// O despachante, com um `claude` falso (um script de shell): ele grava o
+// prompt, os argumentos e o ambiente que recebeu e se comporta pelo arquivo
+// `mode` da pasta do agente (`fail`, `wait` até existir `go`, ou sucesso).
+#[cfg(unix)]
+mod dispatch {
+    use super::*;
+    use crate::orchestrator::config::Config;
+    use crate::orchestrator::message::{self, Message, State};
+    use crate::orchestrator::run::{self, Run, RunState};
+    use crate::orchestrator::send;
+
+    const FAKE_CLAUDE: &str = r#"#!/bin/sh
+cat > prompt.txt
+echo "$@" > args.txt
+env | grep '^TERRA_' | sort > env.txt
+echo '{"type":"system","subtype":"init","session_id":"s","model":"claude-falso"}'
+case "$(cat mode 2>/dev/null)" in
+  fail)
+    echo '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":2,"errors":["Reached maximum number of turns (1)"]}'
+    exit 1 ;;
+  wait)
+    while [ ! -f go ]; do sleep 0.05; done ;;
+esac
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":4}}'
+"#;
+
+    struct Hub {
+        dir: tempfile::TempDir,
+        endpoint: Endpoint,
+        server: Option<thread::JoinHandle<()>>,
+        /// Uma janela aberta: sem ela, o hub sai quando nada roda.
+        window: Option<client::Monitor>,
+    }
+
+    impl Hub {
+        /// Um hub com os agentes `agents` (nome e `mode`), cada um na sua
+        /// pasta, e o resto da configuração em `extra`.
+        fn start(agents: &[(&str, &str)], extra: &str) -> Self {
+            Self::start_with(agents, extra, |_| {})
+        }
+
+        /// Como o [`Hub::start`], com `seed` preparando a pasta antes do hub
+        /// subir (o que um hub anterior deixou).
+        fn start_with(agents: &[(&str, &str)], extra: &str, seed: impl FnOnce(&Path)) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let fake = dir.path().join("claude");
+            fs::write(&fake, FAKE_CLAUDE).unwrap();
+            fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut config = format!("{extra}\n[modelos]\nforte = \"opus\"\n");
+            for (name, mode) in agents {
+                let cwd = dir.path().join(name);
+                fs::create_dir(&cwd).unwrap();
+                fs::write(cwd.join("mode"), mode).unwrap();
+                config.push_str(&format!(
+                    "[agents.{name}]\ncwd = \"{}\"\nmodelo = \"forte\"\n\
+                     ferramentas = [\"Read\"]\nmax_turnos = 3\n",
+                    cwd.display()
+                ));
+                if *name == "api" && extra.contains("orcamento") {
+                    config.push_str("orcamento_diario = 1\n");
+                }
+            }
+            fs::write(dir.path().join("orchestrator.toml"), config).unwrap();
+            seed(dir.path());
+            let mut endpoint = Endpoint::in_dir(dir.path());
+            endpoint.claude = Some(fake);
+            let server = {
+                let endpoint = endpoint.clone();
+                thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
+            };
+            wait(5, "o hub subir", || {
+                Stream::connect(endpoint.name().unwrap()).ok().map(|_| ())
+            });
+            let window = Some(client::Monitor::start_with(endpoint.clone(), false));
+            Self {
+                dir,
+                endpoint,
+                server: Some(server),
+                window,
+            }
+        }
+
+        fn home(&self) -> &Path {
+            self.dir.path()
+        }
+
+        fn send(&self, from: &str, to: &str) -> (Message, Value) {
+            let args = send::Args {
+                to: to.into(),
+                text: Some("Rode os testes".into()),
+                ..send::Args::default()
+            };
+            let message =
+                send::prepare(&args, from, 0, &Config::default(), self.home(), self.home())
+                    .unwrap();
+            let reply = client::send_message(&self.endpoint, false, &message.to_json()).unwrap();
+            (message, reply)
+        }
+
+        /// A execução da mensagem `id`.
+        fn run_of(&self, id: &str) -> Option<Run> {
+            run::list(self.home())
+                .into_iter()
+                .find(|run| run.message == id)
+        }
+
+        fn wait_state(&self, id: &str, state: RunState) -> Run {
+            wait(10, &format!("a execução ficar {}", state.key()), || {
+                self.run_of(id).filter(|run| run.state == state)
+            })
+        }
+
+        fn agent_file(&self, agent: &str, file: &str) -> String {
+            fs::read_to_string(self.home().join(agent).join(file)).unwrap_or_default()
+        }
+    }
+
+    impl Drop for Hub {
+        fn drop(&mut self) {
+            self.window.take();
+            if let Some(server) = self.server.take() {
+                let _ = server.join();
+            }
+        }
+    }
+
+    #[test]
+    fn a_configured_agent_runs_the_message_with_the_fixed_prompt_and_its_usage_is_saved() {
+        let hub = Hub::start(&[("api", "ok")], "");
+        let (message, reply) = hub.send("usuario", "api");
+        assert_eq!(reply["state"], "na_fila");
+        let run = hub.wait_state(&message.id, RunState::Done);
+
+        let usage = run.usage.clone().unwrap();
+        assert_eq!((usage.input, usage.output, usage.turns), (3, 4, 1));
+        assert!((usage.cost_usd - 0.01).abs() < 1e-9);
+        assert_eq!(run.model.as_deref(), Some("claude-falso"));
+        let output = run.dir(hub.home()).join(run::OUTPUT);
+        assert!(fs::read_to_string(output).unwrap().contains("\"result\""));
+        wait(5, "a mensagem concluída", || {
+            (message::state(hub.home(), &message.id) == Some(State::Done)).then_some(())
+        });
+
+        let prompt = hub.agent_file("api", "prompt.txt");
+        assert!(prompt.starts_with("Você é o agente `api`. Leia `"));
+        assert!(prompt.contains(&message.note.display().to_string()));
+        let args = hub.agent_file("api", "args.txt");
+        for flag in [
+            "-p",
+            "--permission-mode dontAsk",
+            "--model opus",
+            "--max-turns 3",
+            "--allowedTools Read",
+        ] {
+            assert!(args.contains(flag), "{flag} em {args}");
+        }
+        let env = hub.agent_file("api", "env.txt");
+        assert!(env.contains("TERRA_AGENT=api"));
+        assert!(env.contains("TERRA_HOPS=1"));
+        assert!(env.contains(&format!("TERRA_RUN={}", run.id)));
+    }
+
+    #[test]
+    fn two_sends_to_the_same_agent_run_one_after_the_other() {
+        let hub = Hub::start(&[("api", "wait")], "");
+        let (first, _) = hub.send("usuario", "api");
+        let (second, _) = hub.send("usuario", "api");
+        hub.wait_state(&first.id, RunState::Running);
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(hub.run_of(&second.id).unwrap().state, RunState::Queued);
+
+        fs::write(hub.home().join("api").join("go"), "").unwrap();
+        let first = hub.wait_state(&first.id, RunState::Done);
+        let second = hub.wait_state(&second.id, RunState::Done);
+        assert!(second.started.unwrap() >= first.finished.unwrap());
+    }
+
+    #[test]
+    fn an_exhausted_budget_blocks_new_runs() {
+        let hub = Hub::start(&[("api", "ok")], "# orcamento");
+        let (first, _) = hub.send("usuario", "api");
+        hub.wait_state(&first.id, RunState::Done);
+        let (second, reply) = hub.send("usuario", "api");
+        assert_eq!(
+            (reply["t"].as_str(), reply["code"].as_str()),
+            (Some("rejected"), Some("orcamento"))
+        );
+        assert_eq!(
+            message::state(hub.home(), &second.id),
+            Some(State::Rejected)
+        );
+        assert_eq!(hub.run_of(&second.id).unwrap().state, RunState::Rejected);
+        let log = fs::read_to_string(&hub.endpoint.log).unwrap();
+        assert!(log.contains("orçamento de api esgotado"), "{log}");
+    }
+
+    #[test]
+    fn a_failed_level_1_run_asks_the_sender_for_a_full_handoff() {
+        let hub = Hub::start(&[("api", "fail"), ("web", "ok")], "");
+        let (message, _) = hub.send("web", "api");
+        let failed = hub.wait_state(&message.id, RunState::Failed);
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("Reached maximum number of turns (1)")
+        );
+
+        // O terra pede ao remetente (web, um agente da configuração) a nota
+        // completa, numa execução dele.
+        let asked = wait(10, "o pedido de handoff", || {
+            fs::read_dir(hub.home().join("messages"))
+                .ok()?
+                .flatten()
+                .filter_map(|entry| message::load(hub.home(), &entry.file_name().to_string_lossy()))
+                .find(|m| m.from == "terra")
+        });
+        assert_eq!((asked.to.as_str(), asked.level, asked.hops), ("web", 1, 2));
+        assert!(asked.text.unwrap().contains("terra handoff new api"));
+        hub.wait_state(&asked.id, RunState::Done);
+    }
+
+    #[test]
+    fn paused_dispatches_wait_and_resume_when_the_switch_is_turned_off() {
+        let hub = Hub::start(&[("api", "ok")], "[global]\npausado = true\n");
+        let (message, reply) = hub.send("usuario", "api");
+        assert_eq!(reply["state"], "na_fila");
+        thread::sleep(Duration::from_millis(1500));
+        assert_eq!(hub.run_of(&message.id).unwrap().state, RunState::Queued);
+
+        let path = hub.home().join("orchestrator.toml");
+        let config = fs::read_to_string(&path)
+            .unwrap()
+            .replace("pausado = true", "pausado = false");
+        fs::write(&path, config).unwrap();
+        hub.wait_state(&message.id, RunState::Done);
+    }
+
+    #[test]
+    fn a_new_hub_resumes_the_queue_and_fails_what_was_running() {
+        let mut ids = (String::new(), String::new());
+        let hub = Hub::start_with(&[("api", "ok")], "", |home| {
+            // O que o hub anterior deixou: uma execução na fila e uma rodando.
+            let args = send::Args {
+                to: "api".into(),
+                text: Some("x".into()),
+                ..send::Args::default()
+            };
+            let config = Config::default();
+            for (i, state) in [RunState::Queued, RunState::Running]
+                .into_iter()
+                .enumerate()
+            {
+                let message = send::prepare(&args, "usuario", 0, &config, home, home).unwrap();
+                message::save(&message, State::Queued, None, home).unwrap();
+                let run = Run {
+                    id: format!("{i}a"),
+                    agent: "api".into(),
+                    message: message.id.clone(),
+                    from: "usuario".into(),
+                    level: 1,
+                    hops: 1,
+                    note: message.note.clone(),
+                    state,
+                    created: protocol::now(),
+                    started: None,
+                    finished: None,
+                    model: None,
+                    usage: None,
+                    error: None,
+                    summary: None,
+                };
+                run.save(home).unwrap();
+                match state {
+                    RunState::Queued => ids.0 = message.id,
+                    _ => ids.1 = message.id,
+                }
+            }
+        });
+        hub.wait_state(&ids.0, RunState::Done);
+        let lost = hub.run_of(&ids.1).unwrap();
+        assert_eq!(lost.state, RunState::Failed);
+        assert_eq!(lost.error.as_deref(), Some("o hub saiu durante a execução"));
+        assert_eq!(message::state(hub.home(), &ids.1), Some(State::Failed));
     }
 }

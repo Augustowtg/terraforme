@@ -22,6 +22,12 @@ pub enum State {
     Delivered,
     /// Na fila do agente despachado.
     Queued,
+    /// A execução do agente despachado está rodando.
+    Running,
+    /// A execução terminou bem.
+    Done,
+    /// A execução falhou (ou estourou o tempo).
+    Failed,
     Rejected,
 }
 
@@ -31,6 +37,9 @@ impl State {
             State::Sent => "enviada",
             State::Delivered => "entregue",
             State::Queued => "na_fila",
+            State::Running => "em_execucao",
+            State::Done => "concluida",
+            State::Failed => "falhou",
             State::Rejected => "recusada",
         }
     }
@@ -40,6 +49,9 @@ impl State {
             State::Sent,
             State::Delivered,
             State::Queued,
+            State::Running,
+            State::Done,
+            State::Failed,
             State::Rejected,
         ]
         .into_iter()

@@ -84,7 +84,10 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
 | `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório, e mostra o que mudou |
-| `terra status` | Mostra os terminais do terra abertos na máquina, separados por workspace (pelo daemon orquestrador); `--json` para scripts |
+| `terra status` | Mostra os terminais do terra abertos na máquina, separados por workspace, com as abas de cada um (pelo daemon orquestrador); `--json` para scripts |
+| `terra send <agente> [texto] [--ref <arquivo>]... [--handoff <arquivo>] [--tag <tag>]` | Manda uma mensagem a outro agente: a uma aba com nome (`/agente`), que só mostra, ou a um agente do `~/.terraforme/orchestrator.toml`, que a processa numa execução do `claude` (veja `docs/infra/orquestrador.md`) |
+| `terra handoff new <agente>` | Cria uma nota de handoff em branco e mostra o caminho (para o `terra send --handoff`) |
+| `terra done [resumo]` | Dentro de uma execução despachada: guarda o resumo do que foi feito |
 | `terra upgrade --repo` | Atualiza pelo instalador do repositório do diretório atual (`install-linux.sh` no Linux, `install.ps1` no Windows). Os argumentos passam para o instalador (ex.: `terra upgrade --repo --dev`) |
 
 ### Navegação no `terra cli`
@@ -325,8 +328,16 @@ src/
 │   ├── endpoint.rs       # socket/pipe, hub.lock e hub.log
 │   ├── daemon.rs         # o processo do hub (terra __hub)
 │   ├── client.rs         # Reporter (a instância), Monitor (a aba) e snapshot (terra status)
+│   ├── daemon/mail.rs    # mensagens entre agentes: nomes, send, deliver e ack
+│   ├── daemon/dispatch.rs # despachante: filas, execuções do claude, orçamento e escalonamento
 │   ├── protocol.rs       # mensagens NDJSON
 │   └── view.rs           # a lista por workspace, para a tela
+├── orchestrator.rs       # orquestrador de agentes: o orchestrator.toml, as mensagens e as execuções
+│   ├── config.rs         # o orchestrator.toml
+│   ├── note.rs           # a nota de handoff
+│   ├── message.rs        # a mensagem e as regras dela
+│   ├── run.rs            # a execução despachada: registro, comando, prompt e resultado
+│   └── send.rs           # terra send e terra handoff new
 ├── extension.rs          # extensões do agente (Strategy + Registry)
 │   ├── contract.rs       # Extension (a estratégia), Contribution e Report
 │   ├── registry.rs       # Registry: as extensões e o que as ativas acrescentam

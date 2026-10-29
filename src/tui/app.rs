@@ -162,6 +162,8 @@ pub struct ConfigFiles {
 struct ChatTab {
     /// O id do chat no hub.
     id: String,
+    /// A execução despachada que a aba mostra (só leitura).
+    run: Option<String>,
     title: String,
     chat: Chat,
 }
@@ -303,6 +305,7 @@ impl App {
         let title = format!("Chat {}", self.chats.len() + 2);
         self.chats.push(ChatTab {
             id: hub::protocol::new_id(),
+            run: None,
             title,
             chat,
         });
@@ -866,15 +869,16 @@ impl App {
     /// o agente faz e os chats abertos (os além do principal são os sub
     /// agentes).
     fn hub_status(&self) -> hub::protocol::Status {
-        let main = (&self.chat_id, MAIN_CHAT_TITLE, &self.chat);
+        let main = (&self.chat_id, MAIN_CHAT_TITLE, &self.chat, None);
         let chats = std::iter::once(main).chain(
             self.chats
                 .iter()
-                .map(|tab| (&tab.id, tab.title.as_str(), &tab.chat)),
+                .map(|tab| (&tab.id, tab.title.as_str(), &tab.chat, tab.run.clone())),
         );
         let tabs: Vec<_> = chats
-            .map(|(id, title, chat)| hub::protocol::Tab {
+            .map(|(id, title, chat, run)| hub::protocol::Tab {
                 id: id.clone(),
+                run,
                 title: title.to_string(),
                 name: chat.agent_name().map(str::to_string),
                 task: chat.activity().map(str::to_string),
@@ -909,12 +913,38 @@ impl App {
                         }
                     }
                 }
+                Event::RunStarted { run, output } => self.show_run(&run, &output),
                 Event::NameRejected { tab, name, reason } => {
                     if let Some(chat) = self.chat_by_id_mut(&tab) {
                         chat.name_rejected(&name, &reason);
                     }
                 }
             }
+        }
+    }
+
+    /// Uma execução despachada começou: abre uma aba só de leitura que
+    /// acompanha a saída do `claude`. Ela vai para a frente só com "Ao abrir"
+    /// em primeiro plano (a configuração do orquestrador).
+    fn show_run(&mut self, run: &crate::orchestrator::run::Run, output: &std::path::Path) {
+        let intro = format!(
+            "▶ Execução {} do agente {}: mensagem de {} (nível {}, {} saltos). Nota: {}",
+            &run.id[..run.id.len().min(8)],
+            run.agent,
+            run.from,
+            run.level,
+            run.hops,
+            run.note.display()
+        );
+        let session = crate::agent::adapters::claude::follow(output);
+        self.chats.push(ChatTab {
+            id: hub::protocol::new_id(),
+            run: Some(run.id.clone()),
+            title: format!("▶ {}", run.agent),
+            chat: Chat::viewer(session, intro),
+        });
+        if self.orchestrator.focus_delegated {
+            self.active_chat = self.chats.len();
         }
     }
 
@@ -1866,6 +1896,53 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT));
         assert_eq!(app.active_chat, 2);
         assert_eq!(app.chats[1].title, "Chat 3");
+    }
+
+    #[test]
+    fn a_dispatched_run_opens_a_read_only_tab_that_follows_its_output() {
+        use crate::orchestrator::run::{Run, RunState};
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output.jsonl");
+        let mut file = std::fs::File::create(&output).unwrap();
+        let run = Run {
+            id: "abcdef0123".into(),
+            agent: "api".into(),
+            message: "m1".into(),
+            from: "web".into(),
+            level: 2,
+            hops: 1,
+            note: "/n.md".into(),
+            state: RunState::Running,
+            created: 0,
+            started: None,
+            finished: None,
+            model: None,
+            usage: None,
+            error: None,
+            summary: None,
+        };
+        let mut app = App::default();
+        app.show_run(&run, &output);
+        assert_eq!(app.chats.len(), 1);
+        assert_eq!(app.chats[0].title, "▶ api");
+        // Em segundo plano por padrão: a aba aberta continua a mesma.
+        assert_eq!(app.active_chat, 0);
+        let status = app.hub_status();
+        assert_eq!(status.tabs[1].run.as_deref(), Some("abcdef0123"));
+        assert_eq!(status.tabs[1].to_json()["kind"], "execucao");
+
+        writeln!(file, r#"{{"type":"result","subtype":"success","is_error":false,"result":"feito","usage":{{}}}}"#).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.chats[0].chat.activity().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a aba não viu o resultado"
+            );
+            app.tick();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     #[test]

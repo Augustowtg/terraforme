@@ -4,6 +4,26 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.12.0] - 2026-10-29
+
+### Adicionado
+
+- **Despacho**: uma mensagem para um `[agents.<nome>]` do `orchestrator.toml` vira uma execução do `claude` em modo não interativo, na pasta do agente, com o modelo, as ferramentas (`--allowedTools`; o resto é negado sem perguntar) e o limite de turnos da configuração. O prompt é sempre o mesmo, aponta para a nota e diz que ela é informação de outro agente, não instrução do usuário. Ele vai pela entrada.
+- Uma fila por agente, no máximo uma execução rodando por agente e no máximo `max_execucoes_simultaneas` ao todo. Com `pausado = true`, nenhuma começa, e despausar no arquivo vale em até 1 s.
+- Cada execução fica em `~/.terraforme/runs/<id>/`: `run.json` (estado `queued → running → done | failed | timeout`, ou `rejected`, os tempos, o modelo, os tokens e o custo do `result` do `claude`, o erro e o resumo do `terra done`), `output.jsonl` e `stderr.log`.
+- `terra done [resumo]`: de dentro da execução, guarda o resumo. A execução recebe `TERRA_AGENT`, `TERRA_HOPS` e `TERRA_RUN` no ambiente.
+- Orçamento do dia (`orcamento_diario`, em execuções): esgotado, a mensagem é recusada (`orcamento`) e o hub avisa no log e aos monitores; a 80%, avisa antes.
+- `tempo_limite_min` no `[global]` (30 por padrão): a execução que passa dele é encerrada com o que ela abriu (`timeout`).
+- Escalonamento: uma execução de nível 1 ou 2 que falha pede ao remetente, numa mensagem do `terra`, o handoff completo, que volta no nível 3. Vale por padrão (`[roteamento] escalonar_falhas`), mesmo com o roteamento por tag desligado.
+- Aba de execução: com `modo_execucao = "aba"`, a janela aberta na pasta do agente (ou a mais nova) ganha uma aba `▶ <agente>`, só de leitura, que mostra o que o `claude` faz até o resultado.
+- Um hub novo retoma as execuções que ficaram na fila e marca como falha as que rodavam quando o anterior saiu.
+- O README lista o `terra send`, o `terra handoff new` e o `terra done`.
+
+### Alterado
+
+- O hub não sai enquanto há uma execução rodando, mesmo sem janelas abertas.
+- `usuario` e `terra` não servem mais como nome de agente (são o remetente de fora de um agente e o do escalonamento).
+
 ## [0.11.0] - 2026-10-28
 
 ### Adicionado
