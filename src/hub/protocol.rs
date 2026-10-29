@@ -60,16 +60,19 @@ pub struct Tab {
     pub name: Option<String>,
     /// O que o agente desta aba está fazendo; `None` quando parado.
     pub task: Option<String>,
+    /// A execução despachada que a aba mostra (`kind: execucao`); `None`
+    /// numa aba manual.
+    pub run: Option<String>,
 }
 
 impl Tab {
-    fn to_json(&self) -> Value {
-        // Toda aba de hoje é manual: o usuário a abriu e conversa nela.
+    pub fn to_json(&self) -> Value {
         json!({
             "id": self.id,
             "title": self.title,
             "name": self.name,
-            "kind": "manual",
+            "kind": if self.run.is_some() { "execucao" } else { "manual" },
+            "run": self.run,
             "task": self.task,
         })
     }
@@ -79,6 +82,7 @@ impl Tab {
             id: value["id"].as_str()?.to_string(),
             title: value["title"].as_str().unwrap_or_default().to_string(),
             name: value["name"].as_str().map(str::to_string),
+            run: value["run"].as_str().map(str::to_string),
             task: value["task"].as_str().map(str::to_string),
         })
     }
@@ -284,6 +288,7 @@ mod tests {
             agents: 2,
             tabs: vec![Tab {
                 id: "9c1e".into(),
+                run: None,
                 title: "Principal".into(),
                 name: Some("backend".into()),
                 task: Some("Pensando...".into()),

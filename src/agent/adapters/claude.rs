@@ -11,6 +11,7 @@
 mod accounts;
 mod catalog;
 mod daily;
+mod follow;
 mod interactive;
 pub(super) mod skills;
 mod stream;
@@ -648,6 +649,14 @@ impl Session for Run {
         };
         send_line(&self.stdin, &permission_response(id, allow, &input));
     }
+}
+
+pub use self::follow::follow;
+
+/// O `claude` do `PATH` para uma execução despachada pelo orquestrador, sem
+/// os lançadores das extensões; `None` sem ele.
+pub fn run_command() -> Option<Command> {
+    find_claude().map(|claude| command(&claude))
 }
 
 /// O Claude no `ai-memory run`.

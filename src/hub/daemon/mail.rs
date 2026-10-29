@@ -6,6 +6,9 @@
 //!                   {"t":"send","message":{ … }}
 //! hub → terra send: {"t":"sent","id":"…","state":"enviada"|"na_fila"}
 //!                   {"t":"rejected","id":"…","code":"hops","text":"…"}
+//! terra done → hub: {"t":"hello","proto":2,"role":"sender"}
+//!                   {"t":"done","run":"…","summary":"…"}
+//! hub → terra done: {"t":"ok"} ou {"t":"rejected",…}
 //! hub → janela:     {"t":"deliver","tab":"<id da aba>","message":{ … }}
 //!                   {"t":"name_rejected","tab":"…","name":"…","reason":"…"}
 //! janela → hub:     {"t":"ack","id":"…"}
@@ -117,6 +120,16 @@ impl Hub {
         let Ok(Some(msg)) = recv(&mut input) else {
             return;
         };
+        if msg["t"] == "done" {
+            let run = msg["run"].as_str().unwrap_or_default();
+            let summary = msg["summary"].as_str().map(str::to_string);
+            let reply = match self.done(run, summary) {
+                Ok(()) => json!({"t": "ok"}),
+                Err(reject) => json!({"t": "rejected", "code": reject.code, "text": reject.text}),
+            };
+            output.push(reply);
+            return;
+        }
         let reply = match Message::from_json(&msg["message"]).filter(|m| valid_id(&m.id)) {
             None => json!({"t": "rejected", "code": "mensagem", "text": "mensagem inválida"}),
             Some(message) => match self.route(&message) {
@@ -135,10 +148,13 @@ impl Hub {
     /// Confere a mensagem de novo e a leva: à fila do agente da
     /// configuração ou à janela da aba com o nome. Grava o estado e conta
     /// aos monitores.
-    fn route(&self, message: &Message) -> Result<MessageState, Reject> {
+    pub(super) fn route(&self, message: &Message) -> Result<MessageState, Reject> {
         let config = self.config();
         let result = message.check(&config.global).and_then(|()| {
             if config.agent(&message.to).is_some() {
+                // Gravada antes: a execução pode começar já no `enqueue`.
+                self.record(message, MessageState::Queued, None);
+                self.enqueue(message, &config)?;
                 return Ok(MessageState::Queued);
             }
             let state = self.state();
@@ -157,11 +173,11 @@ impl Hub {
             }
             Ok(MessageState::Sent)
         });
-        let (state, reason) = match &result {
-            Ok(state) => (*state, None),
-            Err(reject) => (MessageState::Rejected, Some(reject)),
-        };
-        self.record(message, state, reason);
+        match &result {
+            Ok(MessageState::Queued) => {}
+            Ok(state) => self.record(message, *state, None),
+            Err(reject) => self.record(message, MessageState::Rejected, Some(reject)),
+        }
         result
     }
 
@@ -176,7 +192,7 @@ impl Hub {
     }
 
     /// Grava o estado da mensagem, anota no log e conta aos monitores.
-    fn record(&self, message: &Message, state: MessageState, reason: Option<&Reject>) {
+    pub(super) fn record(&self, message: &Message, state: MessageState, reason: Option<&Reject>) {
         if let Err(err) = message::save(message, state, reason, &self.home) {
             self.log
                 .line(&format!("não foi possível gravar a mensagem: {err}"));

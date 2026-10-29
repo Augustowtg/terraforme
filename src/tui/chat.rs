@@ -155,6 +155,8 @@ pub struct Chat {
     inbox: Vec<crate::orchestrator::message::Message>,
     /// Quantas da caixa o usuário ainda não leu.
     unread: usize,
+    /// A aba de uma execução despachada: só mostra, não manda nada.
+    read_only: bool,
 }
 
 /// Sem agente (Desconectado). Use [`Chat::connect`] para usar o provedor
@@ -202,6 +204,7 @@ impl Default for Chat {
             agent_name: None,
             inbox: Vec::new(),
             unread: 0,
+            read_only: false,
         }
     }
 }
@@ -217,6 +220,20 @@ impl Chat {
     }
 
     /// Chat ligado a `adapter`, com as configurações da seção Agente.
+    /// A aba de uma execução despachada: mostra o que `session` (a saída do
+    /// `claude`) traz e não manda nada ao agente.
+    pub fn viewer(session: Box<dyn Session>, title: String) -> Self {
+        let mut chat = Self {
+            run: Some(session),
+            read_only: true,
+            agent_status: AgentStatus::Pensando,
+            agent_activity: Some("Rodando...".into()),
+            ..Self::default()
+        };
+        chat.history.push(Entry::Info(title));
+        chat
+    }
+
     pub fn with_adapter(adapter: Box<dyn ChatAdapter>, settings: &AgentSettings) -> Self {
         let agent_status = if adapter.is_available() {
             AgentStatus::Ocioso
@@ -842,6 +859,14 @@ impl Chat {
     /// (ex.: `/clear`) roda a interface.
     fn send(&mut self) {
         let prompt = self.input.text().trim().to_string();
+        if self.read_only && !prompt.is_empty() {
+            self.input.clear();
+            self.history.push(Entry::Info(
+                "Esta aba só mostra uma execução do orquestrador: ela roda sozinha.".into(),
+            ));
+            self.history.follow();
+            return;
+        }
         if prompt.is_empty() || self.run.is_some() {
             return;
         }

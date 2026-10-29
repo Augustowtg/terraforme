@@ -7,9 +7,10 @@
 //!     conecta? um hub de antes da trava está vivo → sai
 //!     apaga o socket órfão (de um hub morto) e faz o bind
 //!     grava o hub.lock (temporário + rename)
-//!     loop: aceita conexões (uma thread por cliente); a cada 1 s marca as
-//!           instâncias stale e tira as gone; sem conexões por IDLE_EXIT,
-//!           apaga o lock e sai (o socket sai com o listener)
+//!     retoma as execuções que ficaram na fila (ver dispatch)
+//!     loop: aceita conexões (uma thread por cliente); vê as execuções; a
+//!           cada 1 s marca as instâncias stale e tira as gone; sem
+//!           conexões por IDLE_EXIT e sem execução rodando, apaga o lock e sai
 //! ```
 //!
 //! Dois hubs iniciando juntos se resolvem sozinhos: só um consegue a trava.
@@ -42,6 +43,7 @@ const SWEEP: Duration = Duration::from_secs(1);
 /// A espera entre um `accept` vazio e o próximo.
 const POLL: Duration = Duration::from_millis(50);
 
+mod dispatch;
 mod mail;
 
 /// Roda o hub deste usuário até ele ficar sem conexões.
@@ -66,13 +68,17 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
     let hub = Arc::new(Hub {
         state: Mutex::default(),
         home: endpoint.home.clone(),
+        claude: endpoint.claude.clone(),
         config: Mutex::default(),
+        dispatcher: Mutex::default(),
         quit: AtomicBool::new(false),
         clients: AtomicU64::new(0),
         idle_since: Mutex::new(Some(Instant::now())),
         next_conn: AtomicU64::new(1),
         log,
     });
+    // As execuções que ficaram na fila quando o hub anterior saiu.
+    hub.recover();
     let mut last_sweep = Instant::now();
     loop {
         match listener.accept() {
@@ -94,8 +100,12 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
                 thread::sleep(POLL);
             }
         }
+        hub.poll_runs();
         if last_sweep.elapsed() >= SWEEP {
             hub.sweep();
+            // Uma mudança no orchestrator.toml (despausar, mais execuções
+            // ao mesmo tempo) vale em até 1 s.
+            hub.pump();
             last_sweep = Instant::now();
         }
         if hub.quit.load(Ordering::SeqCst) {
@@ -104,7 +114,8 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
             break;
         }
         let idle = hub.idle_since.lock().unwrap().map(|t| t.elapsed());
-        if idle.is_some_and(|idle| idle >= idle_exit) {
+        // Com execução rodando, o hub espera mesmo sem janelas.
+        if idle.is_some_and(|idle| idle >= idle_exit) && !hub.busy() {
             hub.log.line("nenhum terminal aberto; saindo");
             break;
         }
@@ -315,9 +326,13 @@ struct Hub {
     state: Mutex<State>,
     /// A pasta do orquestrador (o `orchestrator.toml` e as mensagens).
     home: PathBuf,
+    /// O `claude` das execuções, quando não é o do `PATH` (os testes).
+    claude: Option<PathBuf>,
     /// A última configuração válida e o último erro dela (ver
     /// [`Hub::config`]).
     config: Mutex<(Config, Option<String>)>,
+    /// As filas e as execuções dos agentes da configuração.
+    dispatcher: Mutex<dispatch::Dispatcher>,
     /// Pedido de saída (um terra com o protocolo mais novo).
     quit: AtomicBool,
     /// As conexões abertas, de qualquer papel.

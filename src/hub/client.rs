@@ -21,6 +21,8 @@ use super::endpoint::Endpoint;
 use super::protocol::{self, Instance, Status, recv, send};
 use super::{Conn, DIR_ENV, HEARTBEAT, MAX_LINE, PROTO};
 use crate::orchestrator::message::Message;
+use crate::orchestrator::run::Run;
+use std::path::PathBuf;
 
 /// Quanto o cliente espera o hub que ele iniciou subir.
 const START_WAIT: Duration = Duration::from_secs(3);
@@ -125,6 +127,9 @@ enum Msg {
 pub enum Event {
     /// Uma mensagem de outro agente para a aba `tab`.
     Deliver { tab: String, message: Message },
+    /// Uma execução despachada começou: a janela a mostra numa aba só de
+    /// leitura, que acompanha `output`.
+    RunStarted { run: Run, output: PathBuf },
     /// O hub recusou o nome da aba `tab`.
     NameRejected {
         tab: String,
@@ -140,6 +145,10 @@ impl Event {
             "deliver" => Some(Event::Deliver {
                 tab: text("tab")?,
                 message: Message::from_json(&msg["message"])?,
+            }),
+            "run_started" => Some(Event::RunStarted {
+                run: Run::from_json(&msg["run"])?,
+                output: PathBuf::from(text("output")?),
             }),
             "name_rejected" => Some(Event::NameRejected {
                 tab: text("tab")?,
@@ -523,6 +532,25 @@ pub fn snapshot_with(endpoint: &Endpoint, autostart: bool) -> io::Result<Vec<Val
 /// Manda uma mensagem entre agentes pelo hub (o `terra send`) e devolve a
 /// resposta dele: `sent` ou `rejected`.
 pub fn send_message(endpoint: &Endpoint, autostart: bool, message: &Value) -> io::Result<Value> {
+    request(
+        endpoint,
+        autostart,
+        &json!({"t": "send", "message": message}),
+    )
+}
+
+/// O `terra done`: o resumo da execução `run`. A resposta é `ok` ou
+/// `rejected`.
+pub fn send_done(endpoint: &Endpoint, run: &str, summary: Option<&str>) -> io::Result<Value> {
+    request(
+        endpoint,
+        false,
+        &json!({"t": "done", "run": run, "summary": summary}),
+    )
+}
+
+/// Um pedido de quem manda (`role: sender`) e a resposta do hub.
+fn request(endpoint: &Endpoint, autostart: bool, msg: &Value) -> io::Result<Value> {
     let stream = connect(endpoint, autostart)?;
     let hello = json!({"t": "hello", "proto": PROTO, "role": "sender"});
     let (mut input, mut output, answer) = handshake(stream, &hello)?;
@@ -531,6 +559,6 @@ pub fn send_message(endpoint: &Endpoint, autostart: bool, message: &Value) -> io
             "o orquestrador é de outra versão do terra; feche os terras abertos e tente de novo",
         ));
     }
-    send(&mut output, &json!({"t": "send", "message": message}))?;
+    send(&mut output, msg)?;
     recv(&mut input)?.ok_or_else(|| io::ErrorKind::UnexpectedEof.into())
 }

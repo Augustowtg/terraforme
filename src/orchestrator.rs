@@ -15,6 +15,7 @@
 pub mod config;
 pub mod message;
 pub mod note;
+pub mod run;
 pub mod send;
 
 /// O nome do agente que está rodando: o terra o põe no ambiente do agente
@@ -23,6 +24,9 @@ pub const AGENT_ENV: &str = "TERRA_AGENT";
 /// Quantos saltos a mensagem que gerou esta execução já deu: o `terra send`
 /// de dentro dela manda com um a mais.
 pub const HOPS_ENV: &str = "TERRA_HOPS";
+/// A execução despachada que está rodando: o `terra done` de dentro dela
+/// conclui essa execução.
+pub const RUN_ENV: &str = "TERRA_RUN";
 /// O remetente quando o `terra send` não roda dentro de um agente.
 pub const USER: &str = "usuario";
 

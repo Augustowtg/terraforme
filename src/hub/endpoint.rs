@@ -43,6 +43,9 @@ pub struct Endpoint {
     /// Como iniciar o hub em vez do `terra __hub` deste executável (os
     /// testes, que não são o `terra`).
     pub launcher: Option<Vec<OsString>>,
+    /// O `claude` das execuções despachadas em vez do do `PATH` (os testes
+    /// usam um falso).
+    pub claude: Option<PathBuf>,
 }
 
 impl Endpoint {
@@ -62,6 +65,7 @@ impl Endpoint {
             home: crate::db::data_dir()?,
             dir: None,
             launcher: None,
+            claude: None,
         })
     }
 
@@ -86,6 +90,7 @@ impl Endpoint {
             home: dir.to_path_buf(),
             dir: Some(dir.to_path_buf()),
             launcher: None,
+            claude: None,
         }
     }
 

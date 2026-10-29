@@ -8,6 +8,7 @@
 //! limite_palavras_mensagem = 500
 //! modo_execucao = "aba"          # "aba" ou "segundo_plano"
 //! pausado = false
+//! tempo_limite_min = 30          # depois disso, a execução é encerrada (timeout)
 //!
 //! [agents.backend]
 //! cwd = "/proj/api"
@@ -61,6 +62,8 @@ pub struct Global {
     pub run_mode: RunMode,
     /// Os despachos ficam parados (o interruptor geral).
     pub paused: bool,
+    /// Minutos que uma execução pode rodar antes do timeout.
+    pub timeout_min: u32,
 }
 
 impl Default for Global {
@@ -71,6 +74,7 @@ impl Default for Global {
             word_limit: 500,
             run_mode: RunMode::Tab,
             paused: false,
+            timeout_min: 30,
         }
     }
 }
@@ -97,13 +101,28 @@ pub struct Rule {
     pub model: String,
 }
 
-/// O `[roteamento]` (a Fase C), desligado por padrão.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// O `[roteamento]`. As regras por tag (a Fase C) ficam desligadas por
+/// padrão (`ativo`); o escalonamento por falha vale mesmo assim e fica
+/// ligado por padrão.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Routing {
     pub active: bool,
     pub default: Option<String>,
+    /// Uma execução de nível 1 ou 2 que falha pede ao remetente o handoff
+    /// completo.
     pub escalate_failures: bool,
     pub rules: Vec<Rule>,
+}
+
+impl Default for Routing {
+    fn default() -> Self {
+        Self {
+            active: false,
+            default: None,
+            escalate_failures: true,
+            rules: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -183,15 +202,30 @@ impl Config {
     pub fn agent(&self, name: &str) -> Option<&Agent> {
         self.agents.iter().find(|agent| agent.name == name)
     }
+
+    /// O id do modelo: o do apelido de `[modelos]` ou, sem apelido, o
+    /// próprio nome.
+    pub fn model_id<'a>(&'a self, model: &'a str) -> &'a str {
+        self.models
+            .iter()
+            .find(|(alias, _)| alias == model)
+            .map_or(model, |(_, id)| id.as_str())
+    }
 }
 
+/// Os nomes que não são de agentes: o remetente de fora de um agente e o
+/// do próprio terra (o escalonamento).
+pub const RESERVED: [&str; 2] = ["usuario", "terra"];
+
 /// Um nome de agente: de 1 a 32 letras minúsculas, dígitos, `-` e `_`,
-/// começando por letra ou dígito (ex.: `backend`, `front-2`).
+/// começando por letra ou dígito (ex.: `backend`, `front-2`), fora os
+/// [`RESERVED`].
 pub fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    !RESERVED.contains(&name)
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && name.len() <= 32
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
@@ -216,6 +250,7 @@ fn global(table: &dyn TableLike) -> Result<Global, String> {
                 }
             }
             "pausado" => global.paused = flag(item, &at)?,
+            "tempo_limite_min" => global.timeout_min = positive(item, &at)?,
             _ => return Err(format!("chave desconhecida: {at}")),
         }
     }
@@ -369,7 +404,8 @@ modelo = "leve"
         assert_eq!(backend.tools.len(), 4);
         assert_eq!(backend.max_turns, Some(30));
         assert_eq!(backend.daily_budget, Some(40));
-        assert_eq!(config.models[0], ("forte".into(), "opus".into()));
+        assert_eq!(config.model_id("forte"), "opus");
+        assert_eq!(config.model_id("sonnet"), "sonnet");
         assert!(!config.routing.active);
         assert_eq!(config.routing.rules[0].tag, "testes");
     }
@@ -403,7 +439,15 @@ modelo = "leve"
         for ok in ["backend", "front-2", "a", "x_y"] {
             assert!(valid_name(ok), "{ok}");
         }
-        for bad in ["", "Backend", "-x", "com espaço", &"a".repeat(33)] {
+        for bad in [
+            "",
+            "Backend",
+            "-x",
+            "com espaço",
+            &"a".repeat(33),
+            "usuario",
+            "terra",
+        ] {
             assert!(!valid_name(bad), "{bad}");
         }
     }
