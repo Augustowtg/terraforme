@@ -11,7 +11,8 @@
 //!
 //!  Workspaces
 //!    terraforme-cli  ·  3 instâncias ativas + 2 sub agentes
-//!      7f3a12bc  pid 4812    alive  Pensando...   3 chats  aberto há 5m  sinal há 1s  ← este
+//!      ● Pensando...                  │ 3 sessões  │ 5 min  ← este
+//!      ● parado                       │ 1 sessão   │ 10 min
 //!      …
 //!
 //!  Configurações
@@ -47,6 +48,10 @@ use crate::theme::{self};
 pub const HELP: &str = "↑/↓ escolher · ←/→ mudar · Tab trocar aba · Esc ir para Sair";
 /// Com o menu do modelo aberto.
 const HELP_MODEL: &str = "↑/↓ escolher · ←/→ esforço · Enter selecionar · Esc fechar";
+/// Largura da coluna do que a instância faz.
+const DOING_WIDTH: usize = 28;
+/// Largura da coluna das sessões (`10 sessões`).
+const SESSIONS_WIDTH: usize = 10;
 /// Largura da coluna dos nomes das configurações.
 const LABEL_WIDTH: usize = 18;
 
@@ -200,15 +205,26 @@ impl HubView<'_> {
                 Span::styled(format!("  ·  {}", workspace.summary()), theme::muted()),
             ]));
             for instance in &workspace.instances {
-                let style = match instance.health {
-                    Health::Alive => theme::path(),
-                    Health::Stale => theme::error(),
-                    Health::Gone => theme::muted(),
+                // Só a bolinha diz a saúde: verde, laranja (sem sinal) ou
+                // vermelha (saiu).
+                let dot = match instance.health {
+                    Health::Alive => theme::alive(),
+                    Health::Stale => theme::stale(),
+                    Health::Gone => theme::error(),
                 };
-                let mut spans = vec![Span::styled(
-                    format!("     {}", view::instance_line(instance)),
-                    style,
-                )];
+                let text = match instance.health {
+                    Health::Gone => theme::muted(),
+                    _ => theme::path(),
+                };
+                let [doing, sessions, elapsed] = view::instance_columns(instance);
+                let mut spans = vec![
+                    Span::styled("     ● ", dot),
+                    Span::styled(format!("{doing:<DOING_WIDTH$}"), text),
+                    Span::styled(" │ ", theme::muted()),
+                    Span::styled(format!("{sessions:<SESSIONS_WIDTH$}"), text),
+                    Span::styled(" │ ", theme::muted()),
+                    Span::styled(elapsed, text),
+                ];
                 if self.own == Some(instance.id.as_str()) {
                     spans.push(Span::styled("  ← este", theme::muted()));
                 }

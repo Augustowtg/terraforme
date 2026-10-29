@@ -14,11 +14,11 @@ depois, controlar os terminais e os sub agentes. Nesta primeira versão
 
  Workspaces
    terraforme-cli  ·  3 instâncias ativas + 2 sub agentes
-     7f3a12bc  pid 4812    alive  Pensando...        3 chats  aberto há 5m  sinal há 1s  ← este
-     91bd04aa  pid 4977    alive  parado             1 chat   aberto há 2m  sinal há 0s
-     c0ffee12  pid 5120    stale  Usando Bash...     1 chat   aberto há 1m  sinal há 9s
+     ● Pensando...                  │ 3 sessões  │ 5 min  ← este
+     ● parado                       │ 1 sessão   │ 2 min
+     ● Usando Bash...               │ 1 sessão   │ 1 min
    smart-mecanica  ·  1 instância ativa
-     5a5a0b0c  pid 6001    alive  parado             1 chat   aberto há 40s sinal há 1s
+     ● parado                       │ 1 sessão   │ 40 s
 
  Configurações
    Dos chats delegados; por enquanto, só ficam salvas.
@@ -213,7 +213,7 @@ também o inicia.
     882cf04c  pid 258050  alive  parado    1 chat  aberto há 2s  sinal há 0s
   ```
 
-- **Aba Orquestrador** (no `terra cli`): a lista ao vivo, separada por workspace, com o resumo de cada um (`3 instâncias ativas + 2 sub agentes`) e, por instância, o id curto, o PID, o estado, a tarefa, os chats, há quanto tempo está aberta e o último sinal. A instância do próprio terminal tem `← este`. O monitor só é assinado na primeira vez que a aba abre; as instâncias `stale` aparecem em vermelho e as `gone`, apagadas.
+- **Aba Orquestrador** (no `terra cli`): a lista ao vivo, separada por workspace, com o resumo de cada um (`3 instâncias ativas + 2 sub agentes`) e, por instância, uma linha de tabela: a bolinha da saúde (verde `alive`, laranja `stale`, vermelha `gone`), a tarefa, as sessões (os chats) e há quanto tempo está aberta (ex.: `● parado │ 1 sessão │ 10 min`), sem o id e o PID (v0.9.1). A instância do próprio terminal tem `← este`. O monitor só é assinado na primeira vez que a aba abre.
 
 ## Testes
 

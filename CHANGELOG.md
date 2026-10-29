@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.9.1] - 2026-10-28
+
+### Alterado
+
+- Na aba **Orquestrador**, cada instância vira uma linha de tabela, sem o id, o PID e o último sinal: só uma bolinha com a saúde (verde viva, laranja sem sinal, vermelha quando saiu), o que ela está fazendo, as sessões (os chats) e há quanto tempo está aberta (ex.: `● parado │ 1 sessão │ 10 min`). O `terra status` continua com a linha completa.
+
 ## [0.9.0] - 2026-10-28
 
 ### Adicionado

@@ -55,11 +55,10 @@ pub fn by_workspace(instances: &[Instance]) -> Vec<Workspace<'_>> {
     groups
 }
 
-/// A linha de uma instância: id curto, pid, saúde, o que faz, chats,
-/// tempo aberta e último sinal.
-pub fn instance_line(instance: &Instance) -> String {
-    let now = now();
-    let doing = match (
+/// O que a instância está fazendo: a tarefa, `rodando`, `parado` ou,
+/// quando saiu, `saiu (exit|crash)`.
+pub fn doing(instance: &Instance) -> String {
+    match (
         &instance.health,
         instance.status.running,
         &instance.status.task,
@@ -68,17 +67,34 @@ pub fn instance_line(instance: &Instance) -> String {
         (_, true, Some(task)) => task.clone(),
         (_, true, None) => "rodando".into(),
         (_, false, _) => "parado".into(),
-    };
+    }
+}
+
+/// A linha de uma instância: id curto, pid, saúde, o que faz, chats,
+/// tempo aberta e último sinal.
+pub fn instance_line(instance: &Instance) -> String {
+    let now = now();
     format!(
         "{}  pid {:<7} {:<6} {:<28} {}  aberto há {}  sinal há {}",
         instance.short_id(),
         instance.pid,
         instance.health.as_str(),
-        truncate(&doing, 28),
+        truncate(&doing(instance), 28),
         plural(instance.status.chats, "chat", "chats"),
         duration(now.saturating_sub(instance.started)),
         duration(now.saturating_sub(instance.last_seen)),
     )
+}
+
+/// As colunas de uma instância na aba Orquestrador: o que faz, as sessões
+/// (os chats) e há quanto tempo está aberta (ex.: `parado`, `1 sessão`,
+/// `10 min`).
+pub fn instance_columns(instance: &Instance) -> [String; 3] {
+    [
+        truncate(&doing(instance), 28),
+        plural(instance.status.chats, "sessão", "sessões"),
+        elapsed(now().saturating_sub(instance.started)),
+    ]
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -95,6 +111,15 @@ pub fn duration(secs: u64) -> String {
         0..60 => format!("{secs}s"),
         60..3600 => format!("{}m", secs / 60),
         _ => format!("{}h{:02}m", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+/// Ex.: `42 s`, `10 min`, `2h10`.
+pub fn elapsed(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs} s"),
+        60..3600 => format!("{} min", secs / 60),
+        _ => format!("{}h{:02}", secs / 3600, secs % 3600 / 60),
     }
 }
 
@@ -152,5 +177,17 @@ mod tests {
         assert_eq!(duration(42), "42s");
         assert_eq!(duration(300), "5m");
         assert_eq!(duration(7800), "2h10m");
+        assert_eq!(elapsed(42), "42 s");
+        assert_eq!(elapsed(600), "10 min");
+        assert_eq!(elapsed(7800), "2h10");
+    }
+
+    #[test]
+    fn instance_columns_hide_the_pid_and_count_sessions() {
+        let mut one = instance("a", Health::Alive, 0);
+        one.started = now() - 600;
+        assert_eq!(instance_columns(&one), ["parado", "1 sessão", "10 min"]);
+        let gone = instance("a", Health::Gone, 2);
+        assert_eq!(instance_columns(&gone)[..2], ["saiu (crash)", "3 sessões"]);
     }
 }
