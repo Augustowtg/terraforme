@@ -33,7 +33,7 @@ use crate::db::Db;
 use crate::extension::Registry;
 use crate::hub::{
     self,
-    client::{Monitor, Reporter},
+    client::{Event, Monitor, Reporter},
 };
 use crate::platform::keyboard;
 use crate::settings::{
@@ -846,6 +846,7 @@ impl App {
         self.extensions_view.tick();
         self.update_view.tick();
         self.report_to_hub();
+        self.receive_from_hub();
         // No Orquestrador, a aba carrega o catálogo do provedor escolhido e
         // assina a lista do hub (só com o hub ligado: não nos testes).
         if self.tab == Tab::Orquestrador {
@@ -875,6 +876,7 @@ impl App {
             .map(|(id, title, chat)| hub::protocol::Tab {
                 id: id.clone(),
                 title: title.to_string(),
+                name: chat.agent_name().map(str::to_string),
                 task: chat.activity().map(str::to_string),
             })
             .collect();
@@ -886,6 +888,55 @@ impl App {
             agents: tabs.len() - 1,
             tabs,
         }
+    }
+
+    /// O que o hub mandou: as mensagens de outros agentes vão para a caixa
+    /// do chat da aba (o `ack` confirma ao hub) e os nomes recusados saem
+    /// do chat. Nada disso vai ao agente do chat.
+    fn receive_from_hub(&mut self) {
+        let events = match &self.hub {
+            Some(hub) => hub.events(),
+            None => return,
+        };
+        for event in events {
+            match event {
+                Event::Deliver { tab, message } => {
+                    let id = message.id.clone();
+                    if let Some(chat) = self.chat_by_id_mut(&tab) {
+                        chat.receive(message);
+                        if let Some(hub) = &self.hub {
+                            hub.ack(&id);
+                        }
+                    }
+                }
+                Event::NameRejected { tab, name, reason } => {
+                    if let Some(chat) = self.chat_by_id_mut(&tab) {
+                        chat.name_rejected(&name, &reason);
+                    }
+                }
+            }
+        }
+    }
+
+    /// O chat com o id `id` no hub: o principal ou um do `Alt+N`.
+    fn chat_by_id_mut(&mut self, id: &str) -> Option<&mut Chat> {
+        if self.chat_id == id {
+            return Some(&mut self.chat);
+        }
+        self.chats
+            .iter_mut()
+            .find(|tab| tab.id == id)
+            .map(|tab| &mut tab.chat)
+    }
+
+    /// As mensagens de outros agentes ainda não lidas, em todos os chats.
+    fn unread(&self) -> usize {
+        self.chat.unread()
+            + self
+                .chats
+                .iter()
+                .map(|tab| tab.chat.unread())
+                .sum::<usize>()
     }
 
     /// Manda o estado ao hub; o [`Reporter`] só manda quando mudou e nunca
@@ -968,7 +1019,11 @@ impl App {
             } else {
                 theme::tab_inactive()
             };
-            spans.push(Span::styled(format!(" {} ", tab.title()), style));
+            let title = match self.unread() {
+                n if n > 0 && tab == Tab::Chat => format!(" {} ✉{n} ", tab.title()),
+                _ => format!(" {} ", tab.title()),
+            };
+            spans.push(Span::styled(title, style));
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
 
@@ -1007,8 +1062,12 @@ impl App {
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let titles =
-            std::iter::once(MAIN_CHAT_TITLE).chain(self.chats.iter().map(|c| c.title.as_str()));
+        let titles = std::iter::once((MAIN_CHAT_TITLE, &self.chat))
+            .chain(self.chats.iter().map(|c| (c.title.as_str(), &c.chat)))
+            .map(|(title, chat)| match chat.unread() {
+                0 => title.to_string(),
+                n => format!("{title} ✉{n}"),
+            });
         let mut spans = Vec::new();
         for (i, title) in titles.enumerate() {
             if i > 0 {

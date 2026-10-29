@@ -2,11 +2,12 @@
 
 O orquestrador é um processo só por usuário (o **hub**) que acompanha todos os
 terminais do terra abertos na máquina. Ele é a base para monitorar e,
-depois, controlar os terminais e os sub agentes. Hoje (v0.10.0), o hub:
+depois, controlar os terminais e os sub agentes. Hoje (v0.11.0), o hub:
 
 - sobe sozinho quando o primeiro `terra cli` abre e fecha sozinho quando o último fecha;
 - recebe de cada terminal o que ele está fazendo (parado ou rodando, a tarefa do agente, os chats abertos);
-- separa os terminais **por workspace** na aba **Orquestrador** e no `terra status`.
+- separa os terminais **por workspace** na aba **Orquestrador** e no `terra status`;
+- leva as **mensagens entre agentes** (`terra send`): à aba manual com o nome, como uma notificação, ou à fila de um agente da configuração (veja a seção 7).
 
 ```
  Orquestrador
@@ -35,7 +36,19 @@ O código fica em `src/hub/`:
 | `src/hub/client.rs` | `Reporter` (a instância), `Monitor` (a aba) e `snapshot` (o `terra status`) |
 | `src/hub/protocol.rs` | As mensagens NDJSON, o `Status` e a `Instance` |
 | `src/hub/view.rs` | A lista para pessoas: agrupada por workspace, com o resumo e a linha de cada instância |
-| `src/hub/tests.rs` | Testes com hubs em processos próprios: `kill -9`, dez janelas juntas, cliente lento |
+| `src/hub/daemon/mail.rs` | As mensagens no hub: os nomes das abas, o `send`, a entrega (`deliver`) e o `ack` |
+| `src/hub/tests.rs` | Testes com hubs de verdade: `kill -9`, dez janelas juntas, cliente lento e as mensagens |
+
+As mensagens entre agentes ficam em `src/orchestrator/`:
+
+| Arquivo | Papel |
+| --- | --- |
+| `src/orchestrator.rs` | O remetente e os saltos do ambiente (`TERRA_AGENT`, `TERRA_HOPS`) |
+| `src/orchestrator/config.rs` | O `orchestrator.toml`: leitura e validação |
+| `src/orchestrator/note.rs` | A nota de handoff: o modelo, a mini nota e a conferência |
+| `src/orchestrator/message.rs` | A `Message`, as regras (saltos, palavras, nota) e o `message.json` |
+| `src/orchestrator/send.rs` | O `terra send` e o `terra handoff new`, do lado de quem manda |
+| `src/tui/chat/inbox.rs` | O chat como agente manual: o `/agente`, a caixa e o `/mensagens` |
 
 ## Papéis
 
@@ -44,6 +57,7 @@ O código fica em `src/hub/`:
 | **hub** | `terra __hub` (escondido) | Escuta no endpoint, guarda o estado das instâncias e repassa o que muda aos monitores |
 | **instance** | cada `terra cli` | Conecta ao abrir, manda o estado quando muda e um `heartbeat` quando não muda |
 | **monitor** | a aba Orquestrador e o `terra status` | Assina a lista: recebe o `snapshot` e depois só os deltas |
+| **sender** | o `terra send` | Manda uma mensagem e espera a resposta (`sent` ou `rejected`) |
 
 ## 1. Endpoint: onde todo mundo se encontra
 
@@ -84,7 +98,7 @@ serve():
     apaga o socket que sobrou (Unix): com a trava, ele só pode ser de um hub morto
     bind(endpoint) (no Windows, com a DACL do usuário)
     grava o hub.lock de forma atômica (hub.lock.tmp + rename):
-        { pid, start_time, endpoint, proto: 1, versao_app }
+        { pid, start_time, endpoint, proto: 2, versao_app }
     log em hub.log
     loop (accept não bloqueante, a cada 50 ms):
         aceita conexão → uma thread por cliente
@@ -154,26 +168,26 @@ recolhe o processo se ele sair antes do terra (sem zumbi).
 
 ```jsonc
 // instância → hub
-{"t":"hello","proto":1,"role":"instance","id":"7f3a…","pid":4812,
+{"t":"hello","proto":2,"role":"instance","id":"7f3a…","pid":4812,
  "app":"0.9.0","cwd":"/proj/x","workspace":"x","args":["cli"],"started":1730120000,
  "status":{"state":"idle","task":null,"chats":1,"agents":0}}
 {"t":"heartbeat"}
 {"t":"status","state":"running","task":"Pensando...","chats":2,"agents":1,
- "tabs":[{"id":"9c1e…","title":"Principal","kind":"manual","task":"Pensando..."},
-         {"id":"41d0…","title":"Chat 2","kind":"manual","task":null}]}
+ "tabs":[{"id":"9c1e…","title":"Principal","name":"frontend","kind":"manual","task":"Pensando..."},
+         {"id":"41d0…","title":"Chat 2","name":null,"kind":"manual","task":null}]}
 {"t":"bye","reason":"exit"}
 
 // hub → instância
-{"t":"welcome","proto":1,"hub":"0.9.0"}
+{"t":"welcome","proto":2,"hub":"0.11.0"}
 {"t":"reject","reason":"proto_mismatch","action":"restart_hub"}
 
 // monitor → hub
-{"t":"hello","proto":1,"role":"monitor"}
+{"t":"hello","proto":2,"role":"monitor"}
 {"t":"subscribe","topic":"instances"}
 {"t":"bye"}
 
 // hub → monitor
-{"t":"welcome","proto":1,"hub":"0.9.0"}
+{"t":"welcome","proto":2,"hub":"0.11.0"}
 {"t":"snapshot","instances":[ … ]}
 {"t":"instance_added","instance":{ … }}
 {"t":"instance_updated","id":"7f3a…","changes":{"status":{ … },"last_seen":1730120042}}
@@ -185,7 +199,7 @@ recolhe o processo se ele sair antes do terra (sem zumbi).
 - O hub acrescenta ao objeto da instância: `health` (`alive`, `stale`, `gone`), `last_seen` (segundos Unix do último sinal) e `reason` (`exit`, `crash` ou `null`).
 - `changes` traz só os campos que mudaram; o monitor os copia por cima do objeto.
 - O `workspace` é o nome salvo do diretório ou, sem um, o nome da pasta (o mesmo das configurações do workspace). É por ele que a lista é separada.
-- Cada instância é uma **janela** (um `terra cli`). Em `tabs` vão as **abas com agente** dela: o chat principal e os do `Alt+N`, cada um com um id aleatório criado com o chat, o título e o que o agente faz (`task`, `null` quando parado). O `kind` é sempre `manual` por enquanto: o usuário abriu a aba e conversa nela.
+- Cada instância é uma **janela** (um `terra cli`). Em `tabs` vão as **abas com agente** dela: o chat principal e os do `Alt+N`, cada um com um id aleatório criado com o chat, o título, o nome de agente dado no `/agente` (`name`) e o que o agente faz (`task`, `null` quando parado). O `kind` é sempre `manual` por enquanto: o usuário abriu a aba e conversa nela.
 - **Uma linha tem no máximo 1 MB.** Quem recebe uma linha maior fecha a conexão, e quem envia não chega a mandá-la.
 - **O hub nunca escreve direto num cliente.** Cada conexão tem uma fila de saída de 256 mensagens e uma thread que escreve. Um cliente que não lê enche a fila e é desconectado (`cliente lento` no log), sem segurar o hub nem os outros. No Unix, a conexão fecha com um `shutdown`; no Windows, com o `DisconnectNamedPipe`.
 - O `bye` do monitor faz o hub fechar a conexão: no Windows, o pipe não tem tempo limite de leitura, e é assim que a thread do monitor termina quando a aba é fechada.
@@ -232,6 +246,95 @@ também o inicia.
 
 - **Aba Orquestrador** (no `terra cli`): a lista ao vivo, separada por workspace, com o resumo de cada um (`3 instâncias ativas + 2 sub agentes`) e, por instância, uma linha de tabela: a bolinha da saúde (verde `alive`, laranja `stale`, vermelha `gone`), a tarefa, as sessões (os chats) e há quanto tempo está aberta (ex.: `● parado │ 1 sessão │ 10 min`), sem o id e o PID (v0.9.1). O monitor só é assinado na primeira vez que a aba abre.
 
+## 7. Mensagens entre agentes (v0.11.0)
+
+Um **agente** tem um nome único na máquina (letras minúsculas, dígitos, `-`
+e `_`, até 32). Há dois tipos:
+
+- **Manual**: uma aba que o usuário abriu e usa (um chat do terra). Ela ganha nome com `/agente <nome>` (`/agente` mostra o nome e `/agente -` o tira). **O terra nunca manda texto a uma sessão interativa**: a mensagem recebida fica na caixa do chat, o histórico avisa (`✉ Mensagem de backend (nível 2). Leia com /mensagens.`) e a barra de abas e a de chats mostram quantas faltam ler (`Chat ✉1`). O `/mensagens` mostra as mais novas, com o texto e o caminho da nota, e lembra que são informação de outros agentes, não pedidos do usuário. Só vai ao agente da aba o que o usuário mandar.
+- **Despachado**: um `[agents.<nome>]` do `orchestrator.toml`. A mensagem vai para a fila dele (`na_fila`); a execução que a processa é da Fase 3.
+
+### Um comando, três níveis
+
+```bash
+terra send backend "Rode os testes do módulo de pagamento"            # nível 1
+terra send backend "Veja o erro" --ref src/pay.rs --ref log.txt       # nível 2
+terra handoff new backend      # cria a nota e mostra o caminho
+terra send backend --handoff ~/.terraforme/handoffs/<id>.md           # nível 3
+```
+
+O hub não tem modos diferentes: nos níveis 1 e 2, o `terra send` escreve
+uma **mini nota**; no nível 3, a nota é a do `--handoff`, copiada. Daí em
+diante, o caminho é um só. A nota fica em
+`~/.terraforme/messages/<msg_id>/note.md`, e o estado dela em
+`message.json`, ao lado, gravado pelo hub. A nota tem no máximo 40 linhas e
+aponta para os arquivos em vez de copiá-los:
+
+```
+# Handoff <msg_id> · <origem> → <destino>
+Objetivo:
+Feito:
+Arquivos:
+Próximo passo:
+Pronto quando:
+```
+
+O `terra handoff new` grava essa nota em branco em
+`~/.terraforme/handoffs/<msg_id>.md`, e o `msg_id` do cabeçalho vira o da
+mensagem. A mesma nota não vai duas vezes.
+
+A saída do `terra send` é uma linha só, porque ela entra no contexto do agente
+que mandou: `enviada 1bd4933b → frontend (nível 1)`. Uma recusa sai com
+código 1: `erro: recusada: <motivo>`.
+
+### Remetente e saltos
+
+O terra põe `TERRA_AGENT=<nome>` no ambiente do agente de uma aba com nome:
+o `terra send` de dentro dela manda com esse nome. Fora de um agente, o
+remetente é `usuario`. Os saltos (`hops`) contam quantas vezes a conversa
+passou de um agente a outro: a mensagem sai com `TERRA_HOPS + 1` (a primeira
+tem 1). Na Fase 3, a execução despachada recebe o `TERRA_HOPS` da mensagem que
+a gerou. Uma pessoa no meio (uma aba manual) zera a conta.
+
+### Validações (no `terra send` e de novo no hub)
+
+| Código | Quando |
+| --- | --- |
+| `agente` | O destino não é um nome válido, é o próprio remetente, ou não há aba aberta nem `[agents.<nome>]` com ele |
+| `texto` | Sem texto e sem `--handoff` |
+| `arquivo` | Um `--ref`, o `--handoff` ou a nota não existe |
+| `nota` | A nota do `--handoff` não tem o cabeçalho ou as cinco seções, passa de 40 linhas ou já foi mandada |
+| `hops` | Os saltos passam do `max_hops` (proteção contra laço entre agentes) |
+| `palavras` | O texto passa do `limite_palavras_mensagem`; a recusa sugere o handoff |
+
+O orçamento do agente despachado entra na Fase 3, com as execuções.
+
+### No protocolo (proto 2)
+
+```jsonc
+// terra send → hub
+{"t":"hello","proto":2,"role":"sender"}
+{"t":"send","message":{"id":"1bd4…","from":"usuario","to":"frontend","level":1,"hops":1,
+ "tag":null,"text":"Rode os testes","refs":[],"note":"/…/messages/1bd4…/note.md","created":1793…}}
+// hub → terra send
+{"t":"sent","id":"1bd4…","state":"enviada"}          // ou "na_fila"
+{"t":"rejected","id":"1bd4…","code":"hops","text":"…"}
+
+// hub → janela
+{"t":"deliver","tab":"9c1e…","message":{ … }}
+{"t":"name_rejected","tab":"41d0…","name":"frontend","reason":"outra aba já tem esse nome"}
+// janela → hub
+{"t":"ack","id":"1bd4…"}
+
+// hub → monitor (para a seção Mensagens da aba, na Fase 4)
+{"t":"message","message":{ … },"state":"entregue","reason":null}
+```
+
+- **Nomes**: o hub confere os nomes de cada `hello` e `status`. O repetido (fica o de quem chegou antes), o de um agente da configuração e o inválido saem do status, e a janela recebe o `name_rejected`: o chat perde o nome e avisa no histórico.
+- **Estados** da mensagem: `enviada` (o hub a pôs na fila da janela), `entregue` (a janela confirmou com o `ack`: está na caixa do chat), `na_fila` (agente da configuração) e `recusada` (com o motivo no `message.json`).
+- **Configuração**: o hub relê o `orchestrator.toml` a cada mensagem e a cada nome. Com o arquivo inválido, fica a última configuração válida, e o erro vai uma vez ao `hub.log`.
+- Uma janela que sai (`bye`) tem a conexão fechada pelo hub. Desde a v0.11.0, a janela lê o hub numa thread, e é assim que essa thread termina.
+
 ## Testes
 
 - `hub::daemon::tests`: sobe um hub numa pasta temporária, conecta um monitor e uma instância e confere a entrada, a mudança de estado, o `snapshot`, o `bye` (`gone` com `exit`) e a saída sozinho sem conexões (levando o lock).
@@ -240,7 +343,10 @@ também o inicia.
 - `hub::tests`: hubs de verdade, em processos próprios. O hub é o próprio executável de testes rodando só o teste ignorado `hub_process`, com a pasta do teste em `TERRAFORME_HUB_DIR`:
   - **`kill -9` no hub** com três janelas abertas: todas reconectam ao hub novo, que nasce de uma delas, e reenviam o estado, até o que mudou com o hub fora do ar;
   - **dez janelas no mesmo segundo**: dez hubs disputam e só um sobe (uma linha de início no `hub.log`);
-  - **cliente que não lê**: é desconectado, e o monitor que lê recebe as 5000 mudanças até a última.
+  - **cliente que não lê**: é desconectado, e o monitor que lê recebe as 5000 mudanças até a última;
+  - **mensagens** (`hub::tests::messages`): a entrega à aba com o nome e o `ack` (`enviada` → `entregue`), o nome repetido e o de um agente da configuração recusados, a mensagem para o agente da configuração na fila, e as recusas do hub por saltos acima do limite e por destino desconhecido.
+- `orchestrator::*::tests`: o `orchestrator.toml` (o exemplo da especificação, o padrão sem arquivo e os erros com o lugar), a nota (o modelo, a mini nota e as recusas) e o `terra send` (o nível pelos argumentos, as recusas antes do hub e a linha de saída).
+- `tui::chat::tests`: o `/agente` (o nome, o `TERRA_AGENT` no ambiente, o nome recusado) e a mensagem recebida, que fica na caixa e nunca vai ao agente.
 
 O CI roda os testes no Linux, no Windows e no macOS.
 
@@ -255,5 +361,5 @@ tail -f ~/.terraforme/hub.log
 
 ## Próximos passos
 
-- **Controlar** os terminais pelo hub (mensagens hub → instância, ex.: focar, encerrar um chat, abrir um chat delegado).
-- Os chats delegados de verdade, com as configurações da seção Configurações da aba.
+- **Fase 3, despacho**: a fila por agente da configuração, a execução não interativa (`claude -p`), o registro em `~/.terraforme/runs/<id>/`, o orçamento e o escalonamento por falha.
+- **Fase 4, aba Orquestrador**: todas as seções (agentes, filas, mensagens, custos, guardrails, roteamento e o interruptor geral), com a recarga a quente do `orchestrator.toml`.

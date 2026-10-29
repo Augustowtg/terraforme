@@ -220,3 +220,180 @@ fn a_client_that_does_not_read_is_disconnected_without_holding_the_others() {
     drop((window, slow, monitor));
     server.join().unwrap();
 }
+
+// As mensagens entre agentes, num hub nesta mesma thread de testes.
+mod messages {
+    use super::*;
+    use crate::hub::client::Event;
+    use crate::hub::protocol::Tab;
+    use crate::orchestrator::config::Config;
+    use crate::orchestrator::message::{self, Message, State};
+    use crate::orchestrator::send;
+
+    struct Hub {
+        dir: tempfile::TempDir,
+        endpoint: Endpoint,
+        server: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Hub {
+        fn start(config: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join("orchestrator.toml"), config).unwrap();
+            let endpoint = Endpoint::in_dir(dir.path());
+            let server = {
+                let endpoint = endpoint.clone();
+                thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
+            };
+            Self {
+                dir,
+                endpoint,
+                server: Some(server),
+            }
+        }
+
+        /// Uma janela com uma aba chamada `name` (o id da aba é `tab`).
+        fn window(&self, tab: &str, name: &str) -> Reporter {
+            let status = Status {
+                chats: 1,
+                tabs: vec![Tab {
+                    id: tab.into(),
+                    title: "Principal".into(),
+                    name: Some(name.into()),
+                    task: None,
+                }],
+                ..Status::default()
+            };
+            let window = Reporter::start_with(
+                self.endpoint.clone(),
+                false,
+                "w".into(),
+                "/w".into(),
+                status,
+            );
+            wait(5, "a janela no hub", || {
+                instances(&self.endpoint)
+                    .iter()
+                    .any(|i| i.status.tabs.iter().any(|t| t.id == tab))
+                    .then_some(())
+            });
+            window
+        }
+
+        /// Prepara a mensagem (com a nota) como o `terra send` faria.
+        fn message(&self, to: &str, hops: u32) -> Message {
+            let args = send::Args {
+                to: to.into(),
+                text: Some("Rode os testes".into()),
+                ..send::Args::default()
+            };
+            let config = Config::default();
+            send::prepare(
+                &args,
+                "usuario",
+                hops,
+                &config,
+                self.dir.path(),
+                self.dir.path(),
+            )
+            .unwrap()
+        }
+
+        fn send(&self, message: &Message) -> Value {
+            client::send_message(&self.endpoint, false, &message.to_json()).unwrap()
+        }
+
+        fn state(&self, id: &str) -> Option<State> {
+            message::state(self.dir.path(), id)
+        }
+    }
+
+    impl Drop for Hub {
+        fn drop(&mut self) {
+            if let Some(server) = self.server.take() {
+                let _ = server.join();
+            }
+        }
+    }
+
+    fn next_event(window: &Reporter) -> Event {
+        wait(5, "um evento do hub", || window.events().into_iter().next())
+    }
+
+    #[test]
+    fn a_message_reaches_the_named_tab_and_the_ack_marks_it_delivered() {
+        let hub = Hub::start("");
+        let window = hub.window("t1", "frontend");
+        let msg = hub.message("frontend", 0);
+        let reply = hub.send(&msg);
+        assert_eq!(
+            (reply["t"].as_str(), reply["state"].as_str()),
+            (Some("sent"), Some("enviada"))
+        );
+        assert_eq!(hub.state(&msg.id), Some(State::Sent));
+
+        let Event::Deliver { tab, message } = next_event(&window) else {
+            panic!("esperava a entrega");
+        };
+        assert_eq!(tab, "t1");
+        assert_eq!(message, msg);
+        window.ack(&msg.id);
+        wait(5, "o ack", || {
+            (hub.state(&msg.id) == Some(State::Delivered)).then_some(())
+        });
+        drop(window);
+    }
+
+    #[test]
+    fn a_name_belongs_to_one_tab_and_never_to_a_configured_agent() {
+        let hub = Hub::start("[agents.backend]\ncwd = \"/proj/api\"\n");
+        let first = hub.window("t1", "frontend");
+        let second = hub.window("t2", "frontend");
+        let Event::NameRejected { tab, name, .. } = next_event(&second) else {
+            panic!("esperava a recusa do nome");
+        };
+        assert_eq!((tab.as_str(), name.as_str()), ("t2", "frontend"));
+        // O hub tirou o nome repetido da lista.
+        let all = instances(&hub.endpoint);
+        let named = all
+            .iter()
+            .flat_map(|i| &i.status.tabs)
+            .filter(|t| t.name.is_some())
+            .count();
+        assert_eq!(named, 1);
+
+        let third = hub.window("t3", "backend");
+        let Event::NameRejected { reason, .. } = next_event(&third) else {
+            panic!("esperava a recusa do nome da configuração");
+        };
+        assert!(reason.contains("configuração"));
+
+        // Para o agente da configuração, a mensagem vai para a fila dele.
+        let msg = hub.message("backend", 0);
+        assert_eq!(hub.send(&msg)["state"], "na_fila");
+        assert_eq!(hub.state(&msg.id), Some(State::Queued));
+        drop((first, second, third));
+    }
+
+    #[test]
+    fn too_many_hops_and_unknown_agents_are_rejected_by_the_hub() {
+        let hub = Hub::start("[global]\nmax_hops = 2\n");
+        let window = hub.window("t1", "frontend");
+        // O `terra send` recusaria antes; aqui ela chega ao hub com 3 saltos.
+        let mut looping = hub.message("frontend", 0);
+        looping.hops = 3;
+        let reply = hub.send(&looping);
+        assert_eq!(
+            (reply["t"].as_str(), reply["code"].as_str()),
+            (Some("rejected"), Some("hops"))
+        );
+        assert_eq!(hub.state(&looping.id), Some(State::Rejected));
+
+        let lost = hub.message("ninguem", 0);
+        assert_eq!(hub.send(&lost)["code"], "agente");
+        // Nada chegou à aba.
+        thread::sleep(Duration::from_millis(200));
+        assert!(window.events().is_empty());
+        drop(window);
+    }
+}

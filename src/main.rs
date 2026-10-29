@@ -4,6 +4,7 @@ mod db;
 mod extension;
 mod files;
 mod hub;
+mod orchestrator;
 mod platform;
 mod settings;
 mod theme;

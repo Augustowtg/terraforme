@@ -86,11 +86,21 @@ pub fn instance_line(instance: &Instance) -> String {
     )
 }
 
-/// A linha de uma aba de uma janela no `terra status`: o título e o que o
-/// agente dela está fazendo (ex.: `Chat 2       parado`).
+/// A linha de uma aba de uma janela no `terra status`: o título, o nome de
+/// agente (com `@`) e o que o agente dela está fazendo (ex.:
+/// `Chat 2       @frontend    parado`).
 pub fn tab_line(tab: &Tab) -> String {
     let doing = tab.task.as_deref().unwrap_or("parado");
-    format!("{:<12} {}", truncate(&tab.title, 12), truncate(doing, 40))
+    let name = tab
+        .name
+        .as_deref()
+        .map_or(String::new(), |name| format!("@{name}"));
+    format!(
+        "{:<12} {:<12} {}",
+        truncate(&tab.title, 12),
+        truncate(&name, 12),
+        truncate(doing, 40)
+    )
 }
 
 /// As colunas de uma instância na aba Orquestrador: o que faz, as sessões
@@ -184,14 +194,16 @@ mod tests {
         let tab = Tab {
             id: "1".into(),
             title: "Principal".into(),
+            name: None,
             task: None,
         };
-        assert_eq!(tab_line(&tab), "Principal    parado");
+        assert_eq!(tab_line(&tab), "Principal                 parado");
         let busy = Tab {
+            name: Some("frontend".into()),
             task: Some("Usando Bash...".into()),
             ..tab
         };
-        assert_eq!(tab_line(&busy), "Principal    Usando Bash...");
+        assert_eq!(tab_line(&busy), "Principal    @frontend    Usando Bash...");
     }
 
     #[test]

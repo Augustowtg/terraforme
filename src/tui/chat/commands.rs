@@ -14,13 +14,31 @@ use crate::theme::{self, Variant};
 use crate::tui::widgets::popup;
 
 /// Comandos que já têm interface no terra.
-const INTERFACES: &[&str] = &["clear", "compact", "model", "login", "usage"];
+const INTERFACES: &[&str] = &[
+    "clear",
+    "compact",
+    "model",
+    "login",
+    "usage",
+    "agente",
+    "mensagens",
+];
 /// Comandos do terra que o agente não informa (o `/login` do Claude Code só
 /// existe no modo interativo dele): nome e descrição.
-const TERRA_COMMANDS: &[(&str, &str)] = &[(
-    "login",
-    "Entra de novo na conta do agente (ex.: token expirado ou revogado)",
-)];
+const TERRA_COMMANDS: &[(&str, &str)] = &[
+    (
+        "login",
+        "Entra de novo na conta do agente (ex.: token expirado ou revogado)",
+    ),
+    (
+        "agente",
+        "Dá um nome a este chat para receber mensagens de outros agentes (/agente <nome>)",
+    ),
+    (
+        "mensagens",
+        "Mostra as mensagens que outros agentes mandaram a este chat",
+    ),
+];
 /// Largura da coluna do nome (`/nome`).
 const NAME_WIDTH: usize = 18;
 
@@ -77,7 +95,12 @@ fn terra_commands_are_added_once() {
     let added = with_terra(Vec::new());
     assert_eq!(added.iter().filter(|c| c.name == "login").count(), 1);
     // Se o agente um dia informar o /login, fica o dele.
-    assert_eq!(with_terra(vec![login("do agente")]), [login("do agente")]);
+    let mine = with_terra(vec![login("do agente")]);
+    assert_eq!(mine[0], login("do agente"));
+    assert_eq!(mine.iter().filter(|c| c.name == "login").count(), 1);
+    // Os do orquestrador também entram.
+    assert!(mine.iter().any(|c| c.name == "agente"));
+    assert!(mine.iter().any(|c| c.name == "mensagens"));
 }
 
 /// Desenha a lista acima de `input`. `None` em `found` é o catálogo ainda

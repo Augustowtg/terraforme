@@ -9,7 +9,8 @@
 //! | Windows | `\\.\pipe\terraforme-<usuario>-hub`                                         | `%LOCALAPPDATA%\terraforme\hub.lock` |
 //!
 //! No Windows, o pipe só abre para o usuário e para o sistema
-//! ([`owner_only`]). Com [`DIR_ENV`], tudo fica numa pasta só (os testes).
+//! ([`owner_only`]). Com [`DIR_ENV`], tudo fica numa pasta só, inclusive a
+//! do orquestrador (os testes).
 
 use std::ffi::OsString;
 use std::fs;
@@ -34,6 +35,9 @@ pub struct Endpoint {
     pub log: PathBuf,
     /// A trava do hub vivo: só um processo a tem (ver `daemon::bind`).
     pub guard: PathBuf,
+    /// A pasta do terra (`~/.terraforme`): o `orchestrator.toml`, as
+    /// mensagens e as notas.
+    pub home: PathBuf,
     /// A pasta de [`DIR_ENV`], quando é ela: o hub iniciado a recebe.
     pub dir: Option<PathBuf>,
     /// Como iniciar o hub em vez do `terra __hub` deste executável (os
@@ -55,6 +59,7 @@ impl Endpoint {
             lock: data.join("hub.lock"),
             log: data.join("hub.log"),
             guard: data.join("hub.guard"),
+            home: crate::db::data_dir()?,
             dir: None,
             launcher: None,
         })
@@ -78,6 +83,7 @@ impl Endpoint {
             lock: dir.join("hub.lock"),
             log: dir.join("hub.log"),
             guard: dir.join("hub.guard"),
+            home: dir.to_path_buf(),
             dir: Some(dir.to_path_buf()),
             launcher: None,
         }

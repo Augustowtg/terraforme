@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use super::endpoint::Endpoint;
 use super::protocol::{self, Instance, Status, recv, send};
 use super::{Conn, DIR_ENV, HEARTBEAT, MAX_LINE, PROTO};
+use crate::orchestrator::message::Message;
 
 /// Quanto o cliente espera o hub que ele iniciou subir.
 const START_WAIT: Duration = Duration::from_secs(3);
@@ -113,8 +114,41 @@ fn handshake(stream: Stream, hello: &Value) -> io::Result<(BufReader<Conn>, Conn
 
 enum Msg {
     Status(Status),
+    /// Uma mensagem para o hub, na ordem (o `ack`).
+    Raw(Value),
     /// O terra está saindo: manda o `bye` e avisa no canal.
     Bye(Sender<()>),
+}
+
+/// O que o hub manda à janela.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    /// Uma mensagem de outro agente para a aba `tab`.
+    Deliver { tab: String, message: Message },
+    /// O hub recusou o nome da aba `tab`.
+    NameRejected {
+        tab: String,
+        name: String,
+        reason: String,
+    },
+}
+
+impl Event {
+    fn from_json(msg: &Value) -> Option<Self> {
+        let text = |key: &str| msg[key].as_str().map(str::to_string);
+        match msg["t"].as_str()? {
+            "deliver" => Some(Event::Deliver {
+                tab: text("tab")?,
+                message: Message::from_json(&msg["message"])?,
+            }),
+            "name_rejected" => Some(Event::NameRejected {
+                tab: text("tab")?,
+                name: text("name")?,
+                reason: text("reason").unwrap_or_default(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// A instância: o terra contando ao hub o que está fazendo.
@@ -122,6 +156,8 @@ pub struct Reporter {
     tx: Sender<Msg>,
     last: Status,
     id: String,
+    /// O que o hub mandou, lido por uma thread.
+    events: Receiver<Event>,
 }
 
 impl Reporter {
@@ -139,6 +175,7 @@ impl Reporter {
         status: Status,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
+        let (events_tx, events) = mpsc::channel();
         let last = status.clone();
         let id = protocol::new_id();
         let hello = Hello {
@@ -146,8 +183,23 @@ impl Reporter {
             workspace,
             cwd,
         };
-        thread::spawn(move || report(&endpoint, autostart, &hello, status, &rx));
-        Self { tx, last, id }
+        thread::spawn(move || report(&endpoint, autostart, &hello, status, &rx, &events_tx));
+        Self {
+            tx,
+            last,
+            id,
+            events,
+        }
+    }
+
+    /// O que o hub mandou desde a última vez. Nunca bloqueia.
+    pub fn events(&self) -> Vec<Event> {
+        self.events.try_iter().collect()
+    }
+
+    /// Confirma ao hub que a mensagem `id` chegou à aba.
+    pub fn ack(&self, id: &str) {
+        let _ = self.tx.send(Msg::Raw(json!({"t": "ack", "id": id})));
     }
 
     /// O id desta instância no hub.
@@ -181,7 +233,7 @@ struct Hello {
 
 /// O que a fila trouxe.
 enum Next {
-    /// Chegou um estado novo (já em `latest`).
+    /// Chegou um estado novo (já em `latest`) ou mensagens (em `raw`).
     Status,
     Bye(Sender<()>),
     /// Nada no tempo dado.
@@ -191,8 +243,8 @@ enum Next {
 }
 
 /// Espera a fila por até `timeout` e junta os estados que chegaram: só o
-/// mais novo importa.
-fn next(rx: &Receiver<Msg>, timeout: Duration, latest: &mut Status) -> Next {
+/// mais novo importa. As mensagens vão para `raw`, na ordem.
+fn next(rx: &Receiver<Msg>, timeout: Duration, latest: &mut Status, raw: &mut Vec<Value>) -> Next {
     let first = match rx.recv_timeout(timeout) {
         Ok(msg) => msg,
         Err(RecvTimeoutError::Timeout) => return Next::Timeout,
@@ -203,6 +255,7 @@ fn next(rx: &Receiver<Msg>, timeout: Duration, latest: &mut Status) -> Next {
         match msg {
             Msg::Bye(ack) => return Next::Bye(ack),
             Msg::Status(status) => *latest = status,
+            Msg::Raw(msg) => raw.push(msg),
         }
         match rx.try_recv() {
             Ok(more) => msg = more,
@@ -220,8 +273,11 @@ fn report(
     hello: &Hello,
     mut latest: Status,
     rx: &Receiver<Msg>,
+    events: &Sender<Event>,
 ) {
     let mut retry = Duration::ZERO;
+    // As mensagens que esperam a conexão (o `ack` com o hub fora do ar).
+    let mut raw = Vec::new();
     loop {
         // Entre as tentativas, a fila continua andando.
         let deadline = Instant::now() + retry;
@@ -229,7 +285,7 @@ fn report(
             .checked_duration_since(Instant::now())
             .filter(|d| !d.is_zero())
         {
-            match next(rx, left, &mut latest) {
+            match next(rx, left, &mut latest, &mut raw) {
                 Next::Bye(ack) => {
                     let _ = ack.send(());
                     return;
@@ -243,7 +299,7 @@ fn report(
             continue;
         };
         let msg = protocol::hello_instance(&hello.id, &hello.workspace, &hello.cwd, &latest);
-        let Ok((_input, mut output, answer)) = handshake(stream, &msg) else {
+        let Ok((mut input, mut output, answer)) = handshake(stream, &msg) else {
             continue;
         };
         match answer["t"].as_str() {
@@ -257,9 +313,35 @@ fn report(
             Some("reject") => return,
             _ => continue,
         }
+        // O que o hub manda vem por uma thread, até a conexão fechar.
+        let _ = input.get_ref().set_recv_timeout(None);
+        let events = events.clone();
+        thread::spawn(move || {
+            while let Ok(Some(msg)) = recv(&mut input) {
+                if let Some(event) = Event::from_json(&msg)
+                    && events.send(event).is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let mut status_changed = false;
         loop {
-            let sent = match next(rx, HEARTBEAT, &mut latest) {
-                Next::Status => send(&mut output, &protocol::status_message(&latest)),
+            let flushed = raw
+                .drain(..)
+                .try_for_each(|msg| send(&mut output, &msg))
+                .and_then(|()| match std::mem::take(&mut status_changed) {
+                    true => send(&mut output, &protocol::status_message(&latest)),
+                    false => Ok(()),
+                });
+            if flushed.is_err() {
+                break;
+            }
+            let sent = match next(rx, HEARTBEAT, &mut latest, &mut raw) {
+                Next::Status => {
+                    status_changed = true;
+                    Ok(())
+                }
                 Next::Timeout => send(&mut output, &json!({"t": "heartbeat"})),
                 Next::Bye(ack) => {
                     let _ = send(&mut output, &json!({"t": "bye", "reason": "exit"}));
@@ -436,4 +518,19 @@ pub fn snapshot_with(endpoint: &Endpoint, autostart: bool) -> io::Result<Vec<Val
             return Ok(msg["instances"].as_array().cloned().unwrap_or_default());
         }
     }
+}
+
+/// Manda uma mensagem entre agentes pelo hub (o `terra send`) e devolve a
+/// resposta dele: `sent` ou `rejected`.
+pub fn send_message(endpoint: &Endpoint, autostart: bool, message: &Value) -> io::Result<Value> {
+    let stream = connect(endpoint, autostart)?;
+    let hello = json!({"t": "hello", "proto": PROTO, "role": "sender"});
+    let (mut input, mut output, answer) = handshake(stream, &hello)?;
+    if answer["t"] != "welcome" {
+        return Err(io::Error::other(
+            "o orquestrador é de outra versão do terra; feche os terras abertos e tente de novo",
+        ));
+    }
+    send(&mut output, &json!({"t": "send", "message": message}))?;
+    recv(&mut input)?.ok_or_else(|| io::ErrorKind::UnexpectedEof.into())
 }

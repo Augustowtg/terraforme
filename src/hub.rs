@@ -26,7 +26,7 @@ use std::time::Duration;
 
 /// A versão do protocolo. Um hub e uma instância com versões diferentes não
 /// conversam: o mais novo vence (veja [`daemon`]).
-pub const PROTO: u64 = 1;
+pub const PROTO: u64 = 2;
 /// A versão do terra, que vai no `hello` e no `hub.lock`.
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// De quanto em quanto tempo a instância sem novidades manda o `heartbeat`.

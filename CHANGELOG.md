@@ -4,6 +4,23 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.11.0] - 2026-10-28
+
+### Adicionado
+
+- **Mensagens entre agentes**: `terra send <agente> [texto] [--ref <arquivo>]... [--handoff <arquivo>] [--tag <tag>]`, em três níveis: só o texto (1), texto e arquivos (2) e o handoff completo (3). Nos níveis 1 e 2, o terra escreve uma mini nota; no 3, a nota é a do `--handoff`. Toda mensagem fica em `~/.terraforme/messages/<msg_id>/`, com a nota (`note.md`) e o estado (`message.json`: `enviada`, `entregue`, `na_fila` ou `recusada`). A saída é uma linha só (`enviada 1bd4933b → frontend (nível 1)`), porque entra no contexto do agente que mandou.
+- `terra handoff new <agente>`: cria a nota de handoff em branco (`# Handoff <msg_id> · <origem> → <destino>`, com Objetivo, Feito, Arquivos, Próximo passo e Pronto quando) em `~/.terraforme/handoffs/` e mostra o caminho.
+- Validações antes de mandar e de novo no hub: saltos acima do `max_hops` (proteção contra laço), texto acima do `limite_palavras_mensagem` (a recusa sugere o handoff), arquivo do `--ref` ou do `--handoff` que não existe, nota sem as seções ou com mais de 40 linhas, nota já mandada e destino desconhecido.
+- `/agente <nome>` no chat: dá a ele um nome de agente, único na máquina, para receber mensagens. `/agente` mostra o nome e `/agente -` o tira. O hub recusa o nome repetido e o de um agente da configuração, e o chat avisa. Com nome, o agente do chat roda com `TERRA_AGENT=<nome>`, e o `terra send` de dentro dele manda com esse remetente.
+- Uma mensagem para uma aba manual **nunca vai ao agente dela**: fica na caixa do chat, o histórico avisa e as barras mostram quantas faltam ler (`Chat ✉1`). O `/mensagens` mostra as mais novas, com o texto e o caminho da nota.
+- `~/.terraforme/orchestrator.toml`, a configuração do orquestrador (`[global]`, `[agents.<nome>]`, `[modelos]` e `[roteamento]`), lida e validada com o lugar de cada erro. Sem o arquivo, vale o padrão. A mensagem para um `[agents.<nome>]` fica na fila dele (o despacho é da próxima versão).
+- O `terra status` mostra o nome de agente de cada aba (`@frontend`).
+
+### Alterado
+
+- O protocolo do hub vai para a versão 2 (`send`, `deliver`, `ack`, `name_rejected` e o evento `message` para os monitores). Uma janela de versão diferente segue sem o hub, como antes.
+- A janela passa a ler o que o hub manda numa thread, e o hub fecha a conexão da janela que sai (`bye`).
+
 ## [0.10.0] - 2026-10-28
 
 ### Adicionado
