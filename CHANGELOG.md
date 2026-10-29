@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.9.2] - 2026-10-28
+
+### Removido
+
+- Na aba **Orquestrador**, a marca `← este` na linha do próprio terminal.
+
 ## [0.9.1] - 2026-10-28
 
 ### Alterado

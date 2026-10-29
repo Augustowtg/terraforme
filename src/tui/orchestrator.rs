@@ -11,7 +11,7 @@
 //!
 //!  Workspaces
 //!    terraforme-cli  ·  3 instâncias ativas + 2 sub agentes
-//!      ● Pensando...                  │ 3 sessões  │ 5 min  ← este
+//!      ● Pensando...                  │ 3 sessões  │ 5 min
 //!      ● parado                       │ 1 sessão   │ 10 min
 //!      …
 //!
@@ -217,7 +217,7 @@ impl HubView<'_> {
                     _ => theme::path(),
                 };
                 let [doing, sessions, elapsed] = view::instance_columns(instance);
-                let mut spans = vec![
+                let spans = vec![
                     Span::styled("     ● ", dot),
                     Span::styled(format!("{doing:<DOING_WIDTH$}"), text),
                     Span::styled(" │ ", theme::muted()),
@@ -225,9 +225,6 @@ impl HubView<'_> {
                     Span::styled(" │ ", theme::muted()),
                     Span::styled(elapsed, text),
                 ];
-                if self.own == Some(instance.id.as_str()) {
-                    spans.push(Span::styled("  ← este", theme::muted()));
-                }
                 lines.push(Line::from(spans));
             }
         }
