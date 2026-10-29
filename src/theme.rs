@@ -69,6 +69,16 @@ pub fn tab_inactive() -> Style {
     path()
 }
 
+/// Bolinha de uma instância viva na aba Orquestrador.
+pub fn alive() -> Style {
+    Style::new().fg(color(ColorName::Green))
+}
+
+/// Bolinha de uma instância sem sinal (`stale`) na aba Orquestrador.
+pub fn stale() -> Style {
+    Style::new().fg(color(ColorName::Peach))
+}
+
 /// Botão "Sair" da barra de navegação: sempre vermelho.
 pub fn quit() -> Style {
     error()
