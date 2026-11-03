@@ -973,4 +973,5 @@ fn wrap_rows(text: &str, width: u16, width_of: impl Fn(char) -> usize) -> Vec<Ra
 }
 
 #[cfg(test)]
+#[path = "input/tests/input.rs"]
 mod tests;
