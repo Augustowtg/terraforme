@@ -547,8 +547,9 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
         });
 
         let prompt = hub.agent_file("api", "prompt.txt");
-        assert!(prompt.starts_with("Você é o agente `api`. Leia `"));
+        assert!(prompt.starts_with("Você é o agente `api`. A nota (`"));
         assert!(prompt.contains(&message.note.display().to_string()));
+        assert!(prompt.contains("# Handoff "));
         let args = hub.agent_file("api", "args.txt");
         for flag in [
             "-p",
@@ -556,6 +557,8 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
             "--model opus",
             "--max-turns 3",
             "--allowedTools Read",
+            "--tools Read",
+            "--strict-mcp-config",
         ] {
             assert!(args.contains(flag), "{flag} em {args}");
         }
@@ -637,6 +640,29 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
             .replace("pausado = true", "pausado = false");
         fs::write(&path, config).unwrap();
         hub.wait_state(&message.id, RunState::Done);
+    }
+
+    #[test]
+    fn an_invalid_config_keeps_the_previous_one_and_the_hub_running() {
+        let hub = Hub::start(&[("api", "ok")], "");
+        let (first, _) = hub.send("usuario", "api");
+        hub.wait_state(&first.id, RunState::Done);
+
+        // Um arquivo quebrado (salvo à mão, por exemplo).
+        fs::write(hub.home().join("orchestrator.toml"), "[agents.api\ncwd = ").unwrap();
+        thread::sleep(Duration::from_millis(1200));
+        let (second, reply) = hub.send("usuario", "api");
+        assert_eq!(
+            reply["state"], "na_fila",
+            "o hub segue com a configuração anterior"
+        );
+        hub.wait_state(&second.id, RunState::Done);
+        let log = fs::read_to_string(&hub.endpoint.log).unwrap();
+        assert_eq!(
+            log.matches("orchestrator.toml inválido").count(),
+            1,
+            "{log}"
+        );
     }
 
     #[test]

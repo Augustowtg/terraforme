@@ -1424,3 +1424,30 @@ fn a_message_from_another_agent_waits_in_the_inbox_and_never_reaches_the_agent()
     chat.tick();
     assert!(sent.borrow().is_empty(), "a mensagem não pode ir ao agente");
 }
+
+#[test]
+fn a_run_tab_shows_the_provider_the_model_and_the_mode_it_reported() {
+    let mut chat = Chat {
+        read_only: true,
+        viewer_provider: Some(("Claude", crate::agent::adapters::claude::display_model)),
+        ..Chat::default()
+    };
+    chat.apply(AgentEvent::Init {
+        session_id: "s1".into(),
+        model: "claude-haiku-5-5".into(),
+        permission_mode: ReportedMode::Unknown("dontAsk".into()),
+    });
+    let title: String = chat
+        .model_title()
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(
+        title.contains("Claude") && title.contains("Haiku - 5.5"),
+        "{title}"
+    );
+    assert_eq!(chat.badges()[0].0, "Modo: dontAsk");
+    // O modo da execução não é o deste terminal: nada de aviso.
+    assert!(chat.history.entries().is_empty());
+}

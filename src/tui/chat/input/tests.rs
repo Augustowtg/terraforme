@@ -339,7 +339,7 @@ fn at_opens_picker_and_tab_inserts_badge() {
 }
 
 #[test]
-fn badge_renders_as_gray_pill_and_backspace_removes_it_whole() {
+fn badge_renders_as_gray_pill_and_backspace_makes_it_editable() {
     let mut input = input_with_files();
     type_text(&mut input, "@main");
     press(&mut input, KeyCode::Enter);
@@ -350,8 +350,16 @@ fn badge_renders_as_gray_pill_and_backspace_removes_it_whole() {
     assert_eq!(buffer[(3, 2)].bg, theme::mention().bg.unwrap());
 
     press(&mut input, KeyCode::Backspace); // o espaço
-    press(&mut input, KeyCode::Backspace); // o badge inteiro
-    assert_eq!(input.text(), "");
+    press(&mut input, KeyCode::Backspace); // o badge volta a ser texto
+    assert_eq!(input.text(), "@src/main.rs");
+    assert!(input.picker_open());
+    // Editável: apagar e escrever muda a consulta, e a lista volta.
+    for _ in 0.."main.rs".len() {
+        press(&mut input, KeyCode::Backspace);
+    }
+    type_text(&mut input, "lib");
+    assert_eq!(input.text(), "@src/lib");
+    assert!(input.picker_open());
 }
 
 #[test]

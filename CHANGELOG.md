@@ -4,6 +4,54 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.5] - 2026-10-30
+
+### Alterado
+
+- O badge de um arquivo marcado com `@` (ex.: `@/README.md`) pode ser editado: o `Backspace` logo depois dele o devolve ao texto `@README.md`, com a lista de arquivos aberta, para mudar o caminho e escolher de novo. Antes, ele apagava o badge inteiro.
+
+## [0.13.4] - 2026-10-30
+
+### Corrigido
+
+- A primeira `@` do input não trava mais a tela. O observador dos arquivos (que percorre o diretório inteiro, inclusive pastas grandes como `target/` e `node_modules/`) passou a ser criado em segundo plano. A lista abre na hora e os arquivos aparecem assim que a primeira leitura termina.
+
+## [0.13.3] - 2026-10-30
+
+### Alterado
+
+- A aba **Orquestrador** foi reorganizada. Logo abaixo dos Despachos fica a seção **Sessões**: cada workspace aparece numa linha (ex.: `▸ Studio · 2 instâncias · 1 sub agente`) e fica fechado até o `Enter` (ou `→`), que mostra embaixo as instâncias dele como `Studio-4242  Principal, Chat 2  rodando · 5 min`. O `Enter` de novo (ou `←`) fecha. As instâncias que saíram não aparecem, nem um workspace sem nenhuma viva. Os sub agentes despachados que estão rodando vêm embaixo, em **Sub agentes em execução**. A seção Workspaces do fim da aba e as abas manuais da lista de agentes deram lugar às Sessões.
+- A seção **Limites** virou **Configuração** e vem logo depois das Sessões, começando pelo **Modo de execução**, agora com os nomes **Demonstrativo (visível nas abas)** e **Segundo plano (não aparece nas abas)**, e pelo **Tempo limite**. A lista dos agentes da configuração passou a se chamar **Agentes despachados**.
+
+### Adicionado
+
+- O **tempo limite** de uma execução pode ser **infinito**: no `Enter`, escreva os minutos ou `infinito` (o vazio também vale como infinito). Com `←`, abaixo de 1 minuto ele vira infinito, e com `→` volta para 1 minuto. No arquivo, fica `tempo_limite_min = "infinito"`, e o hub deixa a execução rodar até acabar.
+
+## [0.13.2] - 2026-10-29
+
+### Corrigido
+
+- A **aba de uma execução** (o sub agente despachado) voltou a mostrar o **provedor**, o **modelo** e o **modo** dela. Sem um adapter próprio, ela mostrava "Sem agente" e "Modelo padrão", e o badge do modo sumia (o `dontAsk` das execuções não tem equivalente no terra), sobrando só o do Consumo. Agora o título mostra, por exemplo, `Claude` e `Haiku - 5.5`, e o badge `Modo: dontAsk` fica enquanto a aba estiver aberta.
+
+## [0.13.1] - 2026-10-29
+
+### Corrigido
+
+- A **barra de contexto** voltou a contar os **tokens de cache** (criação e leitura). Com o cache, quase toda a conversa vem como leitura de cache, e a barra parecia zerar a cada mensagem, mostrando só o trecho novo. A **Auto compactação** usa o mesmo número e, sem o cache, quase nunca disparava. O consumo continua sem o cache.
+
+## [0.13.0] - 2026-10-29
+
+### Adicionado
+
+- `terra send --lote <arquivo | ->`: manda várias mensagens de nível 1 de uma vez, uma por linha (`agente: texto`; linhas vazias e com `#` são puladas). Substitui um agente coordenador, que custava uns 16% do total só para chamar o `terra send`. Uma recusada não para as outras.
+- `ambiente = "minimo" | "completo"` em cada `[agents.<nome>]`. O padrão é `minimo`.
+
+### Alterado
+
+- As execuções despachadas sobem enxutas no ambiente mínimo: `--tools` só com as ferramentas da lista, `--strict-mcp-config`, `--disable-slash-commands` e os hooks desligados. Antes, cada execução carregava todos os servidores MCP, as skills, os plugins e os hooks do usuário, uns 20 mil tokens antes de começar. Para manter tudo isso num agente, use `ambiente = "completo"`.
+- O prompt da execução traz o texto da nota em vez de mandar ler o arquivo, e diz como usar o `terra done "<resumo>"` e o `terra send`, para o agente não gastar turnos lendo a nota nem rodando `--help`.
+- Com quatro agentes em paralelo, o consumo estimado caiu de $0,44 para $0,12 por rodada.
+
 ## [0.12.0] - 2026-10-29
 
 ### Adicionado

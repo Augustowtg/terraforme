@@ -390,9 +390,9 @@ O `StreamParser` (`src/agent/adapters/claude/stream.rs`) emite os eventos assim:
 | `Compacted { tokens }` | `system/compact_boundary`, `compact_metadata.post_tokens` | `src/agent/adapters/claude/stream.rs:46` |
 | `Done { tokens, cache_tokens }` | `usage` do `result`: entrada+saída, e o cache à parte | `src/agent/adapters/claude/stream.rs:185-211` |
 
-`context_tokens` soma só `input_tokens + output_tokens`, sem o cache (`src/agent/adapters/claude/stream.rs:149`).
+`context_tokens` soma `input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens` (`src/agent/adapters/claude/stream.rs:149`).
 
-**Ponto de atenção:** com o prompt caching, a maior parte do contexto vem em `cache_read_input_tokens`. Por isso a barra de contexto mostra um tamanho bem menor que o contexto real; no teste, 83 tokens contra cerca de 1.100 de cache (`src/agent/adapters/claude/stream.rs:381-401`). Isso é de propósito, mas vale revisar.
+Com o prompt caching, a maior parte do contexto vem em `cache_read_input_tokens`. Sem o cache (v0.5.11 a v0.13.0), a barra mostrava só o trecho novo e parecia zerar a cada mensagem, e a auto compactação quase nunca disparava. O consumo (`Done`) continua sem o cache.
 
 **Como o chat usa (`src/tui/chat.rs`):**
 - **Eventos:**

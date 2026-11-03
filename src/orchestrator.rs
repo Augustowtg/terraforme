@@ -13,6 +13,8 @@
 //! em `docs/infra/orquestrador.md`.
 
 pub mod config;
+pub mod costs;
+pub mod edit;
 pub mod message;
 pub mod note;
 pub mod run;

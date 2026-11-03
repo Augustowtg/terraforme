@@ -6,7 +6,8 @@
 //!   nenhuma começa (as que rodam terminam).
 //! - O orçamento do dia (`orcamento_diario`, em execuções) recusa a
 //!   mensagem quando acaba, e avisa a 80%.
-//! - Uma execução que passa do `tempo_limite_min` é encerrada (`timeout`).
+//! - Uma execução que passa do `tempo_limite_min` é encerrada (`timeout`),
+//!   a não ser com `tempo_limite_min = "infinito"`.
 //! - Uma execução de nível 1 ou 2 que falha pede ao remetente, num nível 1,
 //!   o handoff completo (`escalonar_falhas`); a nota dele volta no nível 3.
 //!
@@ -37,7 +38,8 @@ const TERRA: &str = "terra";
 struct Running {
     run: Run,
     child: Child,
-    deadline: Instant,
+    /// `None`: sem tempo limite.
+    deadline: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -210,7 +212,9 @@ impl Hub {
             }
         };
         if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(run::prompt(&run.agent, &run.note).as_bytes());
+            let note = fs::read_to_string(&run.note).ok();
+            let prompt = run::prompt(&run.agent, &run.note, note.as_deref());
+            let _ = stdin.write_all(prompt.as_bytes());
         }
         run.state = RunState::Running;
         run.started = Some(now());
@@ -223,8 +227,10 @@ impl Hub {
         if config.global.run_mode == RunMode::Tab {
             self.show_run(&run, &agent.cwd.to_string_lossy());
         }
-        let deadline =
-            Instant::now() + Duration::from_secs(u64::from(config.global.timeout_min) * 60);
+        let deadline = config
+            .global
+            .timeout_min
+            .map(|min| Instant::now() + Duration::from_secs(u64::from(min) * 60));
         self.dispatcher().running.insert(
             run.agent.clone(),
             Running {
@@ -269,7 +275,7 @@ impl Hub {
                 };
                 let timed_out = match running.child.try_wait() {
                     Ok(Some(_)) | Err(_) => false,
-                    Ok(None) if Instant::now() >= running.deadline => {
+                    Ok(None) if running.deadline.is_some_and(|d| Instant::now() >= d) => {
                         kill_tree(&mut running.child);
                         true
                     }

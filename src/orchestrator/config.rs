@@ -8,7 +8,8 @@
 //! limite_palavras_mensagem = 500
 //! modo_execucao = "aba"          # "aba" ou "segundo_plano"
 //! pausado = false
-//! tempo_limite_min = 30          # depois disso, a execução é encerrada (timeout)
+//! tempo_limite_min = 30          # depois disso, a execução é encerrada (timeout); "infinito" não encerra
+//! aba_em_primeiro_plano = false  # a aba de uma execução vai para a frente ao abrir
 //!
 //! [agents.backend]
 //! cwd = "/proj/api"
@@ -16,6 +17,7 @@
 //! ferramentas = ["Read", "Edit", "Bash(npm test:*)", "Bash(terra:*)"]
 //! max_turnos = 30
 //! orcamento_diario = 40          # execuções por dia
+//! ambiente = "minimo"            # "minimo" (padrão) ou "completo"
 //!
 //! [modelos]
 //! forte = "opus"
@@ -53,6 +55,9 @@ pub enum RunMode {
     Background,
 }
 
+/// O valor do `tempo_limite_min` sem limite.
+pub const INFINITE: &str = "infinito";
+
 /// O `[global]`: os limites de todos os agentes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Global {
@@ -62,8 +67,11 @@ pub struct Global {
     pub run_mode: RunMode,
     /// Os despachos ficam parados (o interruptor geral).
     pub paused: bool,
-    /// Minutos que uma execução pode rodar antes do timeout.
-    pub timeout_min: u32,
+    /// Minutos que uma execução pode rodar antes do timeout; `None` é
+    /// sem limite (`"infinito"`).
+    pub timeout_min: Option<u32>,
+    /// A aba de uma execução vai para a frente ao abrir (no modo `aba`).
+    pub focus_runs: bool,
 }
 
 impl Default for Global {
@@ -74,7 +82,8 @@ impl Default for Global {
             word_limit: 500,
             run_mode: RunMode::Tab,
             paused: false,
-            timeout_min: 30,
+            timeout_min: Some(30),
+            focus_runs: false,
         }
     }
 }
@@ -92,6 +101,9 @@ pub struct Agent {
     pub max_turns: Option<u32>,
     /// Execuções por dia; `None` é sem limite.
     pub daily_budget: Option<u32>,
+    /// Sem o `ambiente = "completo"`, a execução sobe enxuta: só as
+    /// ferramentas da lista, sem MCP, skills nem hooks.
+    pub full_env: bool,
 }
 
 /// Uma regra do `[[roteamento.regra]]`: a tag escolhe o modelo.
@@ -250,7 +262,15 @@ fn global(table: &dyn TableLike) -> Result<Global, String> {
                 }
             }
             "pausado" => global.paused = flag(item, &at)?,
-            "tempo_limite_min" => global.timeout_min = positive(item, &at)?,
+            "tempo_limite_min" => {
+                global.timeout_min = match item.as_str() {
+                    Some(INFINITE) => None,
+                    _ => Some(
+                        positive(item, &at).map_err(|err| format!("{err} ou \"{INFINITE}\""))?,
+                    ),
+                }
+            }
+            "aba_em_primeiro_plano" => global.focus_runs = flag(item, &at)?,
             _ => return Err(format!("chave desconhecida: {at}")),
         }
     }
@@ -270,6 +290,7 @@ fn agent(name: &str, table: &dyn TableLike, at: &str) -> Result<Agent, String> {
         tools: Vec::new(),
         max_turns: None,
         daily_budget: None,
+        full_env: false,
     };
     for (key, item) in table.iter() {
         let at = format!("{at}.{key}");
@@ -279,6 +300,13 @@ fn agent(name: &str, table: &dyn TableLike, at: &str) -> Result<Agent, String> {
             "ferramentas" => agent.tools = texts(item, &at)?,
             "max_turnos" => agent.max_turns = Some(positive(item, &at)?),
             "orcamento_diario" => agent.daily_budget = Some(positive(item, &at)?),
+            "ambiente" => {
+                agent.full_env = match text_of(item, &at)?.as_str() {
+                    "minimo" => false,
+                    "completo" => true,
+                    _ => return Err(format!("{at}: deve ser \"minimo\" ou \"completo\"")),
+                }
+            }
             _ => return Err(format!("chave desconhecida: {at}")),
         }
     }
