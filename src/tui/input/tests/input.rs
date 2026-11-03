@@ -778,3 +778,49 @@ fn paste_of_exactly_the_limit_stays_text() {
     assert_eq!(input.len(), mention::PASTE_LIMIT);
     assert!(input.mentions.is_empty());
 }
+
+#[test]
+fn ampersand_opens_patterns_and_sends_the_instruction() {
+    let mut input = input_with_files();
+    type_text(&mut input, "resuma &");
+    assert!(input.picker_open());
+    type_text(&mut input, "asd");
+    assert_eq!(press(&mut input, KeyCode::Enter), Outcome::Handled);
+    assert!(!input.picker_open());
+    assert_eq!(input.mentions, [Mention::Pattern("ASD-STE100".into())]);
+    type_text(&mut input, "isso");
+    assert_eq!(
+        input.text(),
+        "resuma (use ASD-STE100 com 75% de precisão) isso"
+    );
+    let terminal = render(&input);
+    let row: String = (0..60)
+        .map(|x| terminal.backend().buffer()[(x, 2)].symbol().to_string())
+        .collect();
+    assert!(row.contains("resuma  &ASD-STE100  isso"));
+}
+
+#[test]
+fn ampersand_inside_a_word_and_unknown_names_stay_text() {
+    let mut input = input_with_files();
+    type_text(&mut input, "a&b ");
+    assert!(!input.picker_open());
+    // Um `&nome` escrito à mão vira badge ao sair dele; um que não é padrão
+    // fica como texto.
+    type_text(&mut input, "&kiss &nada ");
+    assert_eq!(input.mentions, [Mention::Pattern("KISS".into())]);
+    assert_eq!(
+        input.text(),
+        "a&b (siga o KISS: a solução mais simples que resolve o pedido) &nada "
+    );
+}
+
+#[test]
+fn backspace_turns_a_pattern_badge_back_into_text() {
+    let mut input = input_with_files();
+    type_text(&mut input, "&tdd ");
+    press(&mut input, KeyCode::Backspace);
+    press(&mut input, KeyCode::Backspace);
+    assert!(input.picker_open());
+    assert_eq!(input.buffer, "&TDD");
+}

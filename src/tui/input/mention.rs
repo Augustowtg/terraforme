@@ -11,7 +11,8 @@
 //! cursor, a seleção e o Backspace tratam o badge inteiro como uma unidade.
 //!
 //! Uma skill escolhida na lista da `/` vira um badge do mesmo jeito
-//! (`/docs`), em qualquer ponto do texto. Um texto colado com mais de
+//! (`/docs`), em qualquer ponto do texto, e um padrão da lista do `&`
+//! também (`&ASD-STE100`, [`patterns`]). Um texto colado com mais de
 //! [`PASTE_LIMIT`] caracteres também, como no Claude Code
 //! (`[Pasted text #1 +12 lines]`); ele vai inteiro na mensagem.
 
@@ -19,6 +20,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
+use super::patterns;
 use crate::files::FileEntry;
 use crate::theme;
 use crate::tui::widgets::popup;
@@ -52,12 +54,14 @@ pub enum Mention {
     Create(String),
     /// Nome da skill, sem a `/` (ex.: `docs`).
     Skill(String),
+    /// Nome do padrão de prompt, sem o `&` (ex.: `ASD-STE100`).
+    Pattern(String),
     /// Texto colado grande: `number` é o `#` do badge (1, 2...).
     Paste { number: usize, text: String },
 }
 
 /// Texto do badge (sem os espaços do pill): `@/src/main.rs`,
-/// `create(Rust):@src/novo.rs`, `/docs` ou `[Pasted text #1 +12 lines]` (sem
+/// `create(Rust):@src/novo.rs`, `/docs`, `&ASD-STE100` ou `[Pasted text #1 +12 lines]` (sem
 /// quebras de linha, só `[Pasted text #1]`).
 pub fn badge_label(mention: &Mention) -> String {
     match mention {
@@ -67,6 +71,7 @@ pub fn badge_label(mention: &Mention) -> String {
             None => format!("create:@{path}"),
         },
         Mention::Skill(name) => format!("/{name}"),
+        Mention::Pattern(name) => format!("&{name}"),
         Mention::Paste { number, text } => match text.matches('\n').count() {
             0 => format!("[Pasted text #{number}]"),
             lines => format!("[Pasted text #{number} +{lines} lines]"),
@@ -90,12 +95,17 @@ pub fn badge_span(mention: &Mention, selected: bool) -> Span<'static> {
 }
 
 /// Como a menção vai no texto enviado ao agente: `@src/main.rs`,
-/// `@docs/test (ainda não existe: criar)`, `/docs` ou o texto colado inteiro.
+/// `@docs/test (ainda não existe: criar)`, `/docs`, a instrução do padrão
+/// (`(use ASD-STE100 com 75% de precisão)`) ou o texto colado inteiro.
 pub fn prompt_text(mention: &Mention) -> String {
     match mention {
         Mention::File(path) => format!("@{path}"),
         Mention::Create(path) => format!("@{path} (ainda não existe: criar)"),
         Mention::Skill(name) => format!("/{name}"),
+        Mention::Pattern(name) => match patterns::find(name) {
+            Some(pattern) => format!("({})", pattern.instruction),
+            None => format!("&{name}"),
+        },
         Mention::Paste { text, .. } => text.clone(),
     }
 }
