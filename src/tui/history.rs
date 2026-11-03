@@ -8,6 +8,9 @@
 //!
 //! As linhas são quebradas aqui (e não pelo `Paragraph`) para o mouse saber
 //! exatamente qual caractere está em cada célula.
+//!
+//! - [`markdown`]: o texto do agente formatado (títulos, listas, ênfase);
+//! - [`code`]: o realce dos blocos de código.
 
 mod code;
 mod markdown;

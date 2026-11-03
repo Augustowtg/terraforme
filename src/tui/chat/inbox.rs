@@ -8,10 +8,10 @@
 use std::borrow::Cow;
 
 use super::Chat;
-use super::history::Entry;
 use crate::extension::Contribution;
 use crate::orchestrator::message::Message;
 use crate::orchestrator::{AGENT_ENV, config};
+use crate::tui::history::Entry;
 
 /// Quantas mensagens o `/mensagens` mostra (as mais novas).
 const SHOWN: usize = 10;

@@ -4,15 +4,11 @@
 //!
 //! O chat fala com o agente só pelo contrato [`ChatAdapter`]: não sabe qual
 //! provedor está por trás (hoje, o Claude CLI). Este módulo liga as partes:
-//! [`input`] (caixa de texto), [`history`] (conversa) e [`mode`] (como status
-//! e modo aparecem).
+//! o componente [`input`] (caixa de texto, comandos de `/` e as extensões,
+//! como o provedor, o modelo e o status do agente) e o componente
+//! [`history`] (conversa).
 
-mod commands;
-mod history;
 mod inbox;
-mod input;
-mod mention;
-mod mode;
 pub(super) mod model_menu;
 mod permission;
 #[cfg(test)]
@@ -29,11 +25,11 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Gauge, Paragraph};
 
-use self::history::{Entry, History};
-use self::input::{InputBox, InputMode, Outcome};
-use self::mode::{AgentStatus, mode_variant};
 use self::model_menu::{ModelMenu, Target, effort_label};
 use self::permission::{Kind, Prompts};
+use super::history::{Entry, History};
+use super::input::extensions::{self, AgentStatus, mode_variant};
+use super::input::{self, InputBox, InputMode, Outcome, commands};
 use super::usage;
 use super::widgets::badge;
 use crate::agent::{
@@ -47,7 +43,7 @@ use crate::theme::{self, Variant};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Acima disso (em caracteres), um texto colado vira um badge no input.
-pub use self::mention::PASTE_LIMIT;
+pub use super::input::PASTE_LIMIT;
 
 /// Altura do painel: atividade, caixa de input e badges.
 pub const HEIGHT: u16 = 1 + input::HEIGHT + badge::HEIGHT;
@@ -1383,11 +1379,7 @@ impl Chat {
                 activity,
             );
         }
-        let status = self.agent_status;
-        let status = Line::styled(
-            format!(" {} ", status.label()),
-            theme::variant(status.variant()),
-        );
+        let status = extensions::status_line(self.agent_status);
         self.input.draw(frame, input, self.model_title(), status);
         if let Some(menu) = &self.model_menu {
             let label = |m: &agent::ModelInfo| self.model_label_of(&m.id);
@@ -1397,7 +1389,7 @@ impl Chat {
         self.draw_badges(frame, badges);
     }
 
-    /// "[Router] Modelo - Versão", com o router no estilo de botão (pill).
+    /// O título do input com o provedor e o modelo desta conversa.
     fn model_title(&self) -> Line<'static> {
         // O provedor é trocado na Config (Provedor).
         let router = match (&self.adapter, self.viewer_provider) {
@@ -1410,11 +1402,7 @@ impl Chat {
             (Some(id), None, Some((_, label))) => label(id),
             _ => "Modelo padrão".to_string(),
         };
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" {router} "), theme::badge_text(Variant::Active)),
-            Span::styled(format!(" {model} "), theme::text()),
-        ])
+        extensions::model_title(router, &model)
     }
 
     /// Os badges à esquerda e, no canto direito, embaixo do status, a barra

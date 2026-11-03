@@ -5,6 +5,8 @@ mod app;
 mod chat;
 mod config;
 mod extensions;
+mod history;
+mod input;
 mod login;
 mod orchestrator;
 mod term;
