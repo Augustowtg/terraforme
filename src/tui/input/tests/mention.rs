@@ -69,6 +69,19 @@ fn badge_label_and_prompt_text() {
     assert_eq!(badge_label(&file), "@/src/test.js");
     assert_eq!(badge_width(&file), 15);
     assert_eq!(prompt_text(&file), "@src/test.js");
+    let create = Mention::Create("docs/test/script.js".into());
+    assert_eq!(
+        badge_label(&create),
+        "create(JavaScript):@docs/test/script.js"
+    );
+    assert_eq!(
+        prompt_text(&create),
+        "@docs/test/script.js (ainda não existe: criar)"
+    );
+    assert_eq!(
+        badge_label(&Mention::Create("docs/test".into())),
+        "create:@docs/test"
+    );
     let skill = Mention::Skill("docs".into());
     assert_eq!(badge_label(&skill), "/docs");
     assert_eq!(prompt_text(&skill), "/docs");
@@ -83,4 +96,15 @@ fn badge_label_and_prompt_text() {
         text: "x".repeat(150),
     };
     assert_eq!(badge_label(&line), "[Pasted text #1]");
+}
+
+#[test]
+fn language_comes_from_text_or_code_extensions() {
+    assert_eq!(language("docs/test/script.js"), Some("JavaScript"));
+    assert_eq!(language("src/novo.RS"), Some("Rust"));
+    assert_eq!(language("README.md"), Some("Markdown"));
+    assert_eq!(language("notas.txt"), Some("Text"));
+    assert_eq!(language("docs/test"), None);
+    assert_eq!(language("logo.png"), None);
+    assert_eq!(language("v1.2/test"), None);
 }

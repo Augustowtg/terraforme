@@ -454,7 +454,11 @@ impl InputBox {
             KeyCode::Char('n') if ctrl => picker.down(found.len()),
             KeyCode::Tab => self.accept(found.get(picker.selected)),
             KeyCode::Enter if key.modifiers.is_empty() => self.accept(found.get(picker.selected)),
-            KeyCode::Esc => self.picker = None,
+            KeyCode::Esc => {
+                if let Some(picker) = self.picker.take() {
+                    self.commit_typed(picker);
+                }
+            }
             _ => return None,
         }
         if let Some(open) = &mut self.picker {
@@ -564,7 +568,8 @@ impl InputBox {
     }
 
     /// Fecha a lista se o `@` sumiu, o cursor saiu da consulta ou ela ganhou
-    /// um espaço. Uma edição volta a seleção para o primeiro item.
+    /// um espaço; o `@caminho` que ficou vira badge ([`Self::commit_typed`]).
+    /// Uma edição volta a seleção para o primeiro item.
     /// Vale para as duas listas (`@` e `/`). Uma edição dentro de um
     /// `@caminho` (ex.: apagar uma letra dele) reabre a lista de arquivos.
     fn refresh_picker(&mut self, edited: bool) {
@@ -587,7 +592,12 @@ impl InputBox {
                 None
             };
             match trigger {
-                '@' => self.picker = refreshed,
+                '@' => {
+                    if refreshed.is_none() {
+                        self.commit_typed(picker);
+                    }
+                    self.picker = refreshed;
+                }
                 _ => self.command_picker = refreshed,
             }
         }
@@ -644,11 +654,16 @@ impl InputBox {
             .collect()
     }
 
-    /// Troca `@consulta` pelo badge de `entry` (e um espaço). Sem item, só
-    /// fecha a lista.
+    /// Troca `@consulta` pelo badge de `entry` (e um espaço). Sem item, a
+    /// consulta escrita vira o badge ([`Self::commit_typed`]).
     fn accept(&mut self, entry: Option<&FileEntry>) {
-        let picker = self.picker.take();
-        let (Some(picker), Some(entry)) = (picker, entry) else {
+        let Some(picker) = self.picker.take() else {
+            return;
+        };
+        let Some(entry) = entry else {
+            if self.commit_typed(picker) {
+                self.insert_char(' ');
+            }
             return;
         };
         let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
@@ -659,13 +674,56 @@ impl InputBox {
         self.anchor = None;
     }
 
-    /// Com o cursor logo depois de um badge de arquivo, troca o badge pelo
-    /// texto `@caminho` e reabre a lista, para editar a menção.
+    /// Troca o `@caminho` escrito à mão (a palavra do `@` em `picker.start`)
+    /// por um badge: do arquivo, se ele existe, ou de um arquivo a criar
+    /// (`create:@docs/test`). Retorna `false` se não havia caminho.
+    fn commit_typed(&mut self, picker: Picker) -> bool {
+        let start = picker.start;
+        if self.buffer.chars().nth(start) != Some('@') {
+            return false;
+        }
+        let word: String = self
+            .buffer
+            .chars()
+            .skip(start + 1)
+            .take_while(|&c| !c.is_whitespace() && self.mention(c).is_none())
+            .collect();
+        let path = word
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches('/');
+        if path.is_empty() {
+            return false;
+        }
+        let mention = if self.files.as_ref().is_some_and(|f| f.exists(path)) {
+            Mention::File(path.to_string())
+        } else {
+            Mention::Create(path.to_string())
+        };
+        let token = mention::token(self.mentions.len());
+        self.mentions.push(mention);
+        let len = word.chars().count();
+        let end = start + 1 + len;
+        let bytes = self.byte_at(start)..self.byte_at(end);
+        self.buffer.replace_range(bytes, &token.to_string());
+        // O cursor que estava depois do `@` fica depois do badge.
+        if self.cursor >= end {
+            self.cursor -= len;
+        } else if self.cursor > start {
+            self.cursor = start + 1;
+        }
+        self.anchor = None;
+        true
+    }
+
+    /// Com o cursor logo depois de um badge de arquivo (existente ou a
+    /// criar), troca o badge pelo texto `@caminho` e reabre a lista, para
+    /// editar a menção.
     fn reopen_mention(&mut self) -> bool {
         let Some(c) = self.char_before_cursor() else {
             return false;
         };
-        let Some(Mention::File(path)) = self.mention(c).cloned() else {
+        let Some(Mention::File(path) | Mention::Create(path)) = self.mention(c).cloned() else {
             return false;
         };
         let start = self.cursor - 1;
@@ -690,7 +748,10 @@ impl InputBox {
                 let pos = self.position_at(mouse.column, mouse.row);
                 self.mode = InputMode::Insert;
                 self.cursor = pos;
-                self.anchor = Some(pos);
+                self.anchor = None;
+                // Clicar fora do `@caminho` fecha a lista e o transforma em badge.
+                self.refresh_picker(false);
+                self.anchor = Some(self.cursor);
                 self.selecting = true;
             }
             MouseEventKind::Drag(MouseButton::Left) if self.selecting => {

@@ -276,13 +276,14 @@ Detalhes do input:
 - O primeiro `@` começa a observar o diretório atual com `FileIndex::watch` (`input.rs:547-550`). O `FileIndex` lista arquivos e pastas respeitando o `.gitignore`, esconde os ocultos, vai até 50 000 entradas e se atualiza via `notify`, ou a cada 2 s se não houver observador (`src/files.rs:1-60`).
 - A lista não depende do provedor: é o sistema de arquivos local.
 - Filtro (`mention.rs:119-140`): começo do nome do arquivo > parte do nome > parte do caminho > letras na ordem. Mostra até 200 resultados; sem consulta, os caminhos mais rasos vêm primeiro.
-- O item escolhido vira um badge. No buffer ele é um caractere da área de uso privado do Unicode (`mention.rs:22-40`), que aponta para um `Mention` (`mention.rs:44`).
+- O item escolhido vira um badge. Um `@caminho` escrito à mão também vira badge ao sair dele (espaço, `Esc`, `Enter` sem item na lista, seta ou clique fora): `Mention::File` se o caminho existe (`FileIndex::exists`, na lista ou no disco), senão `Mention::Create`. No buffer ele é um caractere da área de uso privado do Unicode (`mention.rs:22-40`), que aponta para um `Mention` (`mention.rs:44`).
 
 O que cada badge manda ao agente (`mention::prompt_text`, `mention.rs:83`, chamado por `Input::text`, `input.rs:136`):
 
 | Badge | Na tela | Vai para o agente |
 |---|---|---|
 | `Mention::File(path)` | `@/src/main.rs` | `@src/main.rs` (sintaxe de arquivo do Claude Code) |
+| `Mention::Create(path)` | `create:@docs/test` ou, num arquivo de texto ou código, `create(JavaScript):@docs/script.js` | `@docs/test (ainda não existe: criar)` |
 | `Mention::Skill(name)` | `/docs` | `/docs`, em qualquer ponto do texto |
 | `Mention::Paste` | `[Pasted text #1 +N lines]` | o texto colado inteiro (acima de 100 caracteres, `PASTE_LIMIT`) |
 

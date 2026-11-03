@@ -1,6 +1,10 @@
 //! Menções de arquivo no input: digitar `@` abre uma lista dos arquivos e
 //! pastas do diretório, filtrada pelo que vem depois do `@`; o escolhido vira
 //! um badge cinza (`@/src/main.rs`) que se comporta como um caractere só.
+//! Um `@caminho` escrito à mão também vira badge ao sair dele (espaço, `Esc`
+//! ou cursor fora); se o caminho não existe, o badge é de um arquivo a criar
+//! (`create:@docs/test`, ou `create(JavaScript):@docs/script.js` num arquivo
+//! de texto ou código).
 //!
 //! No texto do input, cada menção é um caractere da área de uso privado do
 //! Unicode ([`token`]), que aponta para o caminho guardado pela caixa. Assim o
@@ -44,17 +48,24 @@ pub fn token_index(c: char) -> Option<usize> {
 pub enum Mention {
     /// Caminho relativo ao diretório (ex.: `src/main.rs`).
     File(String),
+    /// Caminho que ainda não existe e deve ser criado (ex.: `docs/test`).
+    Create(String),
     /// Nome da skill, sem a `/` (ex.: `docs`).
     Skill(String),
     /// Texto colado grande: `number` é o `#` do badge (1, 2...).
     Paste { number: usize, text: String },
 }
 
-/// Texto do badge (sem os espaços do pill): `@/src/main.rs`, `/docs` ou
-/// `[Pasted text #1 +12 lines]` (sem quebras de linha, só `[Pasted text #1]`).
+/// Texto do badge (sem os espaços do pill): `@/src/main.rs`,
+/// `create(Rust):@src/novo.rs`, `/docs` ou `[Pasted text #1 +12 lines]` (sem
+/// quebras de linha, só `[Pasted text #1]`).
 pub fn badge_label(mention: &Mention) -> String {
     match mention {
         Mention::File(path) => format!("@/{path}"),
+        Mention::Create(path) => match language(path) {
+            Some(language) => format!("create({language}):@{path}"),
+            None => format!("create:@{path}"),
+        },
         Mention::Skill(name) => format!("/{name}"),
         Mention::Paste { number, text } => match text.matches('\n').count() {
             0 => format!("[Pasted text #{number}]"),
@@ -78,14 +89,60 @@ pub fn badge_span(mention: &Mention, selected: bool) -> Span<'static> {
     Span::styled(format!(" {} ", badge_label(mention)), style)
 }
 
-/// Como a menção vai no texto enviado ao agente: `@src/main.rs`, `/docs` ou
-/// o texto colado inteiro.
+/// Como a menção vai no texto enviado ao agente: `@src/main.rs`,
+/// `@docs/test (ainda não existe: criar)`, `/docs` ou o texto colado inteiro.
 pub fn prompt_text(mention: &Mention) -> String {
     match mention {
         Mention::File(path) => format!("@{path}"),
+        Mention::Create(path) => format!("@{path} (ainda não existe: criar)"),
         Mention::Skill(name) => format!("/{name}"),
         Mention::Paste { text, .. } => text.clone(),
     }
+}
+
+/// Linguagem de um arquivo de texto ou código, pela extensão (ex.:
+/// `script.js` é `JavaScript`). `None` sem extensão ou se não for texto.
+pub fn language(path: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next()?;
+    let (_, ext) = name.rsplit_once('.')?;
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "js" | "mjs" | "cjs" => "JavaScript",
+        "jsx" => "JavaScript JSX",
+        "ts" | "mts" | "cts" => "TypeScript",
+        "tsx" => "TypeScript JSX",
+        "rs" => "Rust",
+        "py" => "Python",
+        "go" => "Go",
+        "java" => "Java",
+        "kt" | "kts" => "Kotlin",
+        "c" | "h" => "C",
+        "cpp" | "cc" | "cxx" | "hpp" => "C++",
+        "cs" => "C#",
+        "swift" => "Swift",
+        "rb" => "Ruby",
+        "php" => "PHP",
+        "dart" => "Dart",
+        "lua" => "Lua",
+        "ex" | "exs" => "Elixir",
+        "scala" => "Scala",
+        "sh" | "bash" | "zsh" => "Shell",
+        "ps1" => "PowerShell",
+        "sql" => "SQL",
+        "html" | "htm" => "HTML",
+        "css" => "CSS",
+        "scss" | "sass" => "Sass",
+        "vue" => "Vue",
+        "svelte" => "Svelte",
+        "json" | "jsonc" => "JSON",
+        "yaml" | "yml" => "YAML",
+        "toml" => "TOML",
+        "xml" => "XML",
+        "ini" | "cfg" | "conf" => "INI",
+        "md" | "markdown" => "Markdown",
+        "txt" => "Text",
+        "csv" => "CSV",
+        _ => return None,
+    })
 }
 
 /// A lista aberta: onde está o `@` e qual item está selecionado.

@@ -33,11 +33,14 @@ pub struct FileIndex {
     entries: Arc<RwLock<Arc<Vec<FileEntry>>>>,
     /// Desligado ao soltar o índice, para a thread terminar.
     alive: Arc<AtomicBool>,
+    /// Diretório observado; `None` num índice fixo.
+    root: Option<PathBuf>,
 }
 
 impl FileIndex {
     /// Começa a listar e observar `root`. A primeira lista chega logo depois.
     pub fn watch(root: PathBuf) -> Self {
+        let dir = root.clone();
         let entries = Arc::new(RwLock::new(Arc::new(Vec::new())));
         let alive = Arc::new(AtomicBool::new(true));
         let dirty = Arc::new(AtomicBool::new(true));
@@ -79,7 +82,11 @@ impl FileIndex {
             });
         }
 
-        Self { entries, alive }
+        Self {
+            entries,
+            alive,
+            root: Some(dir),
+        }
     }
 
     /// Índice fixo, sem thread nem observador (para testes).
@@ -88,6 +95,7 @@ impl FileIndex {
         Self {
             entries: Arc::new(RwLock::new(Arc::new(entries))),
             alive: Arc::new(AtomicBool::new(false)),
+            root: None,
         }
     }
 
@@ -97,6 +105,17 @@ impl FileIndex {
             .read()
             .map(|entries| Arc::clone(&entries))
             .unwrap_or_default()
+    }
+
+    /// `path` (relativo ao diretório) existe: está na lista ou no disco,
+    /// mesmo que a lista ainda não tenha chegado ou o esconda (ex.: algo
+    /// do `.gitignore`).
+    pub fn exists(&self, path: &str) -> bool {
+        self.snapshot().iter().any(|entry| entry.path == path)
+            || self
+                .root
+                .as_ref()
+                .is_some_and(|root| root.join(path).exists())
     }
 }
 
