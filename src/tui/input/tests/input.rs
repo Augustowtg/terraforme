@@ -339,6 +339,30 @@ fn at_opens_picker_and_tab_inserts_badge() {
 }
 
 #[test]
+fn editing_a_closed_mention_reopens_the_picker() {
+    let mut input = input_with_files();
+    type_text(&mut input, "veja @src/hub/test");
+    // O espaço fecha a lista; apagar ele volta para dentro do `@` e ela reabre.
+    type_text(&mut input, " ");
+    assert!(!input.picker_open());
+    press(&mut input, KeyCode::Backspace);
+    assert!(input.picker_open());
+    assert_eq!(input.query().as_deref(), Some("src/hub/test"));
+    // Fechada com Esc, apagar uma letra também reabre, com a consulta nova.
+    press(&mut input, KeyCode::Esc);
+    assert!(!input.picker_open());
+    press(&mut input, KeyCode::Backspace);
+    assert!(input.picker_open());
+    assert_eq!(input.query().as_deref(), Some("src/hub/tes"));
+    // Fora de uma menção (ex.: um e-mail), nada abre.
+    type_text(&mut input, " a@b");
+    press(&mut input, KeyCode::Esc);
+    press(&mut input, KeyCode::Char('i'));
+    press(&mut input, KeyCode::Backspace);
+    assert!(!input.picker_open());
+}
+
+#[test]
 fn badge_renders_as_gray_pill_and_backspace_makes_it_editable() {
     let mut input = input_with_files();
     type_text(&mut input, "@main");

@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.8] - 2026-11-03
+
+### Corrigido
+
+- A lista de arquivos do `@` volta a aparecer ao editar uma menção que estava fechada: depois de um espaço, de um `Esc` ou de mover o cursor, apagar ou escrever um caractere de `@src/hub/test` reabre a lista, filtrada pelo que ficou. Antes, ela só abria ao digitar o próprio `@`. Um `@` no meio de uma palavra (ex.: um e-mail) continua sem abrir a lista.
+
 ## [0.13.7] - 2026-11-03
 
 ### Alterado
