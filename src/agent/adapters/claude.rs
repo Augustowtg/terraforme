@@ -74,7 +74,7 @@ impl ClaudeAdapter {
 
 impl ChatAdapter for ClaudeAdapter {
     fn name(&self) -> &str {
-        "Claude"
+        NAME
     }
 
     fn id(&self) -> &str {
@@ -653,6 +653,9 @@ impl Session for Run {
 
 pub use self::follow::follow;
 
+/// O nome do provedor, como o adapter mostra.
+pub const NAME: &str = "Claude";
+
 /// O `claude` do `PATH` para uma execução despachada pelo orquestrador, sem
 /// os lançadores das extensões; `None` sem ele.
 pub fn run_command() -> Option<Command> {
@@ -698,7 +701,7 @@ fn last_lines(text: &str, n: usize) -> Option<String> {
 }
 
 /// "claude-opus-5-5" → "Opus - 5.5". Ids em outro formato ficam como estão.
-fn display_model(id: &str) -> String {
+pub fn display_model(id: &str) -> String {
     let Some(rest) = id.strip_prefix("claude-") else {
         return id.to_string();
     };

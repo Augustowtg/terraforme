@@ -157,7 +157,16 @@ pub struct Chat {
     unread: usize,
     /// A aba de uma execução despachada: só mostra, não manda nada.
     read_only: bool,
+    /// Na aba de uma execução, que não tem adapter: o nome do provedor e
+    /// como ele mostra os modelos.
+    viewer_provider: Option<ViewerProvider>,
+    /// Na aba de uma execução: o modo informado pelo agente, mesmo sem
+    /// equivalente no terra (ex.: `dontAsk`).
+    viewer_mode: Option<String>,
 }
+
+/// O provedor de uma aba de execução: o nome e como ele mostra os modelos.
+pub type ViewerProvider = (&'static str, fn(&str) -> String);
 
 /// Sem agente (Desconectado). Use [`Chat::connect`] para usar o provedor
 /// disponível.
@@ -205,6 +214,8 @@ impl Default for Chat {
             inbox: Vec::new(),
             unread: 0,
             read_only: false,
+            viewer_provider: None,
+            viewer_mode: None,
         }
     }
 }
@@ -222,10 +233,11 @@ impl Chat {
     /// Chat ligado a `adapter`, com as configurações da seção Agente.
     /// A aba de uma execução despachada: mostra o que `session` (a saída do
     /// `claude`) traz e não manda nada ao agente.
-    pub fn viewer(session: Box<dyn Session>, title: String) -> Self {
+    pub fn viewer(session: Box<dyn Session>, title: String, provider: ViewerProvider) -> Self {
         let mut chat = Self {
             run: Some(session),
             read_only: true,
+            viewer_provider: Some(provider),
             agent_status: AgentStatus::Pensando,
             agent_activity: Some("Rodando...".into()),
             ..Self::default()
@@ -719,7 +731,7 @@ impl Chat {
             }
             // Só a Config abre o menu dos sub agentes, e só a aba
             // Orquestrador o dos chats delegados.
-            Target::Subagent | Target::Delegated => {}
+            Target::Subagent => {}
         }
         self.history.follow();
     }
@@ -1026,7 +1038,16 @@ impl Chat {
             } => {
                 self.session_id = Some(session_id);
                 self.model = Some(model).filter(|m| !m.is_empty());
-                self.sync_mode(permission_mode);
+                if self.read_only {
+                    // A execução não segue o modo deste terminal: só mostra.
+                    self.viewer_mode = match permission_mode {
+                        ReportedMode::Known(mode) => Some(mode.label().to_string()),
+                        ReportedMode::Unknown(name) => Some(name),
+                        ReportedMode::Missing => None,
+                    };
+                } else {
+                    self.sync_mode(permission_mode);
+                }
             }
             AgentEvent::TextStart => {
                 self.history.start_text();
@@ -1266,7 +1287,9 @@ impl Chat {
         let mode = self.permission_mode;
         let active = self.run.is_some() || self.agent_mode.is_some();
         let mut badges = Vec::new();
-        if mode != PermissionMode::default() || active {
+        if let Some(name) = &self.viewer_mode {
+            badges.push((format!("Modo: {name}"), Variant::Secondary));
+        } else if mode != PermissionMode::default() || active {
             // Trocado com Shift+Tab durante a resposta: o agente segue no modo
             // dele até a próxima mensagem.
             let label = match self.agent_mode {
@@ -1377,9 +1400,14 @@ impl Chat {
     /// "[Router] Modelo - Versão", com o router no estilo de botão (pill).
     fn model_title(&self) -> Line<'static> {
         // O provedor é trocado na Config (Provedor).
-        let router = self.adapter.as_ref().map_or("Sem agente", |a| a.name());
-        let model = match (&self.model, &self.adapter) {
-            (Some(id), Some(adapter)) => adapter.model_label(id),
+        let router = match (&self.adapter, self.viewer_provider) {
+            (Some(adapter), _) => adapter.name(),
+            (None, Some((name, _))) => name,
+            (None, None) => "Sem agente",
+        };
+        let model = match (&self.model, &self.adapter, self.viewer_provider) {
+            (Some(id), Some(adapter), _) => adapter.model_label(id),
+            (Some(id), None, Some((_, label))) => label(id),
             _ => "Modelo padrão".to_string(),
         };
         Line::from(vec![

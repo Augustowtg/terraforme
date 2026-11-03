@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! terra send <agente> [texto] [--ref <arquivo>]... [--handoff <arquivo>] [--tag <tag>]
+//! terra send --lote <arquivo | -> [--tag <tag>]
 //! ```
 //!
 //! O nível sai dos argumentos: com `--handoff`, 3; com `--ref`, 2; só o
@@ -112,6 +113,29 @@ pub fn prepare(
         return Err(reject);
     }
     Ok(message)
+}
+
+/// As mensagens do `terra send --lote`: uma por linha, `agente: texto`.
+/// Linhas vazias e comentários (`#`) ficam de fora; uma linha sem o `:` ou
+/// sem texto é um erro com o número dela, antes de mandar qualquer uma.
+pub fn batch(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut items = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (to, text) = line
+            .split_once(':')
+            .map(|(to, text)| (to.trim(), text.trim()))
+            .filter(|(to, text)| !to.is_empty() && !text.is_empty())
+            .ok_or_else(|| format!("linha {}: use `agente: texto`", n + 1))?;
+        items.push((to.to_string(), text.to_string()));
+    }
+    if items.is_empty() {
+        return Err("o lote não tem mensagens".into());
+    }
+    Ok(items)
 }
 
 /// O caminho absoluto de um arquivo que existe.
@@ -260,5 +284,24 @@ mod tests {
             sent_line(&msg, State::Queued),
             "na fila a1b2c3d4 → backend (nível 2)".replace("backend", "frontend")
         );
+    }
+
+    #[test]
+    fn a_batch_has_one_message_per_line() {
+        let items = batch("# plano\n\ndev: crie slug.py\ntester: teste: tudo\n").unwrap();
+        assert_eq!(
+            items,
+            [
+                ("dev".to_string(), "crie slug.py".to_string()),
+                ("tester".into(), "teste: tudo".into())
+            ]
+        );
+        assert!(
+            batch("dev: ok\nsem dois pontos\n")
+                .unwrap_err()
+                .contains("linha 2")
+        );
+        assert!(batch("dev:\n").is_err());
+        assert!(batch("# nada\n").is_err());
     }
 }

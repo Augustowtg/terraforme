@@ -44,9 +44,6 @@ pub enum Target {
     Default,
     /// O modelo dos sub agentes, salvo na Config (aberto pela Config).
     Subagent,
-    /// O modelo dos chats delegados, salvo no `config.json` global (aberto
-    /// pela aba Orquestrador).
-    Delegated,
 }
 
 /// O que o menu fez com uma tecla.
@@ -106,27 +103,6 @@ impl ModelMenu {
             selected,
             effort: None,
             default_model: None,
-        }
-    }
-
-    /// Abre o menu do modelo dos chats delegados, com o foco em `current`
-    /// (`None` é o Default, que mostra `default_model`) e o esforço `effort`.
-    pub fn delegated(
-        current: Option<String>,
-        effort: Option<String>,
-        default_model: Option<String>,
-        catalog: Option<&Catalog>,
-    ) -> Self {
-        let models = catalog.map_or(&[][..], |c| &c.models[..]);
-        let selected = current
-            .as_ref()
-            .and_then(|id| models.iter().position(|m| matches_id(m, id)))
-            .map_or(0, |i| i + 1);
-        Self {
-            target: Target::Delegated,
-            selected,
-            effort,
-            default_model,
         }
     }
 
@@ -205,9 +181,7 @@ impl ModelMenu {
             KeyCode::Left | KeyCode::Char('h') => self.step_effort(models, -1),
             KeyCode::Right | KeyCode::Char('l') => self.step_effort(models, 1),
             KeyCode::Enter => match self.focused(models) {
-                (Some(Item::Default), _)
-                    if matches!(self.target, Target::Subagent | Target::Delegated) =>
-                {
+                (Some(Item::Default), _) if self.target == Target::Subagent => {
                     return Outcome::Unset(self.target);
                 }
                 (Some(Item::Default), _) => {
@@ -280,10 +254,6 @@ impl ModelMenu {
             Target::Subagent => (
                 "Selecione o modelo dos sub agentes",
                 "Os sub agentes usam este modelo e ele fica salvo nas Configurações.",
-            ),
-            Target::Delegated => (
-                "Selecione o modelo dos chats delegados",
-                "Os chats abertos pelo orquestrador usam este modelo. Default usa o modelo padrão.",
             ),
         };
         let mut lines = vec![
@@ -631,44 +601,6 @@ mod tests {
         assert_eq!(
             press(&mut menu, KeyCode::Enter),
             Outcome::Unset(Target::Subagent)
-        );
-        assert_eq!(press(&mut menu, KeyCode::Esc), Outcome::Close);
-    }
-
-    #[test]
-    fn delegated_menu_is_the_model_menu_with_effort() {
-        let mut menu = ModelMenu::delegated(
-            Some("haiku".into()),
-            Some("low".into()),
-            Some("opus".into()),
-            Some(&catalog()),
-        );
-        menu.sync(Some(&catalog()));
-        let text = screen(&menu).join("\n");
-        assert!(
-            text.contains("Selecione o modelo dos chats delegados"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Default (opus)"),
-            "o Default mostra o padrão: {text}"
-        );
-        assert!(text.contains("▌ 4. haiku"), "começa no atual: {text}");
-        assert!(text.contains("Esforço"), "com esforço: {text}");
-        press(&mut menu, KeyCode::Up);
-        press(&mut menu, KeyCode::Up);
-        assert!(matches!(
-            press(&mut menu, KeyCode::Enter),
-            Outcome::Chosen {
-                target: Target::Delegated,
-                effort: Some(_),
-                ..
-            }
-        ));
-        let mut menu = ModelMenu::delegated(None, None, None, Some(&catalog()));
-        assert_eq!(
-            press(&mut menu, KeyCode::Enter),
-            Outcome::Unset(Target::Delegated)
         );
         assert_eq!(press(&mut menu, KeyCode::Esc), Outcome::Close);
     }

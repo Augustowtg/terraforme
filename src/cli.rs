@@ -78,7 +78,8 @@ struct AgyHookArgs {
 struct SendArgs {
     /// O agente de destino: o nome de uma aba (`/agente`) ou de um
     /// `[agents.<nome>]` do orchestrator.toml
-    agent: String,
+    #[arg(required_unless_present = "batch")]
+    agent: Option<String>,
     /// O texto da mensagem (nível 1)
     text: Vec<String>,
     /// Um arquivo para o agente ler (nível 2); pode repetir
@@ -90,6 +91,10 @@ struct SendArgs {
     /// Uma etiqueta para a mensagem (ex.: testes)
     #[arg(long)]
     tag: Option<String>,
+    /// Manda várias mensagens de nível 1 de um arquivo (`-` é a entrada),
+    /// uma por linha: `agente: texto`. Linhas vazias e com `#` são puladas
+    #[arg(long = "lote", value_name = "ARQUIVO", conflicts_with_all = ["agent", "refs", "handoff"])]
+    batch: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -236,28 +241,66 @@ fn status(as_json: bool) -> Result<()> {
 /// saída, porque ela entra no contexto do agente que mandou.
 fn send(args: SendArgs) -> Result<()> {
     use orchestrator::config::Config;
-    use orchestrator::message::State;
     let endpoint = hub::endpoint::Endpoint::current()?;
     let config = Config::load(&Config::path(&endpoint.home))
         .map_err(|err| anyhow::anyhow!("orchestrator.toml: {err}"))?;
-    let (from, hops) = orchestrator::sender();
-    let args = orchestrator::send::Args {
-        to: args.agent,
-        text: (!args.text.is_empty()).then(|| args.text.join(" ")),
-        refs: args.refs,
-        handoff: args.handoff,
-        tag: args.tag,
+    let Some(batch) = &args.batch else {
+        let args = orchestrator::send::Args {
+            to: args.agent.unwrap_or_default(),
+            text: (!args.text.is_empty()).then(|| args.text.join(" ")),
+            refs: args.refs,
+            handoff: args.handoff,
+            tag: args.tag,
+        };
+        let line = send_one(&args, &config, &endpoint)?;
+        println!("{line}");
+        return Ok(());
     };
+    // O lote: uma mensagem por linha, sem um LLM no meio. Uma recusada não
+    // para as outras; o comando falha no fim se alguma falhou.
+    let text = if batch.as_os_str() == "-" {
+        std::io::read_to_string(std::io::stdin())?
+    } else {
+        std::fs::read_to_string(batch).with_context(|| batch.display().to_string())?
+    };
+    let items = orchestrator::send::batch(&text).map_err(anyhow::Error::msg)?;
+    let mut failed = 0;
+    for (to, text) in items {
+        let args = orchestrator::send::Args {
+            to,
+            text: Some(text),
+            tag: args.tag.clone(),
+            ..Default::default()
+        };
+        match send_one(&args, &config, &endpoint) {
+            Ok(line) => println!("{line}"),
+            Err(err) => {
+                failed += 1;
+                println!("{}: {err}", args.to);
+            }
+        }
+    }
+    if failed > 0 {
+        anyhow::bail!("{failed} mensagem(ns) do lote recusada(s)");
+    }
+    Ok(())
+}
+
+/// Manda uma mensagem e devolve a linha de resposta.
+fn send_one(
+    args: &orchestrator::send::Args,
+    config: &orchestrator::config::Config,
+    endpoint: &hub::endpoint::Endpoint,
+) -> Result<String> {
+    use orchestrator::message::State;
+    let (from, hops) = orchestrator::sender();
     let message =
-        orchestrator::send::prepare(&args, &from, hops, &config, &endpoint.home, &current_dir()?)
+        orchestrator::send::prepare(args, &from, hops, config, &endpoint.home, &current_dir()?)
             .map_err(|reject| anyhow::anyhow!("recusada: {}", reject.text))?;
-    let reply = hub::client::send_message(&endpoint, true, &message.to_json())
+    let reply = hub::client::send_message(endpoint, true, &message.to_json())
         .context("não foi possível falar com o orquestrador")?;
     match reply["state"].as_str().and_then(State::parse) {
-        Some(state) if reply["t"] == "sent" => {
-            println!("{}", orchestrator::send::sent_line(&message, state));
-            Ok(())
-        }
+        Some(state) if reply["t"] == "sent" => Ok(orchestrator::send::sent_line(&message, state)),
         _ => anyhow::bail!(
             "recusada: {}",
             reply["text"].as_str().unwrap_or("sem motivo")

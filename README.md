@@ -86,6 +86,7 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório, e mostra o que mudou |
 | `terra status` | Mostra os terminais do terra abertos na máquina, separados por workspace, com as abas de cada um (pelo daemon orquestrador); `--json` para scripts |
 | `terra send <agente> [texto] [--ref <arquivo>]... [--handoff <arquivo>] [--tag <tag>]` | Manda uma mensagem a outro agente: a uma aba com nome (`/agente`), que só mostra, ou a um agente do `~/.terraforme/orchestrator.toml`, que a processa numa execução do `claude` (veja `docs/infra/orquestrador.md`) |
+| `terra send --lote <arquivo \| ->` | Manda várias mensagens de uma vez, uma por linha (`agente: texto`), sem um agente coordenando |
 | `terra handoff new <agente>` | Cria uma nota de handoff em branco e mostra o caminho (para o `terra send --handoff`) |
 | `terra done [resumo]` | Dentro de uma execução despachada: guarda o resumo do que foi feito |
 | `terra upgrade --repo` | Atualiza pelo instalador do repositório do diretório atual (`install-linux.sh` no Linux, `install.ps1` no Windows). Os argumentos passam para o instalador (ex.: `terra upgrade --repo --dev`) |
@@ -102,7 +103,7 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `/login` | Entra de novo na conta escolhida nas Configurações (token expirado ou revogado). O terra sai da tela e roda o `claude auth login` da conta, com o e-mail dela: o link aparece inteiro e clicável (e já copiado), e o código colado aparece ao digitar; `Enter` envia e `Enter` vazio cancela. No fim, o terra volta |
 | `/usage` | Abre a aba **Consumo** (limites de uso, crédito extra e o gráfico por dia) |
 | `/model` | Escolhe o modelo e o esforço desta conversa (`↑`/`↓` modelo, `←`/`→` esforço, `Enter` escolhe). O item Default abre o menu do modelo padrão, que fica salvo |
-| `@` (escrevendo) | Abre a lista de arquivos e pastas do diretório, filtrada pelo que vier depois do `@` e atualizada em tempo real. `↑`/`↓` escolhem, `Tab`/`Enter` inserem o caminho como um badge cinza (`@/src/main.rs`), `Esc` fecha |
+| `@` (escrevendo) | Abre a lista de arquivos e pastas do diretório, filtrada pelo que vier depois do `@` e atualizada em tempo real. `↑`/`↓` escolhem, `Tab`/`Enter` inserem o caminho como um badge cinza (`@/src/main.rs`), `Esc` fecha. O `Backspace` logo depois de um badge o volta a texto (`@src/main.rs`), com a lista aberta, para editar o caminho |
 | `Esc` no modo NORMAL, com o Claude respondendo | Interrompe a resposta |
 | `PageUp` / `PageDown`, roda do mouse | Rola o histórico do chat (a barra de rolagem aparece ao rolar e some 2 s depois) |
 | Arrastar no histórico / duplo clique numa mensagem | Seleciona o trecho ou a mensagem inteira e copia para a área de transferência |

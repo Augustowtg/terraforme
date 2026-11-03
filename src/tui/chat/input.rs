@@ -276,7 +276,8 @@ impl InputBox {
                 }
             }
             KeyCode::Backspace => {
-                if !self.delete_selection() && self.cursor > 0 {
+                // Depois de um badge de arquivo, ele volta a ser `@caminho`.
+                if !self.delete_selection() && !self.reopen_mention() && self.cursor > 0 {
                     self.cursor -= 1;
                     let at = self.byte_at(self.cursor);
                     self.buffer.remove(at);
@@ -627,6 +628,25 @@ impl InputBox {
         self.buffer.replace_range(bytes, &format!("{token} "));
         self.cursor = picker.start + 2;
         self.anchor = None;
+    }
+
+    /// Com o cursor logo depois de um badge de arquivo, troca o badge pelo
+    /// texto `@caminho` e reabre a lista, para editar a menção.
+    fn reopen_mention(&mut self) -> bool {
+        let Some(c) = self.char_before_cursor() else {
+            return false;
+        };
+        let Some(Mention::File(path)) = self.mention(c).cloned() else {
+            return false;
+        };
+        let start = self.cursor - 1;
+        let at = self.byte_at(start);
+        self.buffer
+            .replace_range(at..at + c.len_utf8(), &format!("@{path}"));
+        self.cursor = start + 1 + path.chars().count();
+        self.anchor = None;
+        self.open_picker(start);
+        true
     }
 
     /// Clique na caixa posiciona o cursor (e começa a escrever); arrastar
