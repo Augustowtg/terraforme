@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.10] - 2026-11-03
+
+### Adicionado
+
+- Padrões de prompt com `&` no input: digitar `&` (no começo de uma palavra) abre a lista **Padrões**, com o nome e uma descrição de cada um (ex.: `&ASD-STE100 - Diminui o retorno: frases curtas, diretas e sem ambiguidade`). Tab ou Enter troca o `&consulta` pelo badge `&ASD-STE100`, e para o agente vai a instrução do padrão: `(use ASD-STE100 com 75% de precisão)`. A lista filtra pelo nome e pela descrição. Padrões: `ASD-STE100`, `BLUF`, `KISS`, `YAGNI`, `DRY`, `SOLID`, `TDD` e `Passo-a-passo`.
+- Um `&nome` de padrão escrito à mão vira badge ao sair dele (espaço, `Esc` ou cursor fora); um nome que não é de padrão fica como texto. O `Backspace` depois do badge volta ele a ser `&nome`, com a lista aberta.
+
 ## [0.13.9] - 2026-11-03
 
 ### Adicionado

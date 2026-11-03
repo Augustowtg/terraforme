@@ -7,12 +7,15 @@
 //!   texto (`Ctrl+V` ou o colar do terminal) e as mensagens já enviadas com
 //!   ↑/↓;
 //! - [`commands`]: os comandos de `/` e a lista deles acima do input;
+//! - [`patterns`]: os padrões de prompt do `&` (ex.: `&ASD-STE100`) e a
+//!   lista deles, com a descrição de cada um;
 //! - [`extensions`]: o que aparece na borda e embaixo do input, como o nome
 //!   do provedor, o modelo, o status do agente e a cor do modo.
 
 pub mod commands;
 pub mod extensions;
 mod mention;
+mod patterns;
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -100,6 +103,8 @@ pub struct InputBox {
     command_picker: Option<Picker>,
     /// Comandos do agente; `None` enquanto carregam.
     commands: Option<Vec<CommandInfo>>,
+    /// Lista de padrões aberta pelo `&`.
+    pattern_picker: Option<Picker>,
     /// Mensagens enviadas nesta execução, a mais antiga primeiro.
     sent: Vec<Draft>,
     /// A mensagem enviada mostrada com ↑/↓ e o texto que estava sendo
@@ -132,6 +137,7 @@ impl Default for InputBox {
             files: None,
             command_picker: None,
             commands: None,
+            pattern_picker: None,
             sent: Vec::new(),
             browsing: None,
         }
@@ -143,7 +149,8 @@ impl InputBox {
         self.mode
     }
 
-    /// O texto para enviar: cada menção vira `@caminho` (ou `/skill`).
+    /// O texto para enviar: cada menção vira `@caminho` (ou `/skill`, ou a
+    /// instrução do padrão).
     pub fn text(&self) -> String {
         self.buffer
             .chars()
@@ -172,6 +179,7 @@ impl InputBox {
         self.mentions.clear();
         self.picker = None;
         self.command_picker = None;
+        self.pattern_picker = None;
     }
 
     /// Os comandos do agente para a lista da `/` (`None`: ainda carregando).
@@ -179,9 +187,9 @@ impl InputBox {
         self.commands = commands;
     }
 
-    /// A lista de arquivos do `@` está aberta.
+    /// Uma das listas (`@`, `/` ou `&`) está aberta.
     pub fn picker_open(&self) -> bool {
-        self.picker.is_some() || self.command_picker.is_some()
+        self.picker.is_some() || self.command_picker.is_some() || self.pattern_picker.is_some()
     }
 
     /// A lista aberta é a de comandos (da `/`).
@@ -239,6 +247,10 @@ impl InputBox {
             self.show_cursor();
             return outcome;
         }
+        if let Some(outcome) = self.handle_pattern_picker(key) {
+            self.show_cursor();
+            return outcome;
+        }
         let typed = !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
@@ -278,9 +290,15 @@ impl InputBox {
                     c == '@' && !self.char_before_cursor().is_some_and(char::is_alphanumeric);
                 // `/` abre a lista de comandos, só no começo do texto.
                 let command = c == '/' && self.cursor == 0;
+                // `&` abre a lista de padrões, no começo de uma palavra.
+                let pattern =
+                    c == '&' && !self.char_before_cursor().is_some_and(char::is_alphanumeric);
                 self.insert_char(c);
                 if opens {
                     self.open_picker(self.cursor - 1);
+                }
+                if pattern {
+                    self.pattern_picker = Some(Picker::new(self.cursor - 1));
                 }
                 if command {
                     self.command_picker = Some(Picker::new(0));
@@ -415,6 +433,7 @@ impl InputBox {
         self.mentions = draft.mentions;
         self.picker = None;
         self.command_picker = None;
+        self.pattern_picker = None;
         self.move_to(self.len());
     }
 
@@ -558,6 +577,67 @@ impl InputBox {
         Outcome::Handled
     }
 
+    /// Teclas da lista de padrões, como as da lista de arquivos: Tab/Enter
+    /// trocam o `&consulta` pelo badge do padrão; Esc fecha.
+    fn handle_pattern_picker(&mut self, key: KeyEvent) -> Option<Outcome> {
+        let mut picker = self.pattern_picker?;
+        let found = patterns::matches(&self.query_of(picker));
+        let ctrl = key.modifiers == KeyModifiers::CONTROL;
+        match key.code {
+            KeyCode::Up => picker.up(found.len()),
+            KeyCode::Down => picker.down(found.len()),
+            KeyCode::Char('p') if ctrl => picker.up(found.len()),
+            KeyCode::Char('n') if ctrl => picker.down(found.len()),
+            KeyCode::Tab => self.accept_pattern(found.get(picker.selected).copied()),
+            KeyCode::Enter if key.modifiers.is_empty() => {
+                self.accept_pattern(found.get(picker.selected).copied())
+            }
+            KeyCode::Esc => {
+                if let Some(picker) = self.pattern_picker.take() {
+                    self.commit_pattern(picker);
+                }
+            }
+            _ => return None,
+        }
+        if let Some(open) = &mut self.pattern_picker {
+            open.selected = picker.selected;
+        }
+        Some(Outcome::Handled)
+    }
+
+    /// Troca `&consulta` pelo badge de `pattern` (e um espaço). Sem item, só
+    /// fecha.
+    fn accept_pattern(&mut self, pattern: Option<&patterns::Pattern>) {
+        let Some(picker) = self.pattern_picker.take() else {
+            return;
+        };
+        let Some(pattern) = pattern else {
+            return;
+        };
+        let bytes = self.byte_at(picker.start)..self.byte_at(self.cursor);
+        let token = mention::token(self.mentions.len());
+        self.mentions
+            .push(Mention::Pattern(pattern.name.to_string()));
+        self.buffer.replace_range(bytes, &format!("{token} "));
+        self.cursor = picker.start + 2;
+        self.anchor = None;
+    }
+
+    /// Troca o `&nome` escrito à mão (a palavra do `&` em `picker.start`) pelo
+    /// badge do padrão, se o nome for de um. Retorna `false` se não era.
+    fn commit_pattern(&mut self, picker: Picker) -> bool {
+        let start = picker.start;
+        if self.buffer.chars().nth(start) != Some('&') {
+            return false;
+        }
+        let word = self.word_after(start);
+        let Some(pattern) = patterns::find(&word) else {
+            return false;
+        };
+        self.replace_word(start, &word, Mention::Pattern(pattern.name.to_string()));
+        true
+    }
+
     /// Abre a lista com o `@` na posição `start`. Os arquivos começam a ser
     /// observados no primeiro `@`.
     fn open_picker(&mut self, start: usize) {
@@ -570,7 +650,8 @@ impl InputBox {
     /// Fecha a lista se o `@` sumiu, o cursor saiu da consulta ou ela ganhou
     /// um espaço; o `@caminho` que ficou vira badge ([`Self::commit_typed`]).
     /// Uma edição volta a seleção para o primeiro item.
-    /// Vale para as duas listas (`@` e `/`). Uma edição dentro de um
+    /// Vale para as três listas (`@`, `/` e `&`; um `&nome` de padrão também
+    /// vira badge). Uma edição dentro de um
     /// `@caminho` (ex.: apagar uma letra dele) reabre a lista de arquivos.
     fn refresh_picker(&mut self, edited: bool) {
         if edited
@@ -579,7 +660,11 @@ impl InputBox {
         {
             self.open_picker(start);
         }
-        for (slot, trigger) in [(self.picker, '@'), (self.command_picker, '/')] {
+        for (slot, trigger) in [
+            (self.picker, '@'),
+            (self.command_picker, '/'),
+            (self.pattern_picker, '&'),
+        ] {
             let Some(mut picker) = slot else {
                 continue;
             };
@@ -598,12 +683,18 @@ impl InputBox {
                     }
                     self.picker = refreshed;
                 }
+                '&' => {
+                    if refreshed.is_none() {
+                        self.commit_pattern(picker);
+                    }
+                    self.pattern_picker = refreshed;
+                }
                 _ => self.command_picker = refreshed,
             }
         }
     }
 
-    /// O `trigger` (`@` ou `/`) ainda está lá, o cursor está depois dele e a
+    /// O `trigger` (`@`, `/` ou `&`) ainda está lá, o cursor está depois dele e a
     /// consulta não tem espaço.
     fn picker_valid(&self, picker: Picker, trigger: char) -> bool {
         let start = picker.start;
@@ -682,12 +773,7 @@ impl InputBox {
         if self.buffer.chars().nth(start) != Some('@') {
             return false;
         }
-        let word: String = self
-            .buffer
-            .chars()
-            .skip(start + 1)
-            .take_while(|&c| !c.is_whitespace() && self.mention(c).is_none())
-            .collect();
+        let word = self.word_after(start);
         let path = word
             .trim_start_matches("./")
             .trim_start_matches('/')
@@ -700,6 +786,22 @@ impl InputBox {
         } else {
             Mention::Create(path.to_string())
         };
+        self.replace_word(start, &word, mention);
+        true
+    }
+
+    /// A palavra depois do caractere em `start` (até um espaço ou um badge).
+    fn word_after(&self, start: usize) -> String {
+        self.buffer
+            .chars()
+            .skip(start + 1)
+            .take_while(|&c| !c.is_whitespace() && self.mention(c).is_none())
+            .collect()
+    }
+
+    /// Troca o caractere em `start` e a `word` depois dele pelo badge de
+    /// `mention`.
+    fn replace_word(&mut self, start: usize, word: &str, mention: Mention) {
         let token = mention::token(self.mentions.len());
         self.mentions.push(mention);
         let len = word.chars().count();
@@ -713,17 +815,28 @@ impl InputBox {
             self.cursor = start + 1;
         }
         self.anchor = None;
-        true
     }
 
     /// Com o cursor logo depois de um badge de arquivo (existente ou a
     /// criar), troca o badge pelo texto `@caminho` e reabre a lista, para
-    /// editar a menção.
+    /// editar a menção. Um badge de padrão volta a ser `&nome`, com a lista
+    /// de padrões.
     fn reopen_mention(&mut self) -> bool {
         let Some(c) = self.char_before_cursor() else {
             return false;
         };
-        let Some(Mention::File(path) | Mention::Create(path)) = self.mention(c).cloned() else {
+        let mention = self.mention(c).cloned();
+        if let Some(Mention::Pattern(name)) = mention {
+            let start = self.cursor - 1;
+            let at = self.byte_at(start);
+            self.buffer
+                .replace_range(at..at + c.len_utf8(), &format!("&{name}"));
+            self.cursor = start + 1 + name.chars().count();
+            self.anchor = None;
+            self.pattern_picker = Some(Picker::new(start));
+            return true;
+        }
+        let Some(Mention::File(path) | Mention::Create(path)) = mention else {
             return false;
         };
         let start = self.cursor - 1;
@@ -930,6 +1043,12 @@ impl InputBox {
             let selected = picker.selected.min(found.len().saturating_sub(1));
             let refs: Vec<&FileEntry> = found.iter().collect();
             mention::draw(frame, area, &refs, selected);
+        }
+
+        if let Some(picker) = self.pattern_picker {
+            let found = patterns::matches(&self.query_of(picker));
+            let selected = picker.selected.min(found.len().saturating_sub(1));
+            patterns::draw(frame, area, &found, selected);
         }
     }
 
