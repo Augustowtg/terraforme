@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.6] - 2026-11-03
+
+### Alterado
+
+- O input virou um componente próprio em `src/tui/input/`, fora do chat: `input.rs` é o funcionamento da caixa de texto (edição, várias linhas, seleção, colar e as menções com `@`, em `input/mention.rs`), `input/commands.rs` são os comandos de `/` e `input/extensions.rs` é o que fica em volta do input, como o nome do provedor, o modelo, o status do agente e a cor do modo (antes em `chat/mode.rs`). Nada muda na tela.
+- O histórico da conversa também virou um componente próprio em `src/tui/history/`, fora do chat: `history.rs` é a conversa (rolagem, seleção com o mouse e a quebra das linhas), `history/markdown.rs` formata o texto do agente e `history/code.rs` realça os blocos de código. Nada muda na tela.
+
 ## [0.13.5] - 2026-10-30
 
 ### Alterado

@@ -1,8 +1,18 @@
-//! Caixa de input do chat: edição estilo Vim (NORMAL/INSERT), cursor em barra
-//! piscando, sobrescrever com a tecla Insert, seleção com o mouse, várias
-//! linhas (Shift+Enter, Alt+Enter, Ctrl+J ou `\` + Enter), menções de
-//! arquivo com `@` ([`super::mention`]), colar texto (`Ctrl+V` ou o colar do
-//! terminal) e as mensagens já enviadas com ↑/↓.
+//! Componente de input: a caixa de texto do chat e o que fica em volta dela.
+//!
+//! - este módulo é o funcionamento do input: edição estilo Vim
+//!   (NORMAL/INSERT), cursor em barra piscando, sobrescrever com a tecla
+//!   Insert, seleção com o mouse, várias linhas (Shift+Enter, Alt+Enter,
+//!   Ctrl+J ou `\` + Enter), menções de arquivo com `@` ([`mention`]), colar
+//!   texto (`Ctrl+V` ou o colar do terminal) e as mensagens já enviadas com
+//!   ↑/↓;
+//! - [`commands`]: os comandos de `/` e a lista deles acima do input;
+//! - [`extensions`]: o que aparece na borda e embaixo do input, como o nome
+//!   do provedor, o modelo, o status do agente e a cor do modo.
+
+pub mod commands;
+pub mod extensions;
+mod mention;
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -14,8 +24,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use unicode_width::UnicodeWidthChar;
 
-use super::commands;
-use super::mention::{self, Mention, Picker};
+use self::mention::{Mention, Picker};
 use crate::agent::CommandInfo;
 use crate::files::{FileEntry, FileIndex};
 use crate::platform::clipboard;
@@ -23,6 +32,8 @@ use crate::theme::{self, Variant};
 
 /// Altura da caixa: bordas e três linhas de texto.
 pub const HEIGHT: u16 = 5;
+
+pub use self::mention::PASTE_LIMIT;
 /// Ticks entre cada troca do cursor piscante (com tick de 100 ms, ~500 ms).
 const BLINK_TICKS: u32 = 5;
 const PLACEHOLDER: &str = "Pressione i para escrever";
