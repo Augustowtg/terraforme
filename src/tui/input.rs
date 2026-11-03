@@ -565,8 +565,15 @@ impl InputBox {
 
     /// Fecha a lista se o `@` sumiu, o cursor saiu da consulta ou ela ganhou
     /// um espaço. Uma edição volta a seleção para o primeiro item.
-    /// Vale para as duas listas (`@` e `/`).
+    /// Vale para as duas listas (`@` e `/`). Uma edição dentro de um
+    /// `@caminho` (ex.: apagar uma letra dele) reabre a lista de arquivos.
     fn refresh_picker(&mut self, edited: bool) {
+        if edited
+            && self.picker.is_none()
+            && let Some(start) = self.mention_start()
+        {
+            self.open_picker(start);
+        }
         for (slot, trigger) in [(self.picker, '@'), (self.command_picker, '/')] {
             let Some(mut picker) = slot else {
                 continue;
@@ -598,6 +605,17 @@ impl InputBox {
                 .skip(start + 1)
                 .take(self.cursor - start - 1)
                 .any(char::is_whitespace)
+    }
+
+    /// Posição do `@` da palavra em que o cursor está, se ela for uma menção
+    /// (`@` no começo da palavra, como ao digitar).
+    fn mention_start(&self) -> Option<usize> {
+        let before: Vec<char> = self.buffer.chars().take(self.cursor).collect();
+        let at = before
+            .iter()
+            .rposition(|&c| c == '@' || c.is_whitespace() || self.mention(c).is_some())?;
+        let starts_word = at == 0 || !before[at - 1].is_alphanumeric();
+        (before[at] == '@' && starts_word).then_some(at)
     }
 
     /// O que vem depois do `@` até o cursor.
