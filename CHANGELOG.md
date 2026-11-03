@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.7] - 2026-11-03
+
+### Alterado
+
+- Os testes do input ficam juntos em `src/tui/input/tests/`, um arquivo por parte: `input.rs` (a caixa de texto), `commands.rs` (os comandos de `/`), `extensions.rs` (provedor, modelo, status do agente e cor do modo) e `mention.rs` (as menções com `@`). Antes, os de comandos, extensões e menções ficavam no fim de cada arquivo de código. Nada muda no comportamento.
+
 ## [0.13.6] - 2026-11-03
 
 ### Alterado
