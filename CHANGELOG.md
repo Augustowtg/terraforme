@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.9] - 2026-11-03
+
+### Adicionado
+
+- Menção a um arquivo que não existe: um `@caminho` que não está no diretório vira o badge `create:@docs/test`, ou `create(JavaScript):@docs/test/script.js` quando a extensão é de um arquivo de texto ou código (JavaScript, TypeScript, Rust, Python, Markdown, JSON...). Para o agente, ele vai como `@docs/test (ainda não existe: criar)`.
+
+### Corrigido
+
+- Um `@caminho` escrito à mão (ou um badge que voltou a ser texto com o `Backspace`) vira badge ao sair dele, com espaço, `Esc`, `Enter` sem item na lista, seta ou clique fora: o do arquivo, se ele existe (ex.: `@src` + espaço vira `@/src`), ou o de um arquivo a criar. Antes, ele ficava como texto solto e o badge cinza sumia.
+
 ## [0.13.8] - 2026-11-03
 
 ### Corrigido
