@@ -33,12 +33,10 @@ use crate::db::Db;
 use crate::extension::Registry;
 use crate::hub::{
     self,
-    client::{Monitor, Reporter},
+    client::{Event, Monitor, Reporter},
 };
 use crate::platform::keyboard;
-use crate::settings::{
-    AgentSettings, ExtensionSettings, Interface, OrchestratorSettings, StartMode,
-};
+use crate::settings::{AgentSettings, ExtensionSettings, Interface, StartMode};
 use crate::theme;
 
 const QUIT_LABEL: &str = " Sair ";
@@ -151,15 +149,32 @@ struct Workspace {
     saved: bool,
 }
 
-/// Os `config.json` do terra: o do workspace (as configurações) e o global
+/// Os arquivos do terra: o `config.json` do workspace (as configurações), o
+/// SQLite do workspace (o histórico de conversas) e o `config.json` global
 /// (as do orquestrador).
 pub struct ConfigFiles {
     pub workspace: PathBuf,
+    pub history: PathBuf,
     pub global: PathBuf,
+}
+
+impl ConfigFiles {
+    /// Cria o que falta do workspace (a pasta, o `config.json` e o histórico),
+    /// como o `terra.sqlite`, sem mexer no que já existe.
+    pub fn create(&self) -> anyhow::Result<()> {
+        crate::settings::create_file(&self.workspace)?;
+        crate::db::history::move_old_file(&self.history)?;
+        crate::db::history::ChatHistory::open(&self.history)?;
+        Ok(())
+    }
 }
 
 /// Um chat novo, aberto com `Alt+N`, além do principal.
 struct ChatTab {
+    /// O id do chat no hub.
+    id: String,
+    /// A execução despachada que a aba mostra (só leitura).
+    run: Option<String>,
     title: String,
     chat: Chat,
 }
@@ -169,6 +184,8 @@ pub struct App {
     tab: Tab,
     focus: Focus,
     chat: Chat,
+    /// O id do chat principal no hub.
+    chat_id: String,
     /// Os chats além do principal, abertos com `Alt+N`.
     chats: Vec<ChatTab>,
     /// Os tokens dos chats já fechados, que continuam no consumo geral.
@@ -191,14 +208,10 @@ pub struct App {
     /// O `config.json` do workspace, onde as configurações são salvas
     /// (`None` nos testes).
     config: Option<PathBuf>,
-    /// As configurações do orquestrador, do `config.json` global.
-    orchestrator: OrchestratorSettings,
-    /// O `config.json` global (`None` nos testes).
-    global_config: Option<PathBuf>,
+    /// O SQLite do histórico de conversas do workspace (`None` nos testes).
+    history: Option<PathBuf>,
+    /// A aba Orquestrador, com o que ela lê do disco.
     orchestrator_view: OrchestratorView,
-    /// O provedor dos chats delegados, com o catálogo dele, quando não é o
-    /// do workspace.
-    delegated: Option<orchestrator_tab::Delegated>,
     /// Os provedores conhecidos (Config e Orquestrador), detectados ao abrir.
     providers: Vec<ProviderOption>,
     /// O diretório aberto (`None` nos testes).
@@ -236,23 +249,45 @@ impl App {
                 ..Default::default()
             },
         );
+        let mut chat = Chat::connect(&settings);
+        chat.set_history_file(files.history.clone());
         let mut app = Self {
-            chat: Chat::connect(&settings),
+            chat,
+            chat_id: hub::protocol::new_id(),
             providers: crate::agent::adapters::options(),
             open_provider: settings.interface == Interface::Provider,
             settings,
             registry: Registry::detect(),
             config: Some(config),
-            orchestrator: OrchestratorSettings::load_file(&files.global),
-            global_config: Some(files.global),
+            history: Some(files.history),
+            orchestrator_view: OrchestratorView::new(orchestrator_tab::Data::new(
+                hub::endpoint::Endpoint::current().ok().map(|e| e.home),
+                dir.clone(),
+            )),
             workspace: Some(Workspace { dir, saved }),
             db: Some(db),
             hub,
             ..Self::default()
         };
+        app.orchestrator_view.data.providers = app.providers.clone();
         app.load_extensions();
         app.update_view.check();
+        app.migrate_orchestrator(&files.global);
         app
+    }
+
+    /// As antigas configurações do orquestrador saem do `config.json`
+    /// global uma vez; o "Ao abrir: mostrar o chat" vai para o
+    /// `orchestrator.toml` (`aba_em_primeiro_plano`).
+    fn migrate_orchestrator(&mut self, global: &std::path::Path) {
+        let focus = crate::settings::take_legacy_orchestrator(global);
+        let path = self.orchestrator_view.data.path();
+        if let (Some(true), Some(path)) = (focus, path)
+            && let Ok(mut editor) = crate::orchestrator::edit::Editor::open(&path)
+        {
+            editor.set_global("aba_em_primeiro_plano", true);
+            let _ = editor.save();
+        }
     }
 
     /// O chat que aparece na aba Chat.
@@ -270,33 +305,22 @@ impl App {
         }
     }
 
-    /// O provedor escolhido no Orquestrador é o do chat do workspace (ou
-    /// não há escolha).
-    fn delegated_is_own(&self) -> bool {
-        self.orchestrator
-            .provider
-            .as_deref()
-            .is_none_or(|id| self.chat.provider_id() == Some(id))
-    }
-
-    /// Carrega o catálogo do provedor dos chats delegados, quando é outro.
-    fn sync_delegated(&mut self) {
-        let own = self.delegated_is_own();
-        orchestrator_tab::Delegated::sync(
-            &mut self.delegated,
-            self.orchestrator.provider.as_deref(),
-            own,
-        );
-    }
-
     /// Abre um chat novo e vazio neste terra, com as configurações do
     /// workspace, e passa para ele.
     fn new_chat(&mut self) {
         let mut chat = Chat::connect(&self.settings);
         chat.set_extensions(self.chat.extensions().clone());
         chat.set_session_usage(self.session_usage.window().cloned());
+        if let Some(file) = &self.history {
+            chat.set_history_file(file.clone());
+        }
         let title = format!("Chat {}", self.chats.len() + 2);
-        self.chats.push(ChatTab { title, chat });
+        self.chats.push(ChatTab {
+            id: hub::protocol::new_id(),
+            run: None,
+            title,
+            chat,
+        });
         self.active_chat = self.chats.len();
     }
 
@@ -304,9 +328,18 @@ impl App {
     /// não fecha).
     fn close_chat(&mut self) {
         if self.active_chat > 0 {
-            let tab = self.chats.remove(self.active_chat - 1);
+            let mut tab = self.chats.remove(self.active_chat - 1);
+            tab.chat.save_history();
             self.closed_tokens += tab.chat.tokens_used();
             self.active_chat -= 1;
+        }
+    }
+
+    /// Grava o que falta dos chats no histórico do workspace, ao sair.
+    pub fn save_history(&mut self) {
+        self.chat.save_history();
+        for tab in &mut self.chats {
+            tab.chat.save_history();
         }
     }
 
@@ -684,23 +717,11 @@ impl App {
             return false;
         }
         if self.tab == Tab::Orquestrador && self.focus == Focus::Tabs {
-            self.sync_delegated();
-            let chat = &self.chat;
-            let delegated = self.delegated.as_ref();
-            let settings = self.orchestrator.clone();
-            let label = |id: &str| delegated_label(chat, delegated, &settings, id);
-            let agent = delegated_agent(chat, &settings, &self.providers, delegated, &label);
-            match self
-                .orchestrator_view
-                .handle_key(key, &mut self.orchestrator, &agent)
-            {
+            match self.orchestrator_view.handle_key(key) {
                 orchestrator_tab::Outcome::Ignored => {}
-                orchestrator_tab::Outcome::Moved => return false,
-                orchestrator_tab::Outcome::Changed => {
-                    if let Some(global) = &self.global_config {
-                        // Sem conseguir salvar, a mudança vale só nesta execução.
-                        let _ = self.orchestrator.save_file(global);
-                    }
+                orchestrator_tab::Outcome::Handled => return false,
+                orchestrator_tab::Outcome::OpenRun(id) => {
+                    self.open_run(&id);
                     return false;
                 }
             }
@@ -837,18 +858,23 @@ impl App {
         self.extensions_view.tick();
         self.update_view.tick();
         self.report_to_hub();
-        // No Orquestrador, a aba carrega o catálogo do provedor escolhido e
-        // assina a lista do hub (só com o hub ligado: não nos testes).
+        self.receive_from_hub();
+        // No Orquestrador, a aba relê o arquivo, as execuções e as mensagens
+        // e assina a lista do hub (só com o hub ligado: não nos testes).
         if self.tab == Tab::Orquestrador {
             if self.hub.is_some() && self.hub_monitor.is_none() {
                 self.hub_monitor = Monitor::start();
             }
-            self.sync_delegated();
-            let own = self.delegated_is_own();
-            self.orchestrator_view.sync(match &self.delegated {
-                Some(d) if !own => d.catalog(),
-                _ => self.chat.catalog(),
-            });
+            self.orchestrator_view.data.refresh_if_stale();
+            // O catálogo do chat serve aos agentes do mesmo provedor; os
+            // outros carregam em segundo plano (só num workspace: não nos
+            // testes).
+            if let (Some(id), Some(catalog)) = (self.chat.provider_id(), self.chat.catalog()) {
+                self.orchestrator_view.offer_catalog(id, catalog);
+            }
+            if self.workspace.is_some() {
+                self.orchestrator_view.load_catalogs();
+            }
         }
     }
 
@@ -856,14 +882,151 @@ impl App {
     /// o agente faz e os chats abertos (os além do principal são os sub
     /// agentes).
     fn hub_status(&self) -> hub::protocol::Status {
-        let chats = std::iter::once(&self.chat).chain(self.chats.iter().map(|c| &c.chat));
-        let task = chats.clone().find_map(Chat::activity);
+        let main = (&self.chat_id, MAIN_CHAT_TITLE, &self.chat, None);
+        let chats = std::iter::once(main).chain(
+            self.chats
+                .iter()
+                .map(|tab| (&tab.id, tab.title.as_str(), &tab.chat, tab.run.clone())),
+        );
+        let tabs: Vec<_> = chats
+            .map(|(id, title, chat, run)| hub::protocol::Tab {
+                id: id.clone(),
+                run,
+                title: title.to_string(),
+                name: chat.agent_name().map(str::to_string),
+                task: chat.activity().map(str::to_string),
+            })
+            .collect();
+        let task = tabs.iter().find_map(|tab| tab.task.clone());
         hub::protocol::Status {
             running: task.is_some(),
-            task: task.map(str::to_string),
-            chats: self.chats.len() + 1,
-            agents: self.chats.len(),
+            task,
+            chats: tabs.len(),
+            agents: tabs.len() - 1,
+            tabs,
         }
+    }
+
+    /// O que o hub mandou: as mensagens de outros agentes vão para a caixa
+    /// do chat da aba (o `ack` confirma ao hub) e os nomes recusados saem
+    /// do chat. Nada disso vai ao agente do chat.
+    fn receive_from_hub(&mut self) {
+        let events = match &self.hub {
+            Some(hub) => hub.events(),
+            None => return,
+        };
+        for event in events {
+            match event {
+                Event::Deliver { tab, message } => {
+                    let id = message.id.clone();
+                    if let Some(chat) = self.chat_by_id_mut(&tab) {
+                        chat.receive(message);
+                        if let Some(hub) = &self.hub {
+                            hub.ack(&id);
+                        }
+                    }
+                }
+                Event::RunStarted { run, output } => self.show_run(&run, &output),
+                Event::NameRejected { tab, name, reason } => {
+                    if let Some(chat) = self.chat_by_id_mut(&tab) {
+                        chat.name_rejected(&name, &reason);
+                    }
+                }
+            }
+        }
+    }
+
+    /// O `Enter` numa execução da aba Orquestrador: abre a aba dela (ou vai
+    /// para a que já está aberta) e passa para a aba Chat.
+    fn open_run(&mut self, id: &str) {
+        let open = self
+            .chats
+            .iter()
+            .position(|tab| tab.run.as_deref() == Some(id));
+        let index = match open {
+            Some(i) => i,
+            None => {
+                let Some(home) = self.orchestrator_view.data.home.clone() else {
+                    return;
+                };
+                let Some((run, output)) = orchestrator_tab::run_output(&home, id) else {
+                    return;
+                };
+                self.push_run(&run, &output);
+                self.chats.len() - 1
+            }
+        };
+        self.active_chat = index + 1;
+        self.tab = Tab::Chat;
+    }
+
+    /// Uma execução despachada começou: abre uma aba só de leitura que
+    /// acompanha a saída do agente. Ela vai para a frente só com
+    /// `aba_em_primeiro_plano` no `orchestrator.toml`.
+    fn show_run(&mut self, run: &crate::orchestrator::run::Run, output: &std::path::Path) {
+        self.push_run(run, output);
+        let focus = self
+            .orchestrator_view
+            .data
+            .path()
+            .and_then(|path| crate::orchestrator::config::Config::load(&path).ok())
+            .is_some_and(|config| config.global.focus_runs);
+        if focus {
+            self.active_chat = self.chats.len();
+        }
+    }
+
+    /// A aba só de leitura de uma execução, no fim da barra de chats.
+    fn push_run(&mut self, run: &crate::orchestrator::run::Run, output: &std::path::Path) {
+        let intro = format!(
+            "▶ Execução {} do agente {}: mensagem de {} (nível {}, {} saltos). Nota: {}",
+            &run.id[..run.id.len().min(8)],
+            run.agent,
+            run.from,
+            run.level,
+            run.hops,
+            run.note.display()
+        );
+        use crate::agent::adapters::{antigravity, claude};
+        // A saída de cada provedor tem o leitor dele.
+        let (session, provider): (_, super::chat::ViewerProvider) = if run.is_antigravity() {
+            (
+                antigravity::follow(output),
+                (antigravity::NAME, str::to_string),
+            )
+        } else {
+            (
+                claude::follow(output),
+                (claude::NAME, claude::display_model),
+            )
+        };
+        self.chats.push(ChatTab {
+            id: hub::protocol::new_id(),
+            run: Some(run.id.clone()),
+            title: format!("▶ {}", run.agent),
+            chat: Chat::viewer(session, intro, provider),
+        });
+    }
+
+    /// O chat com o id `id` no hub: o principal ou um do `Alt+N`.
+    fn chat_by_id_mut(&mut self, id: &str) -> Option<&mut Chat> {
+        if self.chat_id == id {
+            return Some(&mut self.chat);
+        }
+        self.chats
+            .iter_mut()
+            .find(|tab| tab.id == id)
+            .map(|tab| &mut tab.chat)
+    }
+
+    /// As mensagens de outros agentes ainda não lidas, em todos os chats.
+    fn unread(&self) -> usize {
+        self.chat.unread()
+            + self
+                .chats
+                .iter()
+                .map(|tab| tab.chat.unread())
+                .sum::<usize>()
     }
 
     /// Manda o estado ao hub; o [`Reporter`] só manda quando mudou e nunca
@@ -946,7 +1109,11 @@ impl App {
             } else {
                 theme::tab_inactive()
             };
-            spans.push(Span::styled(format!(" {} ", tab.title()), style));
+            let title = match self.unread() {
+                n if n > 0 && tab == Tab::Chat => format!(" {} ✉{n} ", tab.title()),
+                _ => format!(" {} ", tab.title()),
+            };
+            spans.push(Span::styled(title, style));
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
 
@@ -985,8 +1152,12 @@ impl App {
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let titles =
-            std::iter::once(MAIN_CHAT_TITLE).chain(self.chats.iter().map(|c| c.title.as_str()));
+        let titles = std::iter::once((MAIN_CHAT_TITLE, &self.chat))
+            .chain(self.chats.iter().map(|c| (c.title.as_str(), &c.chat)))
+            .map(|(title, chat)| match chat.unread() {
+                0 => title.to_string(),
+                n => format!("{title} ✉{n}"),
+            });
         let mut spans = Vec::new();
         for (i, title) in titles.enumerate() {
             if i > 0 {
@@ -1037,22 +1208,12 @@ impl App {
             return;
         }
         if self.tab == Tab::Orquestrador {
-            let delegated = self.delegated.as_ref();
-            let label = |id: &str| delegated_label(&self.chat, delegated, &self.orchestrator, id);
-            let agent = delegated_agent(
-                &self.chat,
-                &self.orchestrator,
-                &self.providers,
-                delegated,
-                &label,
-            );
             let instances = self.hub_monitor.as_ref().map(Monitor::instances);
             let hub = orchestrator_tab::HubView {
                 instances: instances.as_ref(),
                 own: self.hub.as_ref().map(Reporter::id),
             };
-            self.orchestrator_view
-                .draw(frame, area, &self.orchestrator, &agent, &hub);
+            self.orchestrator_view.draw(frame, area, &hub);
             return;
         }
         if self.tab == Tab::Atualizacao {
@@ -1127,55 +1288,6 @@ fn layout(area: Rect) -> [Rect; 3] {
 /// A área de conteúdo numa tela `screen`.
 fn content_area(screen: Rect) -> Rect {
     layout(screen)[1]
-}
-
-/// O agente dos chats delegados, para a aba Orquestrador: o provedor e o
-/// catálogo do chat do terra ou, com outro provedor escolhido para os
-/// delegados, o catálogo dele (`None` até chegar).
-fn delegated_agent<'a>(
-    chat: &'a Chat,
-    settings: &OrchestratorSettings,
-    providers: &'a [ProviderOption],
-    delegated: Option<&'a orchestrator_tab::Delegated>,
-    label: &'a dyn Fn(&str) -> String,
-) -> orchestrator_tab::Agent<'a> {
-    let own = settings
-        .provider
-        .as_deref()
-        .is_none_or(|id| chat.provider_id() == Some(id));
-    let catalog = if own {
-        chat.catalog()
-    } else {
-        delegated.and_then(|d| d.catalog())
-    };
-    orchestrator_tab::Agent {
-        provider: chat.adapter().map_or("Sem agente", |a| a.name()),
-        providers,
-        catalog,
-        default_model: if own {
-            chat.default_model()
-        } else {
-            catalog.and_then(|c| c.default_model.clone())
-        },
-        label,
-    }
-}
-
-/// O nome de um modelo dos chats delegados para a tela.
-fn delegated_label(
-    chat: &Chat,
-    delegated: Option<&orchestrator_tab::Delegated>,
-    settings: &OrchestratorSettings,
-    id: &str,
-) -> String {
-    let own = settings
-        .provider
-        .as_deref()
-        .is_none_or(|p| chat.provider_id() == Some(p));
-    match delegated {
-        Some(d) if !own => d.label(id),
-        _ => chat.model_label_of(id),
-    }
 }
 
 fn is_ctrl(key: &KeyEvent, c: char) -> bool {
@@ -1303,35 +1415,6 @@ mod tests {
         assert_eq!(Tab::Chat.next(false), Tab::Consumo);
         assert_eq!(Tab::Chat.next(true), Tab::Atualizacao);
         assert_eq!(Tab::Atualizacao.next(true), Tab::Consumo);
-    }
-
-    #[test]
-    fn changing_the_orquestrador_saves_it_in_the_global_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let global = crate::settings::global_file(dir.path());
-        // A antiga chave `mcp` ainda está no arquivo de outro terra.
-        std::fs::write(
-            &global,
-            r#"{"outra": 1, "mcp": {"enabled": true, "model": "opus"}}"#,
-        )
-        .unwrap();
-        let mut app = App {
-            global_config: Some(global.clone()),
-            tab: Tab::Orquestrador,
-            orchestrator: OrchestratorSettings::load_file(&global),
-            ..App::default()
-        };
-        // O Provedor é a primeira configuração, e ←/→ muda e salva.
-        assert!(!key(&mut app, KeyCode::Right));
-        let saved: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&global).unwrap()).unwrap();
-        // A antiga chave `mcp` saiu; os modos do orquestrador ficaram.
-        assert!(saved.get("orchestrator").is_some());
-        assert!(saved.get("mcp").is_none(), "{}", saved);
-        assert_eq!(
-            OrchestratorSettings::load_file(&global).model.as_deref(),
-            Some("opus")
-        );
     }
 
     #[test]
@@ -1596,6 +1679,32 @@ mod tests {
         assert!(app.term.is_some());
     }
 
+    #[test]
+    fn opening_creates_the_workspace_and_keeps_what_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = ConfigFiles {
+            workspace: crate::settings::config_file(dir.path(), "projeto"),
+            history: crate::settings::history_file(dir.path(), "projeto"),
+            global: crate::settings::global_file(dir.path()),
+        };
+
+        files.create().unwrap();
+        assert_eq!(
+            AgentSettings::load_file(&files.workspace),
+            Some(AgentSettings::default()),
+            "o arquivo novo é o padrão do router"
+        );
+        assert!(files.history.is_file());
+
+        let settings = AgentSettings {
+            model: Some("opus".into()),
+            ..AgentSettings::default()
+        };
+        settings.save_file(&files.workspace).unwrap();
+        files.create().unwrap();
+        assert_eq!(AgentSettings::load_file(&files.workspace), Some(settings));
+    }
+
     /// Uma tela num workspace não salvo, com o `config.json` em `dir`.
     fn unsaved_app(dir: &std::path::Path) -> App {
         App {
@@ -1785,6 +1894,54 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT));
         assert_eq!(app.active_chat, 2);
         assert_eq!(app.chats[1].title, "Chat 3");
+    }
+
+    #[test]
+    fn a_dispatched_run_opens_a_read_only_tab_that_follows_its_output() {
+        use crate::orchestrator::run::{Run, RunState};
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output.jsonl");
+        let mut file = std::fs::File::create(&output).unwrap();
+        let run = Run {
+            id: "abcdef0123".into(),
+            agent: "api".into(),
+            message: "m1".into(),
+            from: "web".into(),
+            level: 2,
+            hops: 1,
+            note: "/n.md".into(),
+            state: RunState::Running,
+            created: 0,
+            started: None,
+            finished: None,
+            provider: "claude".into(),
+            model: None,
+            usage: None,
+            error: None,
+            summary: None,
+        };
+        let mut app = App::default();
+        app.show_run(&run, &output);
+        assert_eq!(app.chats.len(), 1);
+        assert_eq!(app.chats[0].title, "▶ api");
+        // Em segundo plano por padrão: a aba aberta continua a mesma.
+        assert_eq!(app.active_chat, 0);
+        let status = app.hub_status();
+        assert_eq!(status.tabs[1].run.as_deref(), Some("abcdef0123"));
+        assert_eq!(status.tabs[1].to_json()["kind"], "execucao");
+
+        writeln!(file, r#"{{"type":"result","subtype":"success","is_error":false,"result":"feito","usage":{{}}}}"#).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.chats[0].chat.activity().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a aba não viu o resultado"
+            );
+            app.tick();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     #[test]

@@ -16,7 +16,8 @@
 //! `Enter` no Default abre o mesmo menu para o modelo padrão (salvo na
 //! Config); num modelo, escolhe o modelo desta conversa. A Config abre o
 //! mesmo menu para o modelo dos sub agentes, sem o esforço, e a aba
-//! Orquestrador para o modelo e o esforço dos chats delegados.
+//! Orquestrador para o modelo de um agente despachado, também sem o esforço
+//! e com o catálogo do provedor dele.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
@@ -44,9 +45,16 @@ pub enum Target {
     Default,
     /// O modelo dos sub agentes, salvo na Config (aberto pela Config).
     Subagent,
-    /// O modelo dos chats delegados, salvo no `config.json` global (aberto
-    /// pela aba Orquestrador).
-    Delegated,
+    /// O modelo de um agente despachado, salvo no `orchestrator.toml`
+    /// (aberto pela aba Orquestrador).
+    Dispatched,
+}
+
+impl Target {
+    /// Escolhe só o modelo: o esforço não é ajustável.
+    fn without_effort(self) -> bool {
+        matches!(self, Target::Subagent | Target::Dispatched)
+    }
 }
 
 /// O que o menu fez com uma tecla.
@@ -96,37 +104,26 @@ impl ModelMenu {
     /// Abre o menu do modelo dos sub agentes, com o foco em `current`
     /// (`None` é o Default).
     pub fn subagents(current: Option<String>, catalog: Option<&Catalog>) -> Self {
+        Self::without_effort(Target::Subagent, current, catalog)
+    }
+
+    /// Abre o menu do modelo de um agente despachado, com o foco em
+    /// `current` (`None` é o Default) e o catálogo do provedor dele.
+    pub fn dispatched(current: Option<String>, catalog: Option<&Catalog>) -> Self {
+        Self::without_effort(Target::Dispatched, current, catalog)
+    }
+
+    fn without_effort(target: Target, current: Option<String>, catalog: Option<&Catalog>) -> Self {
         let models = catalog.map_or(&[][..], |c| &c.models[..]);
         let selected = current
             .as_ref()
             .and_then(|id| models.iter().position(|m| matches_id(m, id)))
             .map_or(0, |i| i + 1);
         Self {
-            target: Target::Subagent,
+            target,
             selected,
             effort: None,
             default_model: None,
-        }
-    }
-
-    /// Abre o menu do modelo dos chats delegados, com o foco em `current`
-    /// (`None` é o Default, que mostra `default_model`) e o esforço `effort`.
-    pub fn delegated(
-        current: Option<String>,
-        effort: Option<String>,
-        default_model: Option<String>,
-        catalog: Option<&Catalog>,
-    ) -> Self {
-        let models = catalog.map_or(&[][..], |c| &c.models[..]);
-        let selected = current
-            .as_ref()
-            .and_then(|id| models.iter().position(|m| matches_id(m, id)))
-            .map_or(0, |i| i + 1);
-        Self {
-            target: Target::Delegated,
-            selected,
-            effort,
-            default_model,
         }
     }
 
@@ -163,7 +160,7 @@ impl ModelMenu {
 
     /// Garante um esforço que o modelo em foco aceite.
     fn fit_effort(&mut self, models: &[ModelInfo]) {
-        if self.target == Target::Subagent {
+        if self.target.without_effort() {
             return;
         }
         let Some(model) = self.focused(models).1 else {
@@ -205,9 +202,7 @@ impl ModelMenu {
             KeyCode::Left | KeyCode::Char('h') => self.step_effort(models, -1),
             KeyCode::Right | KeyCode::Char('l') => self.step_effort(models, 1),
             KeyCode::Enter => match self.focused(models) {
-                (Some(Item::Default), _)
-                    if matches!(self.target, Target::Subagent | Target::Delegated) =>
-                {
+                (Some(Item::Default), _) if self.target.without_effort() => {
                     return Outcome::Unset(self.target);
                 }
                 (Some(Item::Default), _) => {
@@ -223,7 +218,7 @@ impl ModelMenu {
                     let effort = self
                         .effort
                         .clone()
-                        .filter(|e| model.efforts.contains(e) && self.target != Target::Subagent);
+                        .filter(|e| model.efforts.contains(e) && !self.target.without_effort());
                     return Outcome::Chosen {
                         target: self.target,
                         model: model.id.clone(),
@@ -239,7 +234,7 @@ impl ModelMenu {
     }
 
     fn step_effort(&mut self, models: &[ModelInfo], step: isize) {
-        if self.target == Target::Subagent {
+        if self.target.without_effort() {
             return;
         }
         let Some(model) = self.focused(models).1 else {
@@ -281,9 +276,9 @@ impl ModelMenu {
                 "Selecione o modelo dos sub agentes",
                 "Os sub agentes usam este modelo e ele fica salvo nas Configurações.",
             ),
-            Target::Delegated => (
-                "Selecione o modelo dos chats delegados",
-                "Os chats abertos pelo orquestrador usam este modelo. Default usa o modelo padrão.",
+            Target::Dispatched => (
+                "Selecione o modelo do agente",
+                "As próximas execuções do agente usam este modelo; ele fica salvo no orchestrator.toml.",
             ),
         };
         let mut lines = vec![
@@ -313,6 +308,9 @@ impl ModelMenu {
                 Item::Default if self.target == Target::Subagent => {
                     "Default (o agente escolhe)".to_string()
                 }
+                Item::Default if self.target == Target::Dispatched => {
+                    "Default (o padrão do provedor)".to_string()
+                }
                 Item::Default => {
                     let current = self
                         .model_of(*item, models)
@@ -340,8 +338,8 @@ impl ModelMenu {
                 theme::muted(),
             ));
         }
-        // O esforço dos sub agentes não é ajustável.
-        if self.target != Target::Subagent {
+        // O esforço dos sub agentes e dos despachados não é ajustável.
+        if !self.target.without_effort() {
             lines.push(Line::default());
             lines.push(self.effort_line(self.focused(models).1));
         }
@@ -394,7 +392,7 @@ impl ModelMenu {
 
 /// O modelo é `id`, pelo apelido (`opus`) ou pelo nome real
 /// (`claude-opus-5-5`, como o agente informa o padrão).
-fn matches_id(model: &ModelInfo, id: &str) -> bool {
+pub fn matches_id(model: &ModelInfo, id: &str) -> bool {
     model.id == id || model.resolved.as_deref() == Some(id)
 }
 
@@ -631,44 +629,6 @@ mod tests {
         assert_eq!(
             press(&mut menu, KeyCode::Enter),
             Outcome::Unset(Target::Subagent)
-        );
-        assert_eq!(press(&mut menu, KeyCode::Esc), Outcome::Close);
-    }
-
-    #[test]
-    fn delegated_menu_is_the_model_menu_with_effort() {
-        let mut menu = ModelMenu::delegated(
-            Some("haiku".into()),
-            Some("low".into()),
-            Some("opus".into()),
-            Some(&catalog()),
-        );
-        menu.sync(Some(&catalog()));
-        let text = screen(&menu).join("\n");
-        assert!(
-            text.contains("Selecione o modelo dos chats delegados"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Default (opus)"),
-            "o Default mostra o padrão: {text}"
-        );
-        assert!(text.contains("▌ 4. haiku"), "começa no atual: {text}");
-        assert!(text.contains("Esforço"), "com esforço: {text}");
-        press(&mut menu, KeyCode::Up);
-        press(&mut menu, KeyCode::Up);
-        assert!(matches!(
-            press(&mut menu, KeyCode::Enter),
-            Outcome::Chosen {
-                target: Target::Delegated,
-                effort: Some(_),
-                ..
-            }
-        ));
-        let mut menu = ModelMenu::delegated(None, None, None, Some(&catalog()));
-        assert_eq!(
-            press(&mut menu, KeyCode::Enter),
-            Outcome::Unset(Target::Delegated)
         );
         assert_eq!(press(&mut menu, KeyCode::Esc), Outcome::Close);
     }

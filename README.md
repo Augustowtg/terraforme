@@ -84,7 +84,11 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
 | `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório, e mostra o que mudou |
-| `terra status` | Mostra os terminais do terra abertos na máquina, separados por workspace (pelo daemon orquestrador); `--json` para scripts |
+| `terra status` | Mostra os terminais do terra abertos na máquina, separados por workspace, com as abas de cada um (pelo daemon orquestrador); `--json` para scripts |
+| `terra send <agente> [texto] [--ref <arquivo>]... [--handoff <arquivo>] [--tag <tag>]` | Manda uma mensagem a outro agente: a uma aba com nome (`/agente`), que só mostra, ou a um agente do `~/.terraforme/orchestrator.toml`, que a processa numa execução do `claude` (veja `docs/infra/orquestrador.md`) |
+| `terra send --lote <arquivo \| ->` | Manda várias mensagens de uma vez, uma por linha (`agente: texto`), sem um agente coordenando |
+| `terra handoff new <agente>` | Cria uma nota de handoff em branco e mostra o caminho (para o `terra send --handoff`) |
+| `terra done [resumo]` | Dentro de uma execução despachada: guarda o resumo do que foi feito |
 | `terra upgrade --repo` | Atualiza pelo instalador do repositório do diretório atual (`install-linux.sh` no Linux, `install.ps1` no Windows). Os argumentos passam para o instalador (ex.: `terra upgrade --repo --dev`) |
 
 ### Navegação no `terra cli`
@@ -94,12 +98,12 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `Tab` | Troca de aba (Chat, Consumo, Extensões, Orquestrador e Configurações) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
-| `↑` / `↓` (escrevendo) | Mostram as mensagens já enviadas (desde que o terra abriu, de todas as sessões), da mais nova para a mais antiga. Com o texto em várias linhas, primeiro andam entre as linhas. Depois da mais nova, o `↓` volta ao que estava sendo escrito |
+| `↑` / `↓` (escrevendo) | Mostram as mensagens já enviadas (as 10 últimas guardadas no workspace, de execuções anteriores, e as desta execução), da mais nova para a mais antiga. Com o texto em várias linhas, primeiro andam entre as linhas. Depois da mais nova, o `↓` volta ao que estava sendo escrito |
 | `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Enter` executa; cada comando é uma interface do terra (hoje, `/clear`: conversa nova; `/compact`: o agente resume a conversa e libera o contexto; `/model`: modelo e esforço; `/login`: login na conta; `/usage`: aba Consumo). A lista tem todos os comandos do Claude: os embutidos, os do modo interativo (ex.: `/help`, `/status`, `/resume`) e as skills e plugins, e os que ainda não têm aparecem esmaecidos, com "padrão do router": escolhidos com `Enter`, eles vão para o agente e a resposta dele aparece no chat (ex.: o `/context` e o `/cost` do Claude); com `Tab`, completam o input (ex.: `/config `) para receber argumentos (ex.: `/config model=opus`). Os que só existem no modo interativo do Claude respondem que não estão disponíveis |
 | `/login` | Entra de novo na conta escolhida nas Configurações (token expirado ou revogado). O terra sai da tela e roda o `claude auth login` da conta, com o e-mail dela: o link aparece inteiro e clicável (e já copiado), e o código colado aparece ao digitar; `Enter` envia e `Enter` vazio cancela. No fim, o terra volta |
 | `/usage` | Abre a aba **Consumo** (limites de uso, crédito extra e o gráfico por dia) |
 | `/model` | Escolhe o modelo e o esforço desta conversa (`↑`/`↓` modelo, `←`/`→` esforço, `Enter` escolhe). O item Default abre o menu do modelo padrão, que fica salvo |
-| `@` (escrevendo) | Abre a lista de arquivos e pastas do diretório, filtrada pelo que vier depois do `@` e atualizada em tempo real. `↑`/`↓` escolhem, `Tab`/`Enter` inserem o caminho como um badge cinza (`@/src/main.rs`), `Esc` fecha |
+| `@` (escrevendo) | Abre a lista de arquivos e pastas do diretório, filtrada pelo que vier depois do `@` e atualizada em tempo real. `↑`/`↓` escolhem, `Tab`/`Enter` inserem o caminho como um badge cinza (`@/src/main.rs`), `Esc` fecha. Um caminho escrito à mão vira badge ao sair dele (espaço, `Esc`, seta ou clique); se ele não existe, o badge é de um arquivo a criar: `create:@docs/test`, ou `create(JavaScript):@docs/test/script.js` num arquivo de texto ou código. O `Backspace` logo depois de um badge o volta a texto (`@src/main.rs`), com a lista aberta, para editar o caminho |
 | `Esc` no modo NORMAL, com o Claude respondendo | Interrompe a resposta |
 | `PageUp` / `PageDown`, roda do mouse | Rola o histórico do chat (a barra de rolagem aparece ao rolar e some 2 s depois) |
 | Arrastar no histórico / duplo clique numa mensagem | Seleciona o trecho ou a mensagem inteira e copia para a área de transferência |
@@ -165,7 +169,7 @@ A aba lista as extensões (ativa, inativa ou não instalada) e mostra, da escolh
 
 A seção **Agente** reúne as configurações do agente do chat, que são de cada workspace. `↑`/`↓` escolhem e `←`/`→` ou `Enter` trocam o valor; a mudança é salva e vale na hora.
 
-As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.json`. O nome é o do workspace salvo para o diretório (`terra workspace --save`) ou, sem um, o nome da pasta. O arquivo é lido ao iniciar; um workspace sem ele começa com o padrão do router (o provedor): modo **Do provedor**, modelo e esforço padrão e a conta **Default**.
+As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.json`. A pasta do workspace (com o `config.json` e o histórico `<nome do workspace>.sql`) é criada sozinha na primeira vez que o terra abre no diretório, como o `terra.sqlite`. O nome é o do workspace salvo para o diretório (`terra workspace --save`) ou, sem um, o nome da pasta; dois diretórios com o mesmo nome não dividem a pasta: o segundo vira `projeto-2`. O arquivo é lido ao iniciar; um workspace novo começa com o padrão do router (o provedor): modo **Do provedor**, modelo e esforço padrão e a conta **Default**.
 
 ```json
 {
@@ -325,8 +329,16 @@ src/
 │   ├── endpoint.rs       # socket/pipe, hub.lock e hub.log
 │   ├── daemon.rs         # o processo do hub (terra __hub)
 │   ├── client.rs         # Reporter (a instância), Monitor (a aba) e snapshot (terra status)
+│   ├── daemon/mail.rs    # mensagens entre agentes: nomes, send, deliver e ack
+│   ├── daemon/dispatch.rs # despachante: filas, execuções do claude, orçamento e escalonamento
 │   ├── protocol.rs       # mensagens NDJSON
 │   └── view.rs           # a lista por workspace, para a tela
+├── orchestrator.rs       # orquestrador de agentes: o orchestrator.toml, as mensagens e as execuções
+│   ├── config.rs         # o orchestrator.toml
+│   ├── note.rs           # a nota de handoff
+│   ├── message.rs        # a mensagem e as regras dela
+│   ├── run.rs            # a execução despachada: registro, comando, prompt e resultado
+│   └── send.rs           # terra send e terra handoff new
 ├── extension.rs          # extensões do agente (Strategy + Registry)
 │   ├── contract.rs       # Extension (a estratégia), Contribution e Report
 │   ├── registry.rs       # Registry: as extensões e o que as ativas acrescentam

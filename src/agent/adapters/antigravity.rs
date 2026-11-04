@@ -132,7 +132,7 @@ impl AntigravityAdapter {
 
 impl ChatAdapter for AntigravityAdapter {
     fn name(&self) -> &str {
-        "Antigravity"
+        NAME
     }
 
     fn id(&self) -> &str {
@@ -363,6 +363,37 @@ fn find_agy() -> Option<PathBuf> {
     env::split_paths(&env::var_os("PATH")?)
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|path| path.is_file())
+}
+
+/// O nome do provedor, como o adapter mostra.
+pub const NAME: &str = "Antigravity";
+
+/// O `agy` do `PATH` para uma execução despachada pelo orquestrador, sem os
+/// lançadores das extensões; `None` sem ele.
+pub fn run_command() -> Option<Command> {
+    find_agy().map(|agy| command(&agy))
+}
+
+/// Os argumentos do `agy` de uma execução despachada: o modo auto (o `-p`
+/// não tem lista de ferramentas nem limite de turnos) e o modelo. O prompt
+/// vai pela entrada, com [`run_input`], e fechar a entrada encerra o `agy`
+/// depois do turno.
+pub fn run_args(model: Option<&str>) -> Vec<String> {
+    cli_args(PermissionMode::Agente, None, model, None)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// O prompt de uma execução despachada, como o `agy` lê na entrada.
+pub fn run_input(prompt: &str) -> String {
+    format!("{}\n", user_message(prompt))
+}
+
+/// Segue a saída de uma execução despachada (ver [`crate::agent::follow`]).
+pub fn follow(path: &Path) -> Box<dyn Session> {
+    let mut parser = StreamParser::new(None);
+    crate::agent::follow(path, "\"event\":\"result\"", move |line| parser.parse(line))
 }
 
 /// O Antigravity no `ai-memory run`.

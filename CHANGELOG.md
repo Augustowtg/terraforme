@@ -4,6 +4,205 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.16] - 2026-11-04
+
+### Alterado
+
+- O histórico do workspace sai de `~/.terraforme/workspace/<nome>/sql/history.sqlite` e vai para `~/.terraforme/workspace/<nome>/<nome>.sql`, sem a pasta `sql`. Ao abrir o terra, um histórico que já existe é movido para o lugar novo e a pasta some. Como a pasta `sql` não existe mais, é a pasta do workspace que fica só para o usuário (0700).
+
+## [0.13.15] - 2026-11-04
+
+### Adicionado
+
+- As últimas 10 mensagens enviadas ficam salvas por workspace, na nova tabela `sent_messages` do `~/.terraforme/workspace/<nome>/sql/history.sqlite`: ao abrir o terra, ou um chat novo, o `↑` do input já volta a elas, antes só as da execução atual. Entra o que o `↑` já guardava: os comandos digitados também, e um comando escolhido na lista da `/` fica de fora. As menções voltam como texto (`@caminho`), e as abas de uma execução despachada não gravam.
+
+## [0.13.14] - 2026-11-04
+
+### Corrigido
+
+- `~/.terraforme/workspace/<projeto>/` é criado sozinho ao abrir o terra no diretório, como o `terra.sqlite`: a pasta, o `config.json` (vazio, o padrão do router) e o `sql/history.sqlite`, sem mexer no que já existe. Antes, cada arquivo só aparecia na primeira gravação.
+- Dois diretórios com o mesmo nome (`~/a/app` e `~/b/app`) dividiam as configurações e o histórico. Agora cada diretório guarda a sua pasta na nova tabela `workspace_dirs` do `terra.sqlite`: o primeiro fica com `app` e o segundo com `app-2`, sem entrar nos Salvos. Salvar sem nome mantém a pasta, e `--name` recusa um nome que é a pasta de outro diretório.
+
+## [0.13.13] - 2026-11-03
+
+### Corrigido
+
+- O consumo só mudava no fim da resposta: agora o badge **Consumo** e o **Consumo geral** sobem enquanto o provedor trabalha, a cada informe de uso do stream, e o fim da resposta acerta o total. Um turno interrompido não perde mais o que já gastou. No Claude, os subagentes só entram no total do fim; no Antigravity, o uso chega ao fim de cada chamada ao modelo.
+
+## [0.13.12] - 2026-11-03
+
+### Adicionado
+
+- Histórico de conversas por workspace: cada chat grava a conversa no SQLite `~/.terraforme/workspace/<nome>/sql/history.sqlite`, nas tabelas `conversations` (provedor, sessão, modelo e datas) e `messages` (papel, ferramenta, conteúdo e data). Ficam as mensagens do usuário e do agente, as ferramentas e os avisos a partir da primeira mensagem do usuário. O `/clear` e a troca de conta ou provedor começam outra conversa, e a pasta `sql` fica só para o usuário (0700). As abas de uma execução despachada não gravam.
+
+## [0.13.11] - 2026-11-03
+
+### Adicionado
+
+- Provedor por agente despachado: o `[agents.<nome>]` ganha a chave `provedor` (`"claude"`, o padrão, ou `"antigravity"`), e a aba Orquestrador tem a linha **Provedor**. O `←`/`→` troca o provedor e tira o modelo (o id de um não vale no outro); um provedor que não está instalado aparece com "(não instalado)".
+- O hub lança o `agy -p` para um agente do Antigravity: modo `auto`, o modelo escolhido e o prompt pela entrada em stream-json. O `-p` do `agy` não tem lista de ferramentas nem limite de turnos, e a aba mostra "não vale no Antigravity" nessas linhas. O `run.json` grava o `provider`; o uso vem da soma das chamadas ao modelo (sem custo, que o `agy` não informa), e a aba `▶ agente` lê a saída do `agy`.
+
+### Corrigido
+
+- O modelo de um agente despachado não mudava: o `←`/`→` só passava pelos apelidos de `[modelos]`, que vêm vazios. Agora o `Enter` no **Modelo** abre o menu do `/model` com o catálogo ao vivo do provedor do agente (o do chat, quando é o mesmo provedor; senão, carregado em segundo plano), sem esforço. O Default tira a chave. O `←`/`→` passa pelo padrão, pelos modelos do catálogo e pelos apelidos. A linha mostra o modelo com o provedor no estilo do título do input (`[Claude] Opus 5.5`).
+
+### Alterado
+
+- O acompanhamento da saída de uma execução (`follow`) saiu do adapter do Claude para `agent::follow`, com o leitor do stream de cada provedor.
+
+## [0.13.10] - 2026-11-03
+
+### Adicionado
+
+- Padrões de prompt com `&` no input: digitar `&` (no começo de uma palavra) abre a lista **Padrões**, com o nome e uma descrição de cada um (ex.: `&ASD-STE100 - Diminui o retorno: frases curtas, diretas e sem ambiguidade`). Tab ou Enter troca o `&consulta` pelo badge `&ASD-STE100`, e para o agente vai a instrução do padrão: `(use ASD-STE100 com 75% de precisão)`. A lista filtra pelo nome e pela descrição. Padrões: `ASD-STE100`, `BLUF`, `KISS`, `YAGNI`, `DRY`, `SOLID`, `TDD` e `Passo-a-passo`.
+- Um `&nome` de padrão escrito à mão vira badge ao sair dele (espaço, `Esc` ou cursor fora); um nome que não é de padrão fica como texto. O `Backspace` depois do badge volta ele a ser `&nome`, com a lista aberta.
+
+## [0.13.9] - 2026-11-03
+
+### Adicionado
+
+- Menção a um arquivo que não existe: um `@caminho` que não está no diretório vira o badge `create:@docs/test`, ou `create(JavaScript):@docs/test/script.js` quando a extensão é de um arquivo de texto ou código (JavaScript, TypeScript, Rust, Python, Markdown, JSON...). Para o agente, ele vai como `@docs/test (ainda não existe: criar)`.
+
+### Corrigido
+
+- Um `@caminho` escrito à mão (ou um badge que voltou a ser texto com o `Backspace`) vira badge ao sair dele, com espaço, `Esc`, `Enter` sem item na lista, seta ou clique fora: o do arquivo, se ele existe (ex.: `@src` + espaço vira `@/src`), ou o de um arquivo a criar. Antes, ele ficava como texto solto e o badge cinza sumia.
+
+## [0.13.8] - 2026-11-03
+
+### Corrigido
+
+- A lista de arquivos do `@` volta a aparecer ao editar uma menção que estava fechada: depois de um espaço, de um `Esc` ou de mover o cursor, apagar ou escrever um caractere de `@src/hub/test` reabre a lista, filtrada pelo que ficou. Antes, ela só abria ao digitar o próprio `@`. Um `@` no meio de uma palavra (ex.: um e-mail) continua sem abrir a lista.
+
+## [0.13.7] - 2026-11-03
+
+### Alterado
+
+- Os testes do input ficam juntos em `src/tui/input/tests/`, um arquivo por parte: `input.rs` (a caixa de texto), `commands.rs` (os comandos de `/`), `extensions.rs` (provedor, modelo, status do agente e cor do modo) e `mention.rs` (as menções com `@`). Antes, os de comandos, extensões e menções ficavam no fim de cada arquivo de código. Nada muda no comportamento.
+
+## [0.13.6] - 2026-11-03
+
+### Alterado
+
+- O input virou um componente próprio em `src/tui/input/`, fora do chat: `input.rs` é o funcionamento da caixa de texto (edição, várias linhas, seleção, colar e as menções com `@`, em `input/mention.rs`), `input/commands.rs` são os comandos de `/` e `input/extensions.rs` é o que fica em volta do input, como o nome do provedor, o modelo, o status do agente e a cor do modo (antes em `chat/mode.rs`). Nada muda na tela.
+- O histórico da conversa também virou um componente próprio em `src/tui/history/`, fora do chat: `history.rs` é a conversa (rolagem, seleção com o mouse e a quebra das linhas), `history/markdown.rs` formata o texto do agente e `history/code.rs` realça os blocos de código. Nada muda na tela.
+
+## [0.13.5] - 2026-10-30
+
+### Alterado
+
+- O badge de um arquivo marcado com `@` (ex.: `@/README.md`) pode ser editado: o `Backspace` logo depois dele o devolve ao texto `@README.md`, com a lista de arquivos aberta, para mudar o caminho e escolher de novo. Antes, ele apagava o badge inteiro.
+
+## [0.13.4] - 2026-10-30
+
+### Corrigido
+
+- A primeira `@` do input não trava mais a tela. O observador dos arquivos (que percorre o diretório inteiro, inclusive pastas grandes como `target/` e `node_modules/`) passou a ser criado em segundo plano. A lista abre na hora e os arquivos aparecem assim que a primeira leitura termina.
+
+## [0.13.3] - 2026-10-30
+
+### Alterado
+
+- A aba **Orquestrador** foi reorganizada. Logo abaixo dos Despachos fica a seção **Sessões**: cada workspace aparece numa linha (ex.: `▸ Studio · 2 instâncias · 1 sub agente`) e fica fechado até o `Enter` (ou `→`), que mostra embaixo as instâncias dele como `Studio-4242  Principal, Chat 2  rodando · 5 min`. O `Enter` de novo (ou `←`) fecha. As instâncias que saíram não aparecem, nem um workspace sem nenhuma viva. Os sub agentes despachados que estão rodando vêm embaixo, em **Sub agentes em execução**. A seção Workspaces do fim da aba e as abas manuais da lista de agentes deram lugar às Sessões.
+- A seção **Limites** virou **Configuração** e vem logo depois das Sessões, começando pelo **Modo de execução**, agora com os nomes **Demonstrativo (visível nas abas)** e **Segundo plano (não aparece nas abas)**, e pelo **Tempo limite**. A lista dos agentes da configuração passou a se chamar **Agentes despachados**.
+
+### Adicionado
+
+- O **tempo limite** de uma execução pode ser **infinito**: no `Enter`, escreva os minutos ou `infinito` (o vazio também vale como infinito). Com `←`, abaixo de 1 minuto ele vira infinito, e com `→` volta para 1 minuto. No arquivo, fica `tempo_limite_min = "infinito"`, e o hub deixa a execução rodar até acabar.
+
+## [0.13.2] - 2026-10-29
+
+### Corrigido
+
+- A **aba de uma execução** (o sub agente despachado) voltou a mostrar o **provedor**, o **modelo** e o **modo** dela. Sem um adapter próprio, ela mostrava "Sem agente" e "Modelo padrão", e o badge do modo sumia (o `dontAsk` das execuções não tem equivalente no terra), sobrando só o do Consumo. Agora o título mostra, por exemplo, `Claude` e `Haiku - 5.5`, e o badge `Modo: dontAsk` fica enquanto a aba estiver aberta.
+
+## [0.13.1] - 2026-10-29
+
+### Corrigido
+
+- A **barra de contexto** voltou a contar os **tokens de cache** (criação e leitura). Com o cache, quase toda a conversa vem como leitura de cache, e a barra parecia zerar a cada mensagem, mostrando só o trecho novo. A **Auto compactação** usa o mesmo número e, sem o cache, quase nunca disparava. O consumo continua sem o cache.
+
+## [0.13.0] - 2026-10-29
+
+### Adicionado
+
+- `terra send --lote <arquivo | ->`: manda várias mensagens de nível 1 de uma vez, uma por linha (`agente: texto`; linhas vazias e com `#` são puladas). Substitui um agente coordenador, que custava uns 16% do total só para chamar o `terra send`. Uma recusada não para as outras.
+- `ambiente = "minimo" | "completo"` em cada `[agents.<nome>]`. O padrão é `minimo`.
+
+### Alterado
+
+- As execuções despachadas sobem enxutas no ambiente mínimo: `--tools` só com as ferramentas da lista, `--strict-mcp-config`, `--disable-slash-commands` e os hooks desligados. Antes, cada execução carregava todos os servidores MCP, as skills, os plugins e os hooks do usuário, uns 20 mil tokens antes de começar. Para manter tudo isso num agente, use `ambiente = "completo"`.
+- O prompt da execução traz o texto da nota em vez de mandar ler o arquivo, e diz como usar o `terra done "<resumo>"` e o `terra send`, para o agente não gastar turnos lendo a nota nem rodando `--help`.
+- Com quatro agentes em paralelo, o consumo estimado caiu de $0,44 para $0,12 por rodada.
+
+## [0.12.0] - 2026-10-29
+
+### Adicionado
+
+- **Despacho**: uma mensagem para um `[agents.<nome>]` do `orchestrator.toml` vira uma execução do `claude` em modo não interativo, na pasta do agente, com o modelo, as ferramentas (`--allowedTools`; o resto é negado sem perguntar) e o limite de turnos da configuração. O prompt é sempre o mesmo, aponta para a nota e diz que ela é informação de outro agente, não instrução do usuário. Ele vai pela entrada.
+- Uma fila por agente, no máximo uma execução rodando por agente e no máximo `max_execucoes_simultaneas` ao todo. Com `pausado = true`, nenhuma começa, e despausar no arquivo vale em até 1 s.
+- Cada execução fica em `~/.terraforme/runs/<id>/`: `run.json` (estado `queued → running → done | failed | timeout`, ou `rejected`, os tempos, o modelo, os tokens e o custo do `result` do `claude`, o erro e o resumo do `terra done`), `output.jsonl` e `stderr.log`.
+- `terra done [resumo]`: de dentro da execução, guarda o resumo. A execução recebe `TERRA_AGENT`, `TERRA_HOPS` e `TERRA_RUN` no ambiente.
+- Orçamento do dia (`orcamento_diario`, em execuções): esgotado, a mensagem é recusada (`orcamento`) e o hub avisa no log e aos monitores; a 80%, avisa antes.
+- `tempo_limite_min` no `[global]` (30 por padrão): a execução que passa dele é encerrada com o que ela abriu (`timeout`).
+- Escalonamento: uma execução de nível 1 ou 2 que falha pede ao remetente, numa mensagem do `terra`, o handoff completo, que volta no nível 3. Vale por padrão (`[roteamento] escalonar_falhas`), mesmo com o roteamento por tag desligado.
+- Aba de execução: com `modo_execucao = "aba"`, a janela aberta na pasta do agente (ou a mais nova) ganha uma aba `▶ <agente>`, só de leitura, que mostra o que o `claude` faz até o resultado.
+- Um hub novo retoma as execuções que ficaram na fila e marca como falha as que rodavam quando o anterior saiu.
+- O README lista o `terra send`, o `terra handoff new` e o `terra done`.
+
+### Alterado
+
+- O hub não sai enquanto há uma execução rodando, mesmo sem janelas abertas.
+- `usuario` e `terra` não servem mais como nome de agente (são o remetente de fora de um agente e o do escalonamento).
+
+## [0.11.0] - 2026-10-28
+
+### Adicionado
+
+- **Mensagens entre agentes**: `terra send <agente> [texto] [--ref <arquivo>]... [--handoff <arquivo>] [--tag <tag>]`, em três níveis: só o texto (1), texto e arquivos (2) e o handoff completo (3). Nos níveis 1 e 2, o terra escreve uma mini nota; no 3, a nota é a do `--handoff`. Toda mensagem fica em `~/.terraforme/messages/<msg_id>/`, com a nota (`note.md`) e o estado (`message.json`: `enviada`, `entregue`, `na_fila` ou `recusada`). A saída é uma linha só (`enviada 1bd4933b → frontend (nível 1)`), porque entra no contexto do agente que mandou.
+- `terra handoff new <agente>`: cria a nota de handoff em branco (`# Handoff <msg_id> · <origem> → <destino>`, com Objetivo, Feito, Arquivos, Próximo passo e Pronto quando) em `~/.terraforme/handoffs/` e mostra o caminho.
+- Validações antes de mandar e de novo no hub: saltos acima do `max_hops` (proteção contra laço), texto acima do `limite_palavras_mensagem` (a recusa sugere o handoff), arquivo do `--ref` ou do `--handoff` que não existe, nota sem as seções ou com mais de 40 linhas, nota já mandada e destino desconhecido.
+- `/agente <nome>` no chat: dá a ele um nome de agente, único na máquina, para receber mensagens. `/agente` mostra o nome e `/agente -` o tira. O hub recusa o nome repetido e o de um agente da configuração, e o chat avisa. Com nome, o agente do chat roda com `TERRA_AGENT=<nome>`, e o `terra send` de dentro dele manda com esse remetente.
+- Uma mensagem para uma aba manual **nunca vai ao agente dela**: fica na caixa do chat, o histórico avisa e as barras mostram quantas faltam ler (`Chat ✉1`). O `/mensagens` mostra as mais novas, com o texto e o caminho da nota.
+- `~/.terraforme/orchestrator.toml`, a configuração do orquestrador (`[global]`, `[agents.<nome>]`, `[modelos]` e `[roteamento]`), lida e validada com o lugar de cada erro. Sem o arquivo, vale o padrão. A mensagem para um `[agents.<nome>]` fica na fila dele (o despacho é da próxima versão).
+- O `terra status` mostra o nome de agente de cada aba (`@frontend`).
+
+### Alterado
+
+- O protocolo do hub vai para a versão 2 (`send`, `deliver`, `ack`, `name_rejected` e o evento `message` para os monitores). Uma janela de versão diferente segue sem o hub, como antes.
+- A janela passa a ler o que o hub manda numa thread, e o hub fecha a conexão da janela que sai (`bye`).
+
+## [0.10.0] - 2026-10-28
+
+### Adicionado
+
+- O `terra status` mostra as abas com agente de cada janela (o chat principal e os do `Alt+N`), com o que cada uma está fazendo. No `--json`, elas ficam em `status.tabs`, cada uma com um id, o título, o tipo (`manual`) e a tarefa.
+- No Windows, o pipe do hub só abre para o usuário dele e para o sistema (DACL com o SID do usuário).
+- O `hub.log` passa a ter rotação: acima de 1 MB, vira `hub.log.1` e recomeça.
+- Variável `TERRAFORME_HUB_DIR`: o hub e os clientes usam essa pasta (socket, lock e log) em vez da do usuário. É como os testes sobem hubs de verdade.
+- Testes com hubs em processos próprios: `kill -9` no hub com várias janelas abertas (todas reconectam e reenviam o estado), dez janelas abrindo no mesmo segundo (sobe um hub só) e um cliente que não lê (é desconectado sem segurar os outros).
+- O CI também roda no macOS.
+
+### Alterado
+
+- O protocolo limita a linha a 1 MB: quem recebe uma linha maior fecha a conexão, e quem envia não a manda.
+- O hub não escreve mais direto nos clientes: cada conexão tem uma fila de saída de 256 mensagens e uma thread que escreve. Um cliente lento enche a fila e é desconectado, em vez de travar o hub e os outros.
+
+### Corrigido
+
+- Depois de um `kill -9` no hub, as janelas que reconectavam juntas podiam iniciar vários hubs ao mesmo tempo. Cada um apagava o socket do outro, e as janelas ficavam divididas entre hubs que não se viam. Agora quem vira hub é quem pega a trava do `hub.guard`, que o SO solta quando o processo morre.
+
+## [0.9.2] - 2026-10-28
+
+### Removido
+
+- Na aba **Orquestrador**, a marca `← este` na linha do próprio terminal.
+
+## [0.9.1] - 2026-10-28
+
+### Alterado
+
+- Na aba **Orquestrador**, cada instância vira uma linha de tabela, sem o id, o PID e o último sinal: só uma bolinha com a saúde (verde viva, laranja sem sinal, vermelha quando saiu), o que ela está fazendo, as sessões (os chats) e há quanto tempo está aberta (ex.: `● parado │ 1 sessão │ 10 min`). O `terra status` continua com a linha completa.
+
 ## [0.9.0] - 2026-10-28
 
 ### Adicionado

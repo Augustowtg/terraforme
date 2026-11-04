@@ -73,7 +73,7 @@ impl ClaudeAdapter {
 
 impl ChatAdapter for ClaudeAdapter {
     fn name(&self) -> &str {
-        "Claude"
+        NAME
     }
 
     fn id(&self) -> &str {
@@ -650,6 +650,21 @@ impl Session for Run {
     }
 }
 
+/// Segue a saída de uma execução despachada (ver [`crate::agent::follow`]).
+pub fn follow(path: &Path) -> Box<dyn Session> {
+    let mut parser = StreamParser::default();
+    crate::agent::follow(path, "\"type\":\"result\"", move |line| parser.parse(line))
+}
+
+/// O nome do provedor, como o adapter mostra.
+pub const NAME: &str = "Claude";
+
+/// O `claude` do `PATH` para uma execução despachada pelo orquestrador, sem
+/// os lançadores das extensões; `None` sem ele.
+pub fn run_command() -> Option<Command> {
+    find_claude().map(|claude| command(&claude))
+}
+
 /// O Claude no `ai-memory run`.
 const HARNESS: &str = "claude";
 
@@ -689,7 +704,7 @@ fn last_lines(text: &str, n: usize) -> Option<String> {
 }
 
 /// "claude-opus-5-5" → "Opus - 5.5". Ids em outro formato ficam como estão.
-fn display_model(id: &str) -> String {
+pub fn display_model(id: &str) -> String {
     let Some(rest) = id.strip_prefix("claude-") else {
         return id.to_string();
     };

@@ -4,20 +4,19 @@
 //!
 //! O chat fala com o agente só pelo contrato [`ChatAdapter`]: não sabe qual
 //! provedor está por trás (hoje, o Claude CLI). Este módulo liga as partes:
-//! [`input`] (caixa de texto), [`history`] (conversa) e [`mode`] (como status
-//! e modo aparecem).
+//! o componente [`input`] (caixa de texto, comandos de `/` e as extensões,
+//! como o provedor, o modelo e o status do agente) e o componente
+//! [`history`] (conversa).
 
-mod commands;
-mod history;
-mod input;
-mod mention;
-mod mode;
+mod inbox;
 pub(super) mod model_menu;
 mod permission;
+mod record;
 #[cfg(test)]
 mod tests;
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -28,17 +27,19 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Gauge, Paragraph};
 
-use self::history::{Entry, History};
-use self::input::{InputBox, InputMode, Outcome};
-use self::mode::{AgentStatus, mode_variant};
 use self::model_menu::{ModelMenu, Target, effort_label};
 use self::permission::{Kind, Prompts};
+use self::record::Recorder;
+use super::history::{Entry, History};
+use super::input::extensions::{self, AgentStatus, mode_variant};
+use super::input::{self, InputBox, InputMode, Outcome, commands};
 use super::usage;
 use super::widgets::badge;
 use crate::agent::{
     self, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, PermissionMode,
     ReportedMode, Request, Session, UsageWindow,
 };
+use crate::db::history::Conversation;
 use crate::extension::Contribution;
 use crate::platform::clipboard;
 use crate::settings::{AgentSettings, ContextSettings, StartMode, UsageSettings};
@@ -46,7 +47,7 @@ use crate::theme::{self, Variant};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Acima disso (em caracteres), um texto colado vira um badge no input.
-pub use self::mention::PASTE_LIMIT;
+pub use super::input::PASTE_LIMIT;
 
 /// Altura do painel: atividade, caixa de input e badges.
 pub const HEIGHT: u16 = 1 + input::HEIGHT + badge::HEIGHT;
@@ -118,6 +119,9 @@ pub struct Chat {
     /// Modo em que o agente disse estar (no `init`) na última resposta.
     agent_mode: Option<PermissionMode>,
     history: History,
+    /// Grava a conversa no histórico do workspace (`None` nas abas de uma
+    /// execução despachada e nos testes).
+    recorder: Option<Recorder>,
     input: InputBox,
     /// Aviso temporário no rodapé (ex.: "Copiado") e ticks restantes.
     notice: Option<(String, u32)>,
@@ -129,6 +133,8 @@ pub struct Chat {
     tokens_used: u64,
     /// Os tokens de cache gastos neste chat.
     cache_tokens_used: u64,
+    /// O que o turno em andamento já somou nos dois acima (fora e de cache).
+    turn_spent: (u64, u64),
     /// Tamanho do contexto da sessão, depois da primeira chamada ao modelo.
     context: Option<u64>,
     /// Limite de contexto do modelo, quando o agente informa.
@@ -148,7 +154,24 @@ pub struct Chat {
     catalog: Option<Catalog>,
     /// Carregamento do catálogo em andamento.
     catalog_loading: Option<Receiver<Result<Catalog, String>>>,
+    /// O nome de agente do chat, dado no `/agente` (ver [`inbox`]).
+    agent_name: Option<String>,
+    /// As mensagens de outros agentes que chegaram ao chat.
+    inbox: Vec<crate::orchestrator::message::Message>,
+    /// Quantas da caixa o usuário ainda não leu.
+    unread: usize,
+    /// A aba de uma execução despachada: só mostra, não manda nada.
+    read_only: bool,
+    /// Na aba de uma execução, que não tem adapter: o nome do provedor e
+    /// como ele mostra os modelos.
+    viewer_provider: Option<ViewerProvider>,
+    /// Na aba de uma execução: o modo informado pelo agente, mesmo sem
+    /// equivalente no terra (ex.: `dontAsk`).
+    viewer_mode: Option<String>,
 }
+
+/// O provedor de uma aba de execução: o nome e como ele mostra os modelos.
+pub type ViewerProvider = (&'static str, fn(&str) -> String);
 
 /// Sem agente (Desconectado). Use [`Chat::connect`] para usar o provedor
 /// disponível.
@@ -176,6 +199,7 @@ impl Default for Chat {
             requested_mode: None,
             agent_mode: None,
             history: History::default(),
+            recorder: None,
             input: InputBox::default(),
             notice: None,
             agent_status: AgentStatus::default(),
@@ -184,6 +208,7 @@ impl Default for Chat {
             spinner_frame: 0,
             tokens_used: 0,
             cache_tokens_used: 0,
+            turn_spent: (0, 0),
             context: None,
             context_window: None,
             context_settings: ContextSettings::default(),
@@ -192,6 +217,12 @@ impl Default for Chat {
             auto_compact_armed: false,
             catalog: None,
             catalog_loading: None,
+            agent_name: None,
+            inbox: Vec::new(),
+            unread: 0,
+            read_only: false,
+            viewer_provider: None,
+            viewer_mode: None,
         }
     }
 }
@@ -207,6 +238,21 @@ impl Chat {
     }
 
     /// Chat ligado a `adapter`, com as configurações da seção Agente.
+    /// A aba de uma execução despachada: mostra o que `session` (a saída do
+    /// `claude`) traz e não manda nada ao agente.
+    pub fn viewer(session: Box<dyn Session>, title: String, provider: ViewerProvider) -> Self {
+        let mut chat = Self {
+            run: Some(session),
+            read_only: true,
+            viewer_provider: Some(provider),
+            agent_status: AgentStatus::Pensando,
+            agent_activity: Some("Rodando...".into()),
+            ..Self::default()
+        };
+        chat.history.push(Entry::Info(title));
+        chat
+    }
+
     pub fn with_adapter(adapter: Box<dyn ChatAdapter>, settings: &AgentSettings) -> Self {
         let agent_status = if adapter.is_available() {
             AgentStatus::Ocioso
@@ -243,6 +289,11 @@ impl Chat {
             self.load_catalog();
         }
         if account_changed && self.session_id.is_some() {
+            self.save_history();
+            let written = self.history.entries().len();
+            if let Some(recorder) = &mut self.recorder {
+                recorder.new_conversation(written);
+            }
             self.session_id = None;
             self.agent_mode = None;
             self.model = None;
@@ -482,6 +533,8 @@ impl Chat {
             "clear" => self.clear_conversation(),
             "compact" => self.compact(),
             "login" => self.start_login(),
+            "agente" => self.agent_command(""),
+            "mensagens" => self.show_messages(),
             // O consumo é a aba Consumo do terra.
             "usage" => self.open_usage = true,
             "model" => {
@@ -689,8 +742,8 @@ impl Chat {
                 self.default_choice = Some((model, effort));
             }
             // Só a Config abre o menu dos sub agentes, e só a aba
-            // Orquestrador o dos chats delegados.
-            Target::Subagent | Target::Delegated => {}
+            // Orquestrador o dos agentes despachados.
+            Target::Subagent | Target::Dispatched => {}
         }
         self.history.follow();
     }
@@ -763,6 +816,11 @@ impl Chat {
     /// `/clear`: começa uma conversa nova, com o histórico limpo.
     fn clear_conversation(&mut self) {
         self.run = None;
+        self.turn_spent = (0, 0);
+        self.save_history();
+        if let Some(recorder) = &mut self.recorder {
+            recorder.new_conversation(0);
+        }
         self.prompts.clear();
         self.allowed.clear();
         self.session_id = None;
@@ -830,28 +888,54 @@ impl Chat {
     /// (ex.: `/clear`) roda a interface.
     fn send(&mut self) {
         let prompt = self.input.text().trim().to_string();
+        if self.read_only && !prompt.is_empty() {
+            self.input.clear();
+            self.history.push(Entry::Info(
+                "Esta aba só mostra uma execução do orquestrador: ela roda sozinha.".into(),
+            ));
+            self.history.follow();
+            return;
+        }
         if prompt.is_empty() || self.run.is_some() {
+            return;
+        }
+        // O `/agente <nome>` é o único comando do terra com argumento.
+        if let Some(arg) = prompt.strip_prefix("/agente ") {
+            self.remember_sent(&prompt);
+            self.input.clear();
+            self.agent_command(arg.trim());
+            self.history.follow();
             return;
         }
         if let Some(name) = prompt.strip_prefix('/')
             && commands::has_interface(name)
         {
-            self.input.remember();
+            self.remember_sent(&prompt);
             self.input.clear();
             self.run_command(name);
             return;
         }
         if prompt.starts_with('/') && self.route_to_provider(&prompt) {
-            self.input.remember();
+            self.remember_sent(&prompt);
             self.input.clear();
             self.history.follow();
             return;
         }
         if self.start(&prompt, Entry::User(prompt.clone())) {
-            self.input.remember();
+            self.remember_sent(&prompt);
             self.input.clear();
             // A auto compactação é para as mensagens, não para os comandos.
             self.auto_compact_armed = !prompt.starts_with('/');
+        }
+    }
+
+    /// Guarda a mensagem enviada para o ↑, nesta execução e no workspace.
+    fn remember_sent(&mut self, prompt: &str) {
+        self.input.remember();
+        if let Some(recorder) = &mut self.recorder
+            && let Err(err) = recorder.remember_sent(prompt)
+        {
+            self.recording_failed(err);
         }
     }
 
@@ -870,6 +954,7 @@ impl Chat {
             self.history.push(Entry::Error(self.unavailable_hint()));
             return false;
         };
+        let extensions = self.agent_extensions();
         let started = adapter.start(Request {
             prompt,
             mode: self.permission_mode,
@@ -884,9 +969,10 @@ impl Chat {
                 .as_deref()
                 .or(self.default_effort.as_deref()),
             subagent_model: self.subagent_model.as_deref(),
-            extensions: &self.extensions,
+            extensions: &extensions,
             allowed_tools: &self.allowed,
         });
+        drop(extensions);
         self.allowed.clear();
         let ok = started.is_ok();
         match started {
@@ -961,6 +1047,7 @@ impl Chat {
     /// Interrompe a resposta em andamento (soltar a sessão a encerra).
     fn cancel(&mut self) {
         self.run = None;
+        self.turn_spent = (0, 0);
         self.prompts.clear();
         self.allowed.clear();
         self.auto_compact_armed = false;
@@ -979,7 +1066,16 @@ impl Chat {
             } => {
                 self.session_id = Some(session_id);
                 self.model = Some(model).filter(|m| !m.is_empty());
-                self.sync_mode(permission_mode);
+                if self.read_only {
+                    // A execução não segue o modo deste terminal: só mostra.
+                    self.viewer_mode = match permission_mode {
+                        ReportedMode::Known(mode) => Some(mode.label().to_string()),
+                        ReportedMode::Unknown(name) => Some(name),
+                        ReportedMode::Missing => None,
+                    };
+                } else {
+                    self.sync_mode(permission_mode);
+                }
             }
             AgentEvent::TextStart => {
                 self.history.start_text();
@@ -1031,6 +1127,10 @@ impl Chat {
                 self.history
                     .push(Entry::Info("Conversa compactada.".to_string()));
             }
+            AgentEvent::Usage {
+                tokens,
+                cache_tokens,
+            } => self.count_turn(tokens, cache_tokens),
             AgentEvent::Done {
                 is_error,
                 message,
@@ -1038,8 +1138,10 @@ impl Chat {
                 cache_tokens,
                 denied,
             } => {
-                self.tokens_used += tokens;
-                self.cache_tokens_used += cache_tokens;
+                // Sem o uso no fim, fica o que o turno informou até aqui.
+                if tokens > 0 || cache_tokens > 0 {
+                    self.count_turn(tokens, cache_tokens);
+                }
                 if denied > 0 {
                     self.history.push(Entry::Info(format!(
                         "{denied} ferramenta(s) negada(s) no modo de permissão {}.",
@@ -1103,8 +1205,17 @@ impl Chat {
         }
     }
 
+    /// Troca o gasto do turno em andamento no consumo do chat.
+    fn count_turn(&mut self, tokens: u64, cache_tokens: u64) {
+        let (spent, cache_spent) = self.turn_spent;
+        self.tokens_used = self.tokens_used + tokens - spent;
+        self.cache_tokens_used = self.cache_tokens_used + cache_tokens - cache_spent;
+        self.turn_spent = (tokens, cache_tokens);
+    }
+
     fn finish(&mut self, is_error: bool) {
         self.run = None;
+        self.turn_spent = (0, 0);
         self.prompts.clear_asks();
         self.auto_compact_armed = false;
         self.agent_activity = None;
@@ -1122,6 +1233,47 @@ impl Chat {
             "Não foi possível copiar".to_string()
         };
         self.notice = Some((message, NOTICE_TICKS));
+    }
+
+    /// Grava a conversa no SQLite `file`, o histórico do workspace, e traz de
+    /// lá as últimas mensagens enviadas para o ↑.
+    pub fn set_history_file(&mut self, file: PathBuf) {
+        let mut recorder = Recorder::new(file);
+        match recorder.sent() {
+            Ok(sent) => self.input.set_sent(sent),
+            Err(err) => self.history.push(Entry::Error(format!(
+                "As últimas mensagens enviadas não foram carregadas: {err:#}"
+            ))),
+        }
+        self.recorder = Some(recorder);
+    }
+
+    /// Grava o que falta da conversa, mesmo uma resposta pela metade.
+    pub fn save_history(&mut self) {
+        self.record(self.history.entries().len());
+    }
+
+    /// Grava as `complete` primeiras entradas do histórico. Se não der, avisa
+    /// uma vez e para de gravar: a conversa continua na tela.
+    fn record(&mut self, complete: usize) {
+        let Some(recorder) = &mut self.recorder else {
+            return;
+        };
+        let info = Conversation {
+            provider: self.adapter.as_ref().map(|a| a.id()),
+            session_id: self.session_id.as_deref(),
+            model: self.model.as_deref(),
+        };
+        if let Err(err) = recorder.save(&self.history.entries()[..complete], info) {
+            self.recording_failed(err);
+        }
+    }
+
+    fn recording_failed(&mut self, err: anyhow::Error) {
+        self.recorder = None;
+        self.history.push(Entry::Error(format!(
+            "O histórico de conversas não foi salvo: {err:#}"
+        )));
     }
 
     /// Avança o spinner, o cursor piscante e os avisos, e lê o que o agente
@@ -1153,6 +1305,11 @@ impl Chat {
         for event in events {
             self.apply(event);
         }
+        // A resposta que ainda está chegando é gravada quando terminar.
+        let entries = self.history.entries();
+        let streaming = self.run.is_some() && matches!(entries.last(), Some(Entry::Assistant(_)));
+        let complete = entries.len() - usize::from(streaming);
+        self.record(complete);
         self.history.tick();
         self.input.tick();
         if let Some((_, ticks)) = &mut self.notice {
@@ -1219,7 +1376,9 @@ impl Chat {
         let mode = self.permission_mode;
         let active = self.run.is_some() || self.agent_mode.is_some();
         let mut badges = Vec::new();
-        if mode != PermissionMode::default() || active {
+        if let Some(name) = &self.viewer_mode {
+            badges.push((format!("Modo: {name}"), Variant::Secondary));
+        } else if mode != PermissionMode::default() || active {
             // Trocado com Shift+Tab durante a resposta: o agente segue no modo
             // dele até a próxima mensagem.
             let label = match self.agent_mode {
@@ -1313,11 +1472,7 @@ impl Chat {
                 activity,
             );
         }
-        let status = self.agent_status;
-        let status = Line::styled(
-            format!(" {} ", status.label()),
-            theme::variant(status.variant()),
-        );
+        let status = extensions::status_line(self.agent_status);
         self.input.draw(frame, input, self.model_title(), status);
         if let Some(menu) = &self.model_menu {
             let label = |m: &agent::ModelInfo| self.model_label_of(&m.id);
@@ -1327,19 +1482,20 @@ impl Chat {
         self.draw_badges(frame, badges);
     }
 
-    /// "[Router] Modelo - Versão", com o router no estilo de botão (pill).
+    /// O título do input com o provedor e o modelo desta conversa.
     fn model_title(&self) -> Line<'static> {
         // O provedor é trocado na Config (Provedor).
-        let router = self.adapter.as_ref().map_or("Sem agente", |a| a.name());
-        let model = match (&self.model, &self.adapter) {
-            (Some(id), Some(adapter)) => adapter.model_label(id),
+        let router = match (&self.adapter, self.viewer_provider) {
+            (Some(adapter), _) => adapter.name(),
+            (None, Some((name, _))) => name,
+            (None, None) => "Sem agente",
+        };
+        let model = match (&self.model, &self.adapter, self.viewer_provider) {
+            (Some(id), Some(adapter), _) => adapter.model_label(id),
+            (Some(id), None, Some((_, label))) => label(id),
             _ => "Modelo padrão".to_string(),
         };
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" {router} "), theme::badge_text(Variant::Active)),
-            Span::styled(format!(" {model} "), theme::text()),
-        ])
+        extensions::model_title(router, &model)
     }
 
     /// Os badges à esquerda e, no canto direito, embaixo do status, a barra

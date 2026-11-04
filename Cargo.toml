@@ -1,6 +1,6 @@
 [package]
 name = "terraforme"
-version = "0.9.0"
+version = "0.13.16"
 edition = "2024"
 
 [[bin]]
@@ -23,6 +23,7 @@ portable-pty = "0.9"
 ratatui = "0.30.2"
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 serde_json = "1.0.154"
+toml_edit = { version = "0.23", default-features = false, features = ["parse", "display"] }
 unicode-width = "0.2.2"
 vt100 = "0.18.1"
 
@@ -30,7 +31,15 @@ vt100 = "0.18.1"
 tempfile = "3.27.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+widestring = "1"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"

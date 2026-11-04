@@ -1,7 +1,7 @@
 //! A lista do hub para pessoas: as instâncias separadas por workspace,
 //! usada pela aba Orquestrador e pelo `terra status`.
 
-use super::protocol::{Health, Instance, now};
+use super::protocol::{Health, Instance, Tab, now};
 
 /// As instâncias de um workspace.
 pub struct Workspace<'a> {
@@ -55,11 +55,10 @@ pub fn by_workspace(instances: &[Instance]) -> Vec<Workspace<'_>> {
     groups
 }
 
-/// A linha de uma instância: id curto, pid, saúde, o que faz, chats,
-/// tempo aberta e último sinal.
-pub fn instance_line(instance: &Instance) -> String {
-    let now = now();
-    let doing = match (
+/// O que a instância está fazendo: a tarefa, `rodando`, `parado` ou,
+/// quando saiu, `saiu (exit|crash)`.
+pub fn doing(instance: &Instance) -> String {
+    match (
         &instance.health,
         instance.status.running,
         &instance.status.task,
@@ -68,17 +67,51 @@ pub fn instance_line(instance: &Instance) -> String {
         (_, true, Some(task)) => task.clone(),
         (_, true, None) => "rodando".into(),
         (_, false, _) => "parado".into(),
-    };
+    }
+}
+
+/// A linha de uma instância: id curto, pid, saúde, o que faz, chats,
+/// tempo aberta e último sinal.
+pub fn instance_line(instance: &Instance) -> String {
+    let now = now();
     format!(
         "{}  pid {:<7} {:<6} {:<28} {}  aberto há {}  sinal há {}",
         instance.short_id(),
         instance.pid,
         instance.health.as_str(),
-        truncate(&doing, 28),
+        truncate(&doing(instance), 28),
         plural(instance.status.chats, "chat", "chats"),
         duration(now.saturating_sub(instance.started)),
         duration(now.saturating_sub(instance.last_seen)),
     )
+}
+
+/// A linha de uma aba de uma janela no `terra status`: o título, o nome de
+/// agente (com `@`) e o que o agente dela está fazendo (ex.:
+/// `Chat 2       @frontend    parado`).
+pub fn tab_line(tab: &Tab) -> String {
+    let doing = tab.task.as_deref().unwrap_or("parado");
+    let name = tab
+        .name
+        .as_deref()
+        .map_or(String::new(), |name| format!("@{name}"));
+    format!(
+        "{:<12} {:<12} {}",
+        truncate(&tab.title, 12),
+        truncate(&name, 12),
+        truncate(doing, 40)
+    )
+}
+
+/// As colunas de uma instância na aba Orquestrador: o que faz, as sessões
+/// (os chats) e há quanto tempo está aberta (ex.: `parado`, `1 sessão`,
+/// `10 min`).
+pub fn instance_columns(instance: &Instance) -> [String; 3] {
+    [
+        truncate(&doing(instance), 28),
+        plural(instance.status.chats, "sessão", "sessões"),
+        elapsed(now().saturating_sub(instance.started)),
+    ]
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -95,6 +128,15 @@ pub fn duration(secs: u64) -> String {
         0..60 => format!("{secs}s"),
         60..3600 => format!("{}m", secs / 60),
         _ => format!("{}h{:02}m", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+/// Ex.: `42 s`, `10 min`, `2h10`.
+pub fn elapsed(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs} s"),
+        60..3600 => format!("{} min", secs / 60),
+        _ => format!("{}h{:02}", secs / 3600, secs % 3600 / 60),
     }
 }
 
@@ -148,9 +190,39 @@ mod tests {
     }
 
     #[test]
+    fn tab_lines_show_what_the_agent_does() {
+        let tab = Tab {
+            id: "1".into(),
+            run: None,
+            title: "Principal".into(),
+            name: None,
+            task: None,
+        };
+        assert_eq!(tab_line(&tab), "Principal                 parado");
+        let busy = Tab {
+            name: Some("frontend".into()),
+            task: Some("Usando Bash...".into()),
+            ..tab
+        };
+        assert_eq!(tab_line(&busy), "Principal    @frontend    Usando Bash...");
+    }
+
+    #[test]
     fn durations_are_short() {
         assert_eq!(duration(42), "42s");
         assert_eq!(duration(300), "5m");
         assert_eq!(duration(7800), "2h10m");
+        assert_eq!(elapsed(42), "42 s");
+        assert_eq!(elapsed(600), "10 min");
+        assert_eq!(elapsed(7800), "2h10");
+    }
+
+    #[test]
+    fn instance_columns_hide_the_pid_and_count_sessions() {
+        let mut one = instance("a", Health::Alive, 0);
+        one.started = now() - 600;
+        assert_eq!(instance_columns(&one), ["parado", "1 sessão", "10 min"]);
+        let gone = instance("a", Health::Gone, 2);
+        assert_eq!(instance_columns(&gone)[..2], ["saiu (crash)", "3 sessões"]);
     }
 }

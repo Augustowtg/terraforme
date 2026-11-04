@@ -203,7 +203,7 @@ O que precisa ser implementado nesta área:
 
 O que hoje é específico do Claude fora do adapter:
 - **Hooks das extensões**: `Hook::event` usa os nomes de evento do Claude Code (ex.: `PreToolUse`, `src/extension/contract.rs:25`). A extensão RTK registra `rtk hook claude` (`src/extension/extensions/rtk.rs:68`), e a ai-memory gera os hooks e o MCP com `--agent claude-code` / `--client claude-code` (`src/extension/extensions/ai_memory.rs:41-42`).
-- **`/compact`**: a compactação, manual ou automática, manda o texto `/compact` como prompt e conta que o agente compacte (`src/tui/chat.rs:809`). `INTERFACES` e `TERRA_COMMANDS` partem do princípio de que existem `/compact` e `/login` do Claude (`src/tui/chat/commands.rs:15-22`).
+- **`/compact`**: a compactação, manual ou automática, manda o texto `/compact` como prompt e conta que o agente compacte (`src/tui/chat.rs:809`). `INTERFACES` e `TERRA_COMMANDS` partem do princípio de que existem `/compact` e `/login` do Claude (`src/tui/input/commands.rs:15-40`).
 - **Login**: `src/tui/login.rs:19-23` procura na saída do `claude auth login` o texto `visit: `, `Invalid code` e o prompt `Paste code here if prompted >`. `hint_login` procura as palavras `authenticate`, `oauth` e `log in again` nas mensagens de erro (`src/tui/chat.rs:651`).
 - **Contas e config**: a conta é o nome de uma pasta `.claude-*` (`src/settings.rs:13`), e `settings.rs:43` fala do `defaultMode` do Claude.
 - **Interface original**: o pseudo-terminal foi ajustado para o `claude` interativo (`src/tui/term.rs:2`, `:105`).
@@ -236,7 +236,7 @@ O catálogo (`Catalog`: `commands`, `models`, `default_model`, em `src/agent/ada
 
 `poll_catalog` (`chat.rs:472-489`) recebe o resultado. Se der erro, fica um `Catalog::default()` vazio e o chat continua funcionando. O `guard` protege a chamada contra panic (`src/agent/guard.rs:141`).
 
-**O que o terra acrescenta** (`src/tui/chat/commands.rs`):
+**O que o terra acrescenta** (`src/tui/input/commands.rs`):
 - `INTERFACES = clear, compact, model, login, usage` (`commands.rs:17`): são os comandos com interface própria do terra.
 - `TERRA_COMMANDS` (`commands.rs:20`): só o `/login`. Ele entra via `with_terra` (`commands.rs:32`) quando o agente não o informa; se o agente informar, fica a versão dele. No Claude ele já vem pelo `interactive::COMMANDS`.
 - Filtro da lista (`commands.rs:47`): primeiro o começo do nome, depois parte do nome, depois parte da descrição; os que têm interface vêm antes. Os sem interface aparecem esmaecidos com "· padrão do router" (`commands.rs:119-122`).
@@ -276,13 +276,14 @@ Detalhes do input:
 - O primeiro `@` começa a observar o diretório atual com `FileIndex::watch` (`input.rs:547-550`). O `FileIndex` lista arquivos e pastas respeitando o `.gitignore`, esconde os ocultos, vai até 50 000 entradas e se atualiza via `notify`, ou a cada 2 s se não houver observador (`src/files.rs:1-60`).
 - A lista não depende do provedor: é o sistema de arquivos local.
 - Filtro (`mention.rs:119-140`): começo do nome do arquivo > parte do nome > parte do caminho > letras na ordem. Mostra até 200 resultados; sem consulta, os caminhos mais rasos vêm primeiro.
-- O item escolhido vira um badge. No buffer ele é um caractere da área de uso privado do Unicode (`mention.rs:22-40`), que aponta para um `Mention` (`mention.rs:44`).
+- O item escolhido vira um badge. Um `@caminho` escrito à mão também vira badge ao sair dele (espaço, `Esc`, `Enter` sem item na lista, seta ou clique fora): `Mention::File` se o caminho existe (`FileIndex::exists`, na lista ou no disco), senão `Mention::Create`. No buffer ele é um caractere da área de uso privado do Unicode (`mention.rs:22-40`), que aponta para um `Mention` (`mention.rs:44`).
 
 O que cada badge manda ao agente (`mention::prompt_text`, `mention.rs:83`, chamado por `Input::text`, `input.rs:136`):
 
 | Badge | Na tela | Vai para o agente |
 |---|---|---|
 | `Mention::File(path)` | `@/src/main.rs` | `@src/main.rs` (sintaxe de arquivo do Claude Code) |
+| `Mention::Create(path)` | `create:@docs/test` ou, num arquivo de texto ou código, `create(JavaScript):@docs/script.js` | `@docs/test (ainda não existe: criar)` |
 | `Mention::Skill(name)` | `/docs` | `/docs`, em qualquer ponto do texto |
 | `Mention::Paste` | `[Pasted text #1 +N lines]` | o texto colado inteiro (acima de 100 caracteres, `PASTE_LIMIT`) |
 
@@ -390,9 +391,9 @@ O `StreamParser` (`src/agent/adapters/claude/stream.rs`) emite os eventos assim:
 | `Compacted { tokens }` | `system/compact_boundary`, `compact_metadata.post_tokens` | `src/agent/adapters/claude/stream.rs:46` |
 | `Done { tokens, cache_tokens }` | `usage` do `result`: entrada+saída, e o cache à parte | `src/agent/adapters/claude/stream.rs:185-211` |
 
-`context_tokens` soma só `input_tokens + output_tokens`, sem o cache (`src/agent/adapters/claude/stream.rs:149`).
+`context_tokens` soma `input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens` (`src/agent/adapters/claude/stream.rs:149`).
 
-**Ponto de atenção:** com o prompt caching, a maior parte do contexto vem em `cache_read_input_tokens`. Por isso a barra de contexto mostra um tamanho bem menor que o contexto real; no teste, 83 tokens contra cerca de 1.100 de cache (`src/agent/adapters/claude/stream.rs:381-401`). Isso é de propósito, mas vale revisar.
+Com o prompt caching, a maior parte do contexto vem em `cache_read_input_tokens`. Sem o cache (v0.5.11 a v0.13.0), a barra mostrava só o trecho novo e parecia zerar a cada mensagem, e a auto compactação quase nunca disparava. O consumo (`Done`) continua sem o cache.
 
 **Como o chat usa (`src/tui/chat.rs`):**
 - **Eventos:**
