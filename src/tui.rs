@@ -66,6 +66,7 @@ pub fn run_app(
         let enhanced = supports_keyboard_enhancement().unwrap_or(false);
         enter_app_mode(enhanced)?;
         let result = app_loop(terminal, &mut app, enhanced);
+        app.save_history();
         leave_app_mode(enhanced)?;
         result
     })

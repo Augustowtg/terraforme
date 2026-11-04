@@ -4,6 +4,52 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.16] - 2026-11-04
+
+### Alterado
+
+- O histórico do workspace sai de `~/.terraforme/workspace/<nome>/sql/history.sqlite` e vai para `~/.terraforme/workspace/<nome>/<nome>.sql`, sem a pasta `sql`. Ao abrir o terra, um histórico que já existe é movido para o lugar novo e a pasta some. Como a pasta `sql` não existe mais, é a pasta do workspace que fica só para o usuário (0700).
+
+## [0.13.15] - 2026-11-04
+
+### Adicionado
+
+- As últimas 10 mensagens enviadas ficam salvas por workspace, na nova tabela `sent_messages` do `~/.terraforme/workspace/<nome>/sql/history.sqlite`: ao abrir o terra, ou um chat novo, o `↑` do input já volta a elas, antes só as da execução atual. Entra o que o `↑` já guardava: os comandos digitados também, e um comando escolhido na lista da `/` fica de fora. As menções voltam como texto (`@caminho`), e as abas de uma execução despachada não gravam.
+
+## [0.13.14] - 2026-11-04
+
+### Corrigido
+
+- `~/.terraforme/workspace/<projeto>/` é criado sozinho ao abrir o terra no diretório, como o `terra.sqlite`: a pasta, o `config.json` (vazio, o padrão do router) e o `sql/history.sqlite`, sem mexer no que já existe. Antes, cada arquivo só aparecia na primeira gravação.
+- Dois diretórios com o mesmo nome (`~/a/app` e `~/b/app`) dividiam as configurações e o histórico. Agora cada diretório guarda a sua pasta na nova tabela `workspace_dirs` do `terra.sqlite`: o primeiro fica com `app` e o segundo com `app-2`, sem entrar nos Salvos. Salvar sem nome mantém a pasta, e `--name` recusa um nome que é a pasta de outro diretório.
+
+## [0.13.13] - 2026-11-03
+
+### Corrigido
+
+- O consumo só mudava no fim da resposta: agora o badge **Consumo** e o **Consumo geral** sobem enquanto o provedor trabalha, a cada informe de uso do stream, e o fim da resposta acerta o total. Um turno interrompido não perde mais o que já gastou. No Claude, os subagentes só entram no total do fim; no Antigravity, o uso chega ao fim de cada chamada ao modelo.
+
+## [0.13.12] - 2026-11-03
+
+### Adicionado
+
+- Histórico de conversas por workspace: cada chat grava a conversa no SQLite `~/.terraforme/workspace/<nome>/sql/history.sqlite`, nas tabelas `conversations` (provedor, sessão, modelo e datas) e `messages` (papel, ferramenta, conteúdo e data). Ficam as mensagens do usuário e do agente, as ferramentas e os avisos a partir da primeira mensagem do usuário. O `/clear` e a troca de conta ou provedor começam outra conversa, e a pasta `sql` fica só para o usuário (0700). As abas de uma execução despachada não gravam.
+
+## [0.13.11] - 2026-11-03
+
+### Adicionado
+
+- Provedor por agente despachado: o `[agents.<nome>]` ganha a chave `provedor` (`"claude"`, o padrão, ou `"antigravity"`), e a aba Orquestrador tem a linha **Provedor**. O `←`/`→` troca o provedor e tira o modelo (o id de um não vale no outro); um provedor que não está instalado aparece com "(não instalado)".
+- O hub lança o `agy -p` para um agente do Antigravity: modo `auto`, o modelo escolhido e o prompt pela entrada em stream-json. O `-p` do `agy` não tem lista de ferramentas nem limite de turnos, e a aba mostra "não vale no Antigravity" nessas linhas. O `run.json` grava o `provider`; o uso vem da soma das chamadas ao modelo (sem custo, que o `agy` não informa), e a aba `▶ agente` lê a saída do `agy`.
+
+### Corrigido
+
+- O modelo de um agente despachado não mudava: o `←`/`→` só passava pelos apelidos de `[modelos]`, que vêm vazios. Agora o `Enter` no **Modelo** abre o menu do `/model` com o catálogo ao vivo do provedor do agente (o do chat, quando é o mesmo provedor; senão, carregado em segundo plano), sem esforço. O Default tira a chave. O `←`/`→` passa pelo padrão, pelos modelos do catálogo e pelos apelidos. A linha mostra o modelo com o provedor no estilo do título do input (`[Claude] Opus 5.5`).
+
+### Alterado
+
+- O acompanhamento da saída de uma execução (`follow`) saiu do adapter do Claude para `agent::follow`, com o leitor do stream de cada provedor.
+
 ## [0.13.10] - 2026-11-03
 
 ### Adicionado

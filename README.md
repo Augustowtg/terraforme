@@ -98,7 +98,7 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `Tab` | Troca de aba (Chat, Consumo, Extensões, Orquestrador e Configurações) |
 | `i` / `a` (aba Chat) | Entra no modo INSERT da caixa de mensagem |
 | `Enter` (escrevendo) | Envia a mensagem ao Claude |
-| `↑` / `↓` (escrevendo) | Mostram as mensagens já enviadas (desde que o terra abriu, de todas as sessões), da mais nova para a mais antiga. Com o texto em várias linhas, primeiro andam entre as linhas. Depois da mais nova, o `↓` volta ao que estava sendo escrito |
+| `↑` / `↓` (escrevendo) | Mostram as mensagens já enviadas (as 10 últimas guardadas no workspace, de execuções anteriores, e as desta execução), da mais nova para a mais antiga. Com o texto em várias linhas, primeiro andam entre as linhas. Depois da mais nova, o `↓` volta ao que estava sendo escrito |
 | `/` no começo do input | Abre a lista de comandos do agente (com descrição), filtrada pelo que vier depois da `/`. `Enter` executa; cada comando é uma interface do terra (hoje, `/clear`: conversa nova; `/compact`: o agente resume a conversa e libera o contexto; `/model`: modelo e esforço; `/login`: login na conta; `/usage`: aba Consumo). A lista tem todos os comandos do Claude: os embutidos, os do modo interativo (ex.: `/help`, `/status`, `/resume`) e as skills e plugins, e os que ainda não têm aparecem esmaecidos, com "padrão do router": escolhidos com `Enter`, eles vão para o agente e a resposta dele aparece no chat (ex.: o `/context` e o `/cost` do Claude); com `Tab`, completam o input (ex.: `/config `) para receber argumentos (ex.: `/config model=opus`). Os que só existem no modo interativo do Claude respondem que não estão disponíveis |
 | `/login` | Entra de novo na conta escolhida nas Configurações (token expirado ou revogado). O terra sai da tela e roda o `claude auth login` da conta, com o e-mail dela: o link aparece inteiro e clicável (e já copiado), e o código colado aparece ao digitar; `Enter` envia e `Enter` vazio cancela. No fim, o terra volta |
 | `/usage` | Abre a aba **Consumo** (limites de uso, crédito extra e o gráfico por dia) |
@@ -169,7 +169,7 @@ A aba lista as extensões (ativa, inativa ou não instalada) e mostra, da escolh
 
 A seção **Agente** reúne as configurações do agente do chat, que são de cada workspace. `↑`/`↓` escolhem e `←`/`→` ou `Enter` trocam o valor; a mudança é salva e vale na hora.
 
-As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.json`. O nome é o do workspace salvo para o diretório (`terra workspace --save`) ou, sem um, o nome da pasta. O arquivo é lido ao iniciar; um workspace sem ele começa com o padrão do router (o provedor): modo **Do provedor**, modelo e esforço padrão e a conta **Default**.
+As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.json`. A pasta do workspace (com o `config.json` e o histórico `<nome do workspace>.sql`) é criada sozinha na primeira vez que o terra abre no diretório, como o `terra.sqlite`. O nome é o do workspace salvo para o diretório (`terra workspace --save`) ou, sem um, o nome da pasta; dois diretórios com o mesmo nome não dividem a pasta: o segundo vira `projeto-2`. O arquivo é lido ao iniciar; um workspace novo começa com o padrão do router (o provedor): modo **Do provedor**, modelo e esforço padrão e a conta **Default**.
 
 ```json
 {

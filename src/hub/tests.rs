@@ -694,6 +694,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
                     created: protocol::now(),
                     started: None,
                     finished: None,
+                    provider: "claude".into(),
                     model: None,
                     usage: None,
                     error: None,

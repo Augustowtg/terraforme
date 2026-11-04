@@ -186,21 +186,24 @@ fn open_app() -> Result<()> {
     if let Err(err) = db.touch_recent(&dir) {
         warn(err);
     }
-    // As configurações do agente são do workspace: o nome salvo deste
-    // diretório ou, sem um, o nome da pasta.
-    let name = db
-        .workspace_name(&dir)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| db::default_name(&dir));
+    // As configurações e o histórico são do workspace, que nasce sozinho na
+    // primeira vez que o diretório abre.
+    let name = db.workspace_folder(&dir).unwrap_or_else(|err| {
+        warn(err);
+        db::default_name(&dir)
+    });
     let root = db::data_dir().unwrap_or_else(|err| {
         warn(err);
         env::temp_dir().join(".terraforme")
     });
     let files = tui::ConfigFiles {
         workspace: settings::config_file(&root, &name),
+        history: settings::history_file(&root, &name),
         global: settings::global_file(&root),
     };
+    if let Err(err) = files.create() {
+        warn(err);
+    }
     tui::run_app(db, dir, name, files, warnings)
 }
 

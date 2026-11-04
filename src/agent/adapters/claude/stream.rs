@@ -11,11 +11,25 @@ use crate::agent::{AgentEvent, ReportedMode};
 /// Tamanho máximo do detalhe de uma ferramenta ou resultado na tela.
 const DETAIL_MAX: usize = 80;
 
+/// Os campos de um `usage`: primeiro os do consumo, depois os de cache.
+const USAGE_KEYS: [&str; 4] = [
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+];
+
 /// Converte as linhas do `--output-format stream-json` em eventos.
 #[derive(Default)]
 pub struct StreamParser {
     /// Mensagem em streaming no momento.
     current_message: Option<String>,
+    /// A mensagem do agente principal em streaming: o `message_delta` não
+    /// traz o id, e a de um subagente pode vir no meio.
+    main_message: Option<String>,
+    /// O uso de cada mensagem do agente principal nesta resposta, na ordem de
+    /// [`USAGE_KEYS`]. A mesma mensagem informa o uso várias vezes.
+    spent: HashMap<String, [u64; 4]>,
     /// Mensagens cujo texto já chegou em trechos; o texto inteiro que vem
     /// depois nelas é ignorado para não duplicar.
     streamed: HashSet<String>,
@@ -34,6 +48,51 @@ impl StreamParser {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return Vec::new();
         };
+        let usage = self.usage(&value);
+        let events = self.events(&value);
+        usage.into_iter().chain(events).collect()
+    }
+
+    /// O gasto da resposta até aqui, quando esta linha o muda. Só o agente
+    /// principal: é o que o `result` soma com certeza.
+    fn usage(&mut self, value: &Value) -> Option<AgentEvent> {
+        if !value["parent_tool_use_id"].is_null() {
+            return None;
+        }
+        let event = &value["event"];
+        let (id, usage) = match (value["type"].as_str(), event["type"].as_str()) {
+            (Some("stream_event"), Some("message_start")) => {
+                self.main_message = event["message"]["id"].as_str().map(str::to_string);
+                (self.main_message.clone()?, &event["message"]["usage"])
+            }
+            (Some("stream_event"), Some("message_delta")) => {
+                (self.main_message.clone()?, &event["usage"])
+            }
+            (Some("assistant"), _) => (
+                value["message"]["id"].as_str()?.to_string(),
+                &value["message"]["usage"],
+            ),
+            _ => return None,
+        };
+        let spent = self.spent.entry(id).or_default();
+        // Campo a campo: o `message_delta` pode trazer só a saída, e uma linha
+        // atrasada não diminui o que a mensagem já informou.
+        let updated = USAGE_KEYS.map(|key| usage[key].as_u64().unwrap_or(0));
+        let updated = std::array::from_fn(|i| spent[i].max(updated[i]));
+        if updated == *spent {
+            return None;
+        }
+        *spent = updated;
+        let (tokens, cache_tokens) = self.spent.values().fold((0, 0), |sum, spent| {
+            (sum.0 + spent[0] + spent[1], sum.1 + spent[2] + spent[3])
+        });
+        Some(AgentEvent::Usage {
+            tokens,
+            cache_tokens,
+        })
+    }
+
+    fn events(&mut self, value: &Value) -> Vec<AgentEvent> {
         match value["type"].as_str() {
             Some("system") if value["subtype"] == "init" => {
                 self.model = text(&value["model"]);
@@ -51,12 +110,12 @@ impl StreamParser {
                 vec![AgentEvent::Compacted { tokens }]
             }
             Some("system") if value["subtype"] == "permission_denied" => {
-                self.blocked(&value).into_iter().collect()
+                self.blocked(value).into_iter().collect()
             }
             Some("stream_event") => self.stream_event(&value["event"]),
             Some("assistant") => self.assistant(&value["message"]),
             Some("user") => tool_results(&value["message"]),
-            Some("result") => self.result(&value),
+            Some("result") => self.result(value),
             _ => Vec::new(),
         }
     }
@@ -198,14 +257,8 @@ fn result(value: &Value) -> AgentEvent {
     let usage = &value["usage"];
     // Só entrada e saída. Os tokens de cache (o contexto fixo do Claude Code,
     // ~12k por chamada) ficam de fora do consumo.
-    let tokens = ["input_tokens", "output_tokens"]
-        .iter()
-        .filter_map(|key| usage[key].as_u64())
-        .sum();
-    let cache_tokens = ["cache_creation_input_tokens", "cache_read_input_tokens"]
-        .iter()
-        .filter_map(|key| usage[key].as_u64())
-        .sum();
+    let sum = |keys: &[&str]| keys.iter().filter_map(|key| usage[key].as_u64()).sum();
+    let (tokens, cache_tokens) = (sum(&USAGE_KEYS[..2]), sum(&USAGE_KEYS[2..]));
     AgentEvent::Done {
         is_error,
         message,
@@ -338,6 +391,34 @@ mod tests {
     }
 
     #[test]
+    fn usage_is_reported_while_the_answer_runs() {
+        let events = parse_all(&[
+            // A primeira chamada: a entrada no começo, a saída no fim.
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"m1","usage":{"input_tokens":10,"cache_read_input_tokens":100,"output_tokens":1}}}}"#,
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m1","usage":{"input_tokens":10,"cache_read_input_tokens":100,"output_tokens":1},"content":[]}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_delta","usage":{"output_tokens":20}}}"#,
+            // Um `assistant` atrasado não diminui a saída.
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m1","usage":{"input_tokens":10,"cache_read_input_tokens":100,"output_tokens":1},"content":[]}}"#,
+            // O subagente fica de fora, e o delta seguinte é do principal.
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"m2","usage":{"input_tokens":5,"output_tokens":1}}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":"t1","event":{"type":"message_start","message":{"id":"s1","usage":{"input_tokens":999,"output_tokens":9}}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":"t1","event":{"type":"message_delta","usage":{"output_tokens":99}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_delta","usage":{"output_tokens":3}}}"#,
+        ]);
+        let usage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Usage {
+                    tokens,
+                    cache_tokens,
+                } => Some((*tokens, *cache_tokens)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usage, [(11, 100), (30, 100), (36, 100), (38, 100)]);
+    }
+
+    #[test]
     fn parses_tool_use_and_result() {
         let events = parse_all(&[
             r#"{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"Vou listar."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la\nfoo","description":"Lista"}}]}}"#,
@@ -391,19 +472,26 @@ mod tests {
         ]);
         assert_eq!(
             events[1],
+            AgentEvent::Usage {
+                tokens: 6,
+                cache_tokens: 1000
+            }
+        );
+        assert_eq!(
+            events[2],
             AgentEvent::Context {
                 tokens: 1006,
                 window: None
             }
         );
         assert_eq!(
-            events[2],
+            events[3],
             AgentEvent::Context {
                 tokens: 1183,
                 window: Some(1_000_000)
             }
         );
-        assert!(matches!(events[3], AgentEvent::Done { .. }));
+        assert!(matches!(events[4], AgentEvent::Done { .. }));
     }
 
     #[test]

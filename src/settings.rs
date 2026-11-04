@@ -2,7 +2,7 @@
 //!
 //! As do agente são de cada workspace: ficam em
 //! `~/.terraforme/workspace/<nome do workspace>/config.json` ([`config_file`]),
-//! lido ao iniciar. Um workspace sem o arquivo começa com o padrão do router
+//! criado e lido ao iniciar. Um workspace novo começa com o padrão do router
 //! (o provedor): o modo, o modelo, a conta e o esforço que ele usa.
 //!
 //! ```json
@@ -416,6 +416,14 @@ pub fn stop_asking_to_save(path: &Path) -> Result<()> {
     })
 }
 
+/// Cria o `config.json` vazio (o padrão do router), se ele ainda não existe.
+pub fn create_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    update_file(path, |_| {})
+}
+
 /// O `config.json` como objeto (vazio quando não existe ou não é JSON).
 fn read_file(path: &Path) -> Value {
     fs::read_to_string(path)
@@ -448,6 +456,18 @@ pub fn global_file(root: &Path) -> PathBuf {
 /// `~/.terraforme`). Separadores no nome viram `-`, para o arquivo ficar
 /// sempre dentro de `workspace/`.
 pub fn config_file(root: &Path, name: &str) -> PathBuf {
+    workspace_dir(root, name).join("config.json")
+}
+
+/// O SQLite com o histórico de conversas do workspace `name` dentro de
+/// `root` (o `~/.terraforme`).
+pub fn history_file(root: &Path, name: &str) -> PathBuf {
+    let dir = workspace_dir(root, name);
+    let file = format!("{}.sql", dir.file_name().unwrap_or_default().display());
+    dir.join(file)
+}
+
+fn workspace_dir(root: &Path, name: &str) -> PathBuf {
     let name: String = name
         .trim()
         .chars()
@@ -457,7 +477,7 @@ pub fn config_file(root: &Path, name: &str) -> PathBuf {
         "" | "." | ".." => "root".to_string(),
         _ => name,
     };
-    root.join("workspace").join(name).join("config.json")
+    root.join("workspace").join(name)
 }
 
 #[cfg(test)]
@@ -471,6 +491,11 @@ mod tests {
         assert_eq!(
             path,
             dir.path().join("workspace/terraforme-cli/config.json")
+        );
+        assert_eq!(
+            history_file(dir.path(), "terraforme-cli"),
+            dir.path()
+                .join("workspace/terraforme-cli/terraforme-cli.sql")
         );
         assert_eq!(AgentSettings::load_file(&path), None, "sem arquivo");
 

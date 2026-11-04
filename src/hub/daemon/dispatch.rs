@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use super::Hub;
-use crate::agent::adapters::claude;
+use crate::agent::adapters::{antigravity, claude};
 use crate::agent::{kill_tree, own_group};
 use crate::hub::protocol::{Health, new_id, now};
 use crate::orchestrator::config::{Config, RunMode};
@@ -83,6 +83,10 @@ impl Hub {
             created: now(),
             started: None,
             finished: None,
+            provider: config
+                .agent(&message.to)
+                .map_or("claude", |a| a.provider())
+                .to_string(),
             model: None,
             usage: None,
             error: None,
@@ -167,18 +171,22 @@ impl Hub {
         }
     }
 
-    /// Lança o `claude` da execução na pasta do agente, com a saída em
-    /// `runs/<id>/output.jsonl` e o prompt pela entrada.
+    /// Lança o agente da execução (o `claude` ou, no Antigravity, o `agy`)
+    /// na pasta dele, com a saída em `runs/<id>/output.jsonl` e o prompt
+    /// pela entrada.
     fn start(&self, mut run: Run, config: &Config) {
         let Some(agent) = config.agent(&run.agent) else {
             return self.fail(run, "o agente saiu do orchestrator.toml");
         };
-        let command = match &self.claude {
-            Some(fake) => Some(std::process::Command::new(fake)),
-            None => claude::run_command(),
+        // O provedor de agora: a configuração pode ter mudado na fila.
+        run.provider = agent.provider().to_string();
+        let (bin, command) = match &self.claude {
+            Some(fake) => ("claude", Some(std::process::Command::new(fake))),
+            None if agent.is_antigravity() => ("agy", antigravity::run_command()),
+            None => ("claude", claude::run_command()),
         };
         let Some(mut cmd) = command else {
-            return self.fail(run, "o claude não está no PATH");
+            return self.fail(run, &format!("o {bin} não está no PATH"));
         };
         let dir = run.dir(&self.home);
         let files = fs::create_dir_all(&dir).and_then(|()| {
@@ -207,14 +215,14 @@ impl Hub {
                 let cwd = agent.cwd.display();
                 return self.fail(
                     run,
-                    &format!("não foi possível iniciar o claude em {cwd}: {err}"),
+                    &format!("não foi possível iniciar o {bin} em {cwd}: {err}"),
                 );
             }
         };
         if let Some(mut stdin) = child.stdin.take() {
             let note = fs::read_to_string(&run.note).ok();
             let prompt = run::prompt(&run.agent, &run.note, note.as_deref());
-            let _ = stdin.write_all(prompt.as_bytes());
+            let _ = stdin.write_all(run::input(agent, &prompt).as_bytes());
         }
         run.state = RunState::Running;
         run.started = Some(now());
@@ -297,11 +305,11 @@ impl Hub {
     }
 
     /// O fim de uma execução: o resultado, o uso e o erro da saída do
-    /// `claude`, e o escalonamento quando ela falhou.
+    /// agente, e o escalonamento quando ela falhou.
     fn finish(&self, mut run: Run, timed_out: bool) {
         let dir = run.dir(&self.home);
         let output = fs::read_to_string(dir.join(run::OUTPUT)).unwrap_or_default();
-        let outcome = run::outcome(&output);
+        let outcome = run::outcome(&output, run.is_antigravity());
         run.finished = Some(now());
         run.usage = outcome.usage;
         if outcome.model.is_some() {

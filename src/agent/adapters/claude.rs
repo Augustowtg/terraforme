@@ -11,7 +11,6 @@
 mod accounts;
 mod catalog;
 mod daily;
-mod follow;
 mod interactive;
 pub(super) mod skills;
 mod stream;
@@ -651,7 +650,11 @@ impl Session for Run {
     }
 }
 
-pub use self::follow::follow;
+/// Segue a saída de uma execução despachada (ver [`crate::agent::follow`]).
+pub fn follow(path: &Path) -> Box<dyn Session> {
+    let mut parser = StreamParser::default();
+    crate::agent::follow(path, "\"type\":\"result\"", move |line| parser.parse(line))
+}
 
 /// O nome do provedor, como o adapter mostra.
 pub const NAME: &str = "Claude";

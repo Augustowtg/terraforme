@@ -3,6 +3,8 @@
 //! Todas as funções que recebem um path esperam que ele já tenha passado por
 //! [`canonical_path`]; a comparação de duplicados é feita sobre esse valor.
 
+pub mod history;
+
 use std::fmt;
 use std::fs;
 use std::io;
@@ -110,6 +112,10 @@ impl Db {
                 path       TEXT    NOT NULL UNIQUE {PATH_COLLATE},
                 created_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS workspace_dirs (
+                name TEXT NOT NULL UNIQUE,
+                path TEXT NOT NULL UNIQUE {PATH_COLLATE}
+            );
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -197,7 +203,7 @@ impl Db {
 
         let name = match name {
             Some(name) => {
-                if let Some(other) = self.workspace_path_by_name(name)? {
+                if let Some(other) = self.other_path_by_name(name, &path_s)? {
                     return Err(SaveError::NameTaken {
                         name: name.to_string(),
                         path: PathBuf::from(other),
@@ -205,7 +211,7 @@ impl Db {
                 }
                 name.to_string()
             }
-            None => self.free_name(&default_name(path))?,
+            None => self.free_name(&default_name(path), &path_s)?,
         };
 
         self.conn.execute(
@@ -215,15 +221,37 @@ impl Db {
         Ok(SaveOutcome::Saved(name))
     }
 
-    /// Primeiro nome livre entre `base`, `base-2`, `base-3`...
-    fn free_name(&self, base: &str) -> rusqlite::Result<String> {
-        if self.workspace_path_by_name(base)?.is_none() {
+    /// O nome da pasta de `path` em `~/.terraforme/workspace`: o do workspace
+    /// salvo ou, sem um, o que o diretório ganhou ao abrir pela primeira vez.
+    /// Dois diretórios nunca dividem a pasta, mesmo com o mesmo nome.
+    pub fn workspace_folder(&self, path: &Path) -> Result<String> {
+        let path_s = path_str(path);
+        if let Some(name) = self.workspace_name_by_path(&path_s)? {
+            return Ok(name);
+        }
+        let name = self.free_name(&default_name(path), &path_s)?;
+        // Outro terra pode ter aberto o mesmo diretório agora: vale o dele.
+        self.conn.execute(
+            "INSERT INTO workspace_dirs (name, path) VALUES (?1, ?2)
+             ON CONFLICT(path) DO NOTHING",
+            params![name, path_s],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT name FROM workspace_dirs WHERE path = ?1",
+            [path_s],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Primeiro nome livre para `path` entre `base`, `base-2`, `base-3`...
+    fn free_name(&self, base: &str, path: &str) -> rusqlite::Result<String> {
+        if self.other_path_by_name(base, path)?.is_none() {
             return Ok(base.to_string());
         }
         let mut n = 2;
         loop {
             let candidate = format!("{base}-{n}");
-            if self.workspace_path_by_name(&candidate)?.is_none() {
+            if self.other_path_by_name(&candidate, path)?.is_none() {
                 return Ok(candidate);
             }
             n += 1;
@@ -245,11 +273,15 @@ impl Db {
             .optional()
     }
 
-    fn workspace_path_by_name(&self, name: &str) -> rusqlite::Result<Option<String>> {
+    /// O diretório, fora `path`, que já usa `name`: como workspace salvo ou
+    /// como pasta em `~/.terraforme/workspace`.
+    fn other_path_by_name(&self, name: &str, path: &str) -> rusqlite::Result<Option<String>> {
         self.conn
             .query_row(
-                "SELECT path FROM workspaces WHERE name = ?1",
-                [name],
+                "SELECT path FROM workspaces WHERE name = ?1 AND path <> ?2
+                 UNION ALL
+                 SELECT path FROM workspace_dirs WHERE name = ?1 AND path <> ?2",
+                [name, path],
                 |row| row.get(0),
             )
             .optional()
@@ -434,6 +466,59 @@ mod tests {
                 SaveOutcome::Saved("projeto-2".into()),
                 SaveOutcome::Saved("projeto-3".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn folders_with_the_same_name_get_their_own_workspace_folder() {
+        let db = db();
+        let folder = |path: &str| db.workspace_folder(Path::new(path)).unwrap();
+
+        assert_eq!(folder("/a/projeto"), "projeto");
+        assert_eq!(folder("/b/projeto"), "projeto-2");
+        assert_eq!(
+            folder("/a/projeto"),
+            "projeto",
+            "a mesma nas próximas vezes"
+        );
+        assert_eq!(folder("/b/projeto"), "projeto-2");
+        assert_eq!(count(&db, "workspaces"), 0, "não vai para os Salvos");
+    }
+
+    #[test]
+    fn workspace_folder_follows_the_saved_name() {
+        let db = db();
+        db.save_workspace(Path::new("/a/x"), Some("api")).unwrap();
+        db.save_workspace(Path::new("/b/projeto"), None).unwrap();
+
+        assert_eq!(db.workspace_folder(Path::new("/a/x")).unwrap(), "api");
+        assert_eq!(
+            db.workspace_folder(Path::new("/c/projeto")).unwrap(),
+            "projeto-2"
+        );
+        assert_eq!(db.workspace_folder(Path::new("/d/api")).unwrap(), "api-2");
+    }
+
+    #[test]
+    fn saving_keeps_the_workspace_folder_and_respects_the_others() {
+        let db = db();
+        db.workspace_folder(Path::new("/a/projeto")).unwrap();
+        db.workspace_folder(Path::new("/b/projeto")).unwrap();
+
+        assert_eq!(
+            db.save_workspace(Path::new("/b/projeto"), None).unwrap(),
+            SaveOutcome::Saved("projeto-2".into()),
+            "sem nome: continua com a sua pasta"
+        );
+        assert!(matches!(
+            db.save_workspace(Path::new("/c/z"), Some("projeto")),
+            Err(SaveError::NameTaken { .. })
+        ));
+        assert_eq!(
+            db.save_workspace(Path::new("/a/projeto"), Some("projeto"))
+                .unwrap(),
+            SaveOutcome::Saved("projeto".into()),
+            "o nome da própria pasta está livre"
         );
     }
 

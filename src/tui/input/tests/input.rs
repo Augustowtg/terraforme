@@ -713,6 +713,24 @@ fn up_and_down_browse_the_sent_messages() {
 }
 
 #[test]
+fn messages_from_other_runs_come_before_the_ones_of_this_run() {
+    let mut input = InputBox::default();
+    input.set_sent(vec!["antiga".into(), "um\ndois".into()]);
+    press(&mut input, KeyCode::Char('i'));
+    type_text(&mut input, "nova");
+    input.remember();
+    input.clear();
+
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "nova");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "um\ndois");
+    press(&mut input, KeyCode::Up);
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "antiga");
+}
+
+#[test]
 fn up_and_down_move_between_lines_before_browsing() {
     let mut input = input_after_sending(&["antes"]);
     type_text(&mut input, "abc");

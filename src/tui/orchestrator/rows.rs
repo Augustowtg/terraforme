@@ -5,13 +5,16 @@
 
 use ratatui::text::{Line, Span};
 
+use super::super::chat::model_menu::matches_id;
 use super::Data;
+use crate::agent::ModelInfo;
+use crate::agent::adapters::claude;
 use crate::hub::protocol::{Health, Instance};
 use crate::hub::view;
 use crate::orchestrator::config::{Agent, Config, INFINITE, RunMode};
 use crate::orchestrator::costs::{self, Alert};
 use crate::orchestrator::run::{self, Run, RunState};
-use crate::theme;
+use crate::theme::{self, Variant};
 
 /// Largura da coluna dos nomes.
 const LABEL: usize = 24;
@@ -101,6 +104,7 @@ impl GlobalKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKey {
     Cwd,
+    Provider,
     Model,
     Tools,
     MaxTurns,
@@ -108,8 +112,9 @@ pub enum AgentKey {
 }
 
 impl AgentKey {
-    pub const ALL: [AgentKey; 5] = [
+    pub const ALL: [AgentKey; 6] = [
         AgentKey::Cwd,
+        AgentKey::Provider,
         AgentKey::Model,
         AgentKey::Tools,
         AgentKey::MaxTurns,
@@ -119,6 +124,7 @@ impl AgentKey {
     pub fn key(self) -> &'static str {
         match self {
             AgentKey::Cwd => "cwd",
+            AgentKey::Provider => "provedor",
             AgentKey::Model => "modelo",
             AgentKey::Tools => "ferramentas",
             AgentKey::MaxTurns => "max_turnos",
@@ -129,6 +135,7 @@ impl AgentKey {
     fn label(self) -> &'static str {
         match self {
             AgentKey::Cwd => "Pasta",
+            AgentKey::Provider => "Provedor",
             AgentKey::Model => "Modelo",
             AgentKey::Tools => "Ferramentas",
             AgentKey::MaxTurns => "Máximo de turnos",
@@ -140,6 +147,7 @@ impl AgentKey {
     pub fn text(self, agent: &Agent) -> String {
         match self {
             AgentKey::Cwd => agent.cwd.display().to_string(),
+            AgentKey::Provider => agent.provider().to_string(),
             AgentKey::Model => agent.model.clone().unwrap_or_default(),
             AgentKey::Tools => agent.tools.join(", "),
             AgentKey::MaxTurns => agent.max_turns.map_or(String::new(), |n| n.to_string()),
@@ -155,15 +163,36 @@ impl AgentKey {
         }
     }
 
-    fn value(self, agent: &Agent, config: &Config) -> String {
+    fn value(self, agent: &Agent, config: &Config, data: &Data) -> String {
+        let provider = agent.provider();
+        let name = data.provider_name(provider);
         match self {
-            AgentKey::Model => match &agent.model {
-                None => "padrão do claude".into(),
-                Some(model) if config.model_id(model) != model => {
-                    format!("{model} ({})", config.model_id(model))
-                }
-                Some(model) => model.clone(),
+            AgentKey::Provider => match data.providers.iter().find(|p| p.id == provider) {
+                Some(option) if !option.available => format!("{name} (não instalado)"),
+                _ => name.to_string(),
             },
+            AgentKey::Model => {
+                let label = |id: &str| model_name(data, provider, id);
+                match &agent.model {
+                    None => {
+                        let default = data
+                            .catalogs
+                            .get(provider)
+                            .and_then(|c| c.default_model.as_deref());
+                        match default {
+                            Some(id) => format!("padrão do {name} ({})", label(id)),
+                            None => format!("padrão do {name}"),
+                        }
+                    }
+                    Some(model) if config.model_id(model) != model => {
+                        format!("{model} ({})", label(config.model_id(model)))
+                    }
+                    Some(model) => label(model),
+                }
+            }
+            AgentKey::Tools | AgentKey::MaxTurns if agent.is_antigravity() => {
+                format!("não vale no {name}")
+            }
             AgentKey::Tools if agent.tools.is_empty() => {
                 "nenhuma (tudo o que pedir permissão é negado)".into()
             }
@@ -173,6 +202,31 @@ impl AgentKey {
                 .map_or("sem limite".into(), |n| format!("{n} execuções por dia")),
             key => key.text(agent),
         }
+    }
+}
+
+/// O nome de um modelo do catálogo para a tela (ex.: `Opus 5.5`).
+pub fn model_label(provider: &str, model: &ModelInfo) -> String {
+    if !model.label.is_empty() {
+        model.label.clone()
+    } else if provider == "claude" {
+        claude::display_model(&model.id)
+    } else {
+        model.id.clone()
+    }
+}
+
+/// O nome do modelo `id` do `provider`: o do catálogo ou, fora dele, o id
+/// (no Claude, como o título do input: `Opus - 5.5`).
+fn model_name(data: &Data, provider: &str, id: &str) -> String {
+    let found = data
+        .catalogs
+        .get(provider)
+        .and_then(|c| c.models.iter().find(|m| matches_id(m, id)));
+    match found {
+        Some(model) => model_label(provider, model),
+        None if provider == "claude" => claude::display_model(id),
+        None => id.to_string(),
     }
 }
 
@@ -387,13 +441,33 @@ fn agents(rows: &mut Vec<Row>, config: &Config, data: &Data, is: &dyn Fn(&Action
         rows.push(item(format!(" {text}"), style, action.clone(), is(&action)));
         for key in AgentKey::ALL {
             let action = Action::AgentField(agent.name.clone(), key);
-            rows.push(field(
+            let selected = is(&action);
+            let mut row = field(
                 key.label(),
-                key.value(agent, config),
+                key.value(agent, config, data),
                 5,
-                action.clone(),
-                is(&action),
-            ));
+                action,
+                selected,
+            );
+            let off = agent.is_antigravity() && matches!(key, AgentKey::Tools | AgentKey::MaxTurns);
+            if let Some(value) = row.line.spans.last_mut()
+                && !selected
+                && off
+            {
+                value.style = theme::muted();
+            }
+            // O modelo com o provedor no estilo de botão, como o título do
+            // input: `[Claude] Opus - 5.5`.
+            if key == AgentKey::Model {
+                let name = data.provider_name(agent.provider()).to_string();
+                let at = row.line.spans.len() - 1;
+                row.line.spans.insert(
+                    at,
+                    Span::styled(format!(" {name} "), theme::badge_text(Variant::Active)),
+                );
+                row.line.spans.insert(at + 1, Span::raw(" "));
+            }
+            rows.push(row);
         }
     }
     let action = Action::AddAgent;
