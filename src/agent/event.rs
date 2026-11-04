@@ -51,12 +51,15 @@ pub enum AgentEvent {
     },
     /// Resultado de uma ferramenta (primeira linha).
     ToolResult { is_error: bool, summary: String },
-    /// Tamanho do contexto da sessão na última chamada ao modelo (entrada e
-    /// saída, sem o cache) e, quando o provedor informa, o limite do modelo.
+    /// Tamanho do contexto da sessão na última chamada ao modelo (entrada,
+    /// cache e saída) e, quando o provedor informa, o limite do modelo.
     Context { tokens: u64, window: Option<u64> },
     /// O agente compactou a conversa: o contexto volta a ser pequeno. Com o
     /// tamanho dele depois da compactação, quando o provedor informa.
     Compacted { tokens: Option<u64> },
+    /// O que este turno gastou até aqui, enquanto o provedor trabalha. O
+    /// [`AgentEvent::Done`] traz o total que vale.
+    Usage { tokens: u64, cache_tokens: u64 },
     /// Fim da resposta.
     Done {
         is_error: bool,

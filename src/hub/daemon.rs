@@ -3,20 +3,27 @@
 //!
 //! ```text
 //! serve():
-//!     bind(endpoint); se o endereço está em uso:
-//!         conecta? outro hub está vivo → sai
-//!         senão, socket órfão → apaga e tenta de novo
+//!     trava o hub.guard; outro processo tem a trava → outro hub está vivo → sai
+//!     conecta? um hub de antes da trava está vivo → sai
+//!     apaga o socket órfão (de um hub morto) e faz o bind
 //!     grava o hub.lock (temporário + rename)
-//!     loop: aceita conexões (uma thread por cliente); a cada 1 s marca as
-//!           instâncias stale e tira as gone; sem conexões por IDLE_EXIT,
-//!           apaga o lock e sai (o socket sai com o listener)
+//!     retoma as execuções que ficaram na fila (ver dispatch)
+//!     loop: aceita conexões (uma thread por cliente); vê as execuções; a
+//!           cada 1 s marca as instâncias stale e tira as gone; sem
+//!           conexões por IDLE_EXIT e sem execução rodando, apaga o lock e sai
 //! ```
 //!
-//! Dois hubs iniciando juntos se resolvem sozinhos: só um consegue o bind.
+//! Dois hubs iniciando juntos se resolvem sozinhos: só um consegue a trava.
+//!
+//! O hub nunca escreve direto num cliente: cada conexão tem uma
+//! [`Outbox`], uma fila limitada com uma thread que escreve. Um cliente que
+//! não lê enche a fila e é desconectado, sem segurar os outros.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,12 +35,16 @@ use serde_json::{Value, json};
 
 use super::endpoint::Endpoint;
 use super::protocol::{Health, now, recv, send};
-use super::{APP_VERSION, Conn, GONE_KEEP, PROTO, STALE_AFTER};
+use super::{APP_VERSION, Conn, GONE_KEEP, LOG_MAX, OUTBOX, PROTO, STALE_AFTER};
+use crate::orchestrator::config::Config;
 
 /// De quanto em quanto tempo o hub revê a saúde das instâncias.
 const SWEEP: Duration = Duration::from_secs(1);
 /// A espera entre um `accept` vazio e o próximo.
 const POLL: Duration = Duration::from_millis(50);
+
+mod dispatch;
+mod mail;
 
 /// Roda o hub deste usuário até ele ficar sem conexões.
 pub fn run() -> Result<()> {
@@ -44,8 +55,8 @@ pub fn run() -> Result<()> {
 /// logo, se outro hub já está vivo.
 pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
     endpoint.prepare()?;
-    let log = Log::open(endpoint);
-    let Some(listener) = bind(endpoint)? else {
+    let log = Arc::new(Log::open(endpoint));
+    let Some((listener, _guard)) = bind(endpoint)? else {
         log.line("outro hub já está vivo; saindo");
         return Ok(());
     };
@@ -56,12 +67,18 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
     ));
     let hub = Arc::new(Hub {
         state: Mutex::default(),
+        home: endpoint.home.clone(),
+        claude: endpoint.claude.clone(),
+        config: Mutex::default(),
+        dispatcher: Mutex::default(),
         quit: AtomicBool::new(false),
         clients: AtomicU64::new(0),
         idle_since: Mutex::new(Some(Instant::now())),
         next_conn: AtomicU64::new(1),
         log,
     });
+    // As execuções que ficaram na fila quando o hub anterior saiu.
+    hub.recover();
     let mut last_sweep = Instant::now();
     loop {
         match listener.accept() {
@@ -83,8 +100,12 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
                 thread::sleep(POLL);
             }
         }
+        hub.poll_runs();
         if last_sweep.elapsed() >= SWEEP {
             hub.sweep();
+            // Uma mudança no orchestrator.toml (despausar, mais execuções
+            // ao mesmo tempo) vale em até 1 s.
+            hub.pump();
             last_sweep = Instant::now();
         }
         if hub.quit.load(Ordering::SeqCst) {
@@ -93,7 +114,8 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
             break;
         }
         let idle = hub.idle_since.lock().unwrap().map(|t| t.elapsed());
-        if idle.is_some_and(|idle| idle >= idle_exit) {
+        // Com execução rodando, o hub espera mesmo sem janelas.
+        if idle.is_some_and(|idle| idle >= idle_exit) && !hub.busy() {
             hub.log.line("nenhum terminal aberto; saindo");
             break;
         }
@@ -102,35 +124,48 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
     Ok(())
 }
 
-/// O listener do hub, ou `None` se outro hub já está vivo.
-fn bind(endpoint: &Endpoint) -> Result<Option<LocalSocketListener>> {
-    // No Windows, um segundo servidor do mesmo pipe não falha: a pergunta
-    // vem antes.
+/// O listener do hub (com a trava do `hub.guard`, que vive com ele), ou
+/// `None` se outro hub já está vivo.
+///
+/// Quem decide é a trava: só um processo a tem, e o SO a solta quando ele
+/// morre (até num `kill -9`). Com ela, um socket que ainda existe é de um
+/// hub morto e pode ser apagado; sem ela, dois hubs subindo juntos depois
+/// de um `kill -9` apagariam o socket um do outro e ficariam os dois vivos.
+fn bind(endpoint: &Endpoint) -> Result<Option<(LocalSocketListener, File)>> {
+    let guard = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&endpoint.guard)
+        .with_context(|| format!("não foi possível abrir {}", endpoint.guard.display()))?;
+    match guard.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Ok(None),
+        Err(fs::TryLockError::Error(err)) => {
+            return Err(err).context("não foi possível travar o hub.guard");
+        }
+    }
+    // Um hub de antes da trava (v0.9) não a pega: se ele atende, fica ele.
     if Stream::connect(endpoint.name()?).is_ok() {
         return Ok(None);
     }
-    let create = || -> io::Result<LocalSocketListener> {
-        ListenerOptions::new()
-            .name(endpoint.name()?)
-            .nonblocking(ListenerNonblockingMode::Accept)
-            .create_sync()
+    // O socket que sobrou é de um hub morto (no Windows, o pipe some com
+    // ele e não há o que apagar).
+    #[cfg(unix)]
+    let _ = fs::remove_file(&endpoint.socket);
+    let options = ListenerOptions::new()
+        .name(endpoint.name()?)
+        .nonblocking(ListenerNonblockingMode::Accept);
+    // No Windows, só o usuário (e o sistema) abrem o pipe.
+    #[cfg(windows)]
+    let options = {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt;
+        options.security_descriptor(super::endpoint::owner_only()?)
     };
-    match create() {
-        Ok(listener) => Ok(Some(listener)),
-        // No Windows, o pipe de outro hub chega como acesso negado.
-        Err(err) if in_use(&err) => {
-            if Stream::connect(endpoint.name()?).is_ok() {
-                return Ok(None);
-            }
-            // Ninguém atende: o socket ficou de um hub que morreu.
-            let _ = fs::remove_file(&endpoint.socket);
-            match create() {
-                Ok(listener) => Ok(Some(listener)),
-                // Outro hub ganhou a corrida.
-                Err(err) if in_use(&err) => Ok(None),
-                Err(err) => Err(err.into()),
-            }
-        }
+    match options.create_sync() {
+        Ok(listener) => Ok(Some((listener, guard))),
+        // Um hub de antes da trava ganhou a corrida.
+        Err(err) if in_use(&err) => Ok(None),
         Err(err) => Err(err)
             .with_context(|| format!("não foi possível escutar em {}", endpoint.socket.display())),
     }
@@ -170,27 +205,80 @@ fn remove_lock(endpoint: &Endpoint) {
     }
 }
 
-/// O `hub.log`: o hub não tem terminal.
-struct Log(Mutex<Option<File>>);
+/// O `hub.log`: o hub não tem terminal. Passando de [`LOG_MAX`], ele vira
+/// `hub.log.1` (o anterior sai) e recomeça.
+struct Log {
+    path: PathBuf,
+    file: Mutex<Option<File>>,
+}
 
 impl Log {
     fn open(endpoint: &Endpoint) -> Self {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&endpoint.log)
-            .ok();
-        Self(Mutex::new(file))
+        Self {
+            path: endpoint.log.clone(),
+            file: Mutex::new(Self::append(&endpoint.log)),
+        }
+    }
+
+    fn append(path: &PathBuf) -> Option<File> {
+        OpenOptions::new().create(true).append(true).open(path).ok()
     }
 
     fn line(&self, text: &str) {
-        if let Some(file) = self.0.lock().unwrap().as_mut() {
-            let _ = writeln!(
-                file,
-                "{} [{}] {text}",
-                jiff::Timestamp::now(),
-                std::process::id()
-            );
+        let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(open) = file.as_mut() else {
+            return;
+        };
+        let _ = writeln!(
+            open,
+            "{} [{}] {text}",
+            jiff::Timestamp::now(),
+            std::process::id()
+        );
+        if open.metadata().is_ok_and(|m| m.len() > LOG_MAX) {
+            let _ = fs::rename(&self.path, self.path.with_extension("log.1"));
+            *file = Self::append(&self.path);
+        }
+    }
+}
+
+/// A fila de saída de uma conexão: uma thread escreve o que entra nela.
+/// Cheia ([`OUTBOX`] mensagens), o cliente é lento demais e a conexão fecha.
+#[derive(Clone)]
+struct Outbox {
+    tx: SyncSender<Value>,
+    conn: Conn,
+    log: Arc<Log>,
+}
+
+impl Outbox {
+    fn open(conn: Conn, log: Arc<Log>) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<Value>(OUTBOX);
+        let mut out = conn.clone();
+        thread::spawn(move || {
+            while let Ok(msg) = rx.recv() {
+                if send(&mut out, &msg).is_err() {
+                    out.close();
+                    break;
+                }
+            }
+        });
+        Self { tx, conn, log }
+    }
+
+    /// Põe `msg` na fila. `false` quando o cliente caiu ou está lento
+    /// demais: aí a conexão fecha, e quem a lê vê o fim.
+    fn push(&self, msg: Value) -> bool {
+        match self.tx.try_send(msg) {
+            Ok(()) => true,
+            Err(err) => {
+                if matches!(err, TrySendError::Full(_)) {
+                    self.log
+                        .line("cliente lento (fila de saída cheia); desconectado");
+                }
+                self.conn.close();
+                false
+            }
         }
     }
 }
@@ -205,13 +293,15 @@ struct Entry {
     /// A conexão dona do registro: uma instância que reconecta troca de
     /// conexão, e o fim da antiga não pode marcá-la como `gone`.
     conn: u64,
+    /// A fila de saída da instância (as mensagens para as abas dela).
+    outbox: Outbox,
 }
 
 #[derive(Default)]
 struct State {
     /// Na ordem em que chegaram.
     instances: Vec<(String, Entry)>,
-    monitors: Vec<(u64, Conn)>,
+    monitors: Vec<(u64, Outbox)>,
 }
 
 impl State {
@@ -224,7 +314,7 @@ impl State {
 
     /// Manda `msg` a todos os monitores; o que não recebe sai da lista.
     fn broadcast(&mut self, msg: &Value) {
-        self.monitors.retain_mut(|(_, out)| send(out, msg).is_ok());
+        self.monitors.retain(|(_, out)| out.push(msg.clone()));
     }
 
     fn update(&mut self, id: &str, changes: Value) {
@@ -234,6 +324,15 @@ impl State {
 
 struct Hub {
     state: Mutex<State>,
+    /// A pasta do orquestrador (o `orchestrator.toml` e as mensagens).
+    home: PathBuf,
+    /// O `claude` das execuções, quando não é o do `PATH` (os testes).
+    claude: Option<PathBuf>,
+    /// A última configuração válida e o último erro dela (ver
+    /// [`Hub::config`]).
+    config: Mutex<(Config, Option<String>)>,
+    /// As filas e as execuções dos agentes da configuração.
+    dispatcher: Mutex<dispatch::Dispatcher>,
     /// Pedido de saída (um terra com o protocolo mais novo).
     quit: AtomicBool,
     /// As conexões abertas, de qualquer papel.
@@ -241,7 +340,7 @@ struct Hub {
     /// Desde quando o hub está sem conexões.
     idle_since: Mutex<Option<Instant>>,
     next_conn: AtomicU64,
-    log: Log,
+    log: Arc<Log>,
 }
 
 impl Hub {
@@ -251,22 +350,25 @@ impl Hub {
 
     fn handle(&self, stream: Stream) {
         let conn = self.next_conn.fetch_add(1, Ordering::SeqCst);
-        let output = Conn::new(stream);
-        let mut input = BufReader::new(output.clone());
-        let Ok(Some(hello)) = recv(&mut input) else {
-            return;
+        let stream = Conn::new(stream);
+        let mut input = BufReader::new(stream.clone());
+        let output = Outbox::open(stream, Arc::clone(&self.log));
+        let hello = match recv(&mut input) {
+            Ok(Some(hello)) if hello["t"] == "hello" => hello,
+            Err(err) => return self.log.line(&format!("conexão recusada: {err}")),
+            _ => return,
         };
-        if hello["t"] != "hello" {
-            return;
-        }
         match hello["role"].as_str() {
-            Some("instance") => self.instance(conn, hello, input, output),
+            Some("instance") => self.instance(conn, hello, input, &output),
             Some("monitor") => self.monitor(conn, input, output),
+            Some("sender") => self.sender(input, &output),
             _ => {}
         }
+        // A conexão fecha quando a thread da fila termina de escrever o que
+        // ficou (o `reject`, por exemplo) e solta a última cópia dela.
     }
 
-    fn instance(&self, conn: u64, hello: Value, mut input: BufReader<Conn>, mut output: Conn) {
+    fn instance(&self, conn: u64, hello: Value, mut input: BufReader<Conn>, output: &Outbox) {
         let proto = hello["proto"].as_u64().unwrap_or(0);
         if proto != PROTO {
             // O mais novo vence: com o terra mais novo, o hub sai e ele
@@ -277,10 +379,7 @@ impl Hub {
             } else {
                 "upgrade_instance"
             };
-            let _ = send(
-                &mut output,
-                &json!({"t": "reject", "reason": "proto_mismatch", "action": action}),
-            );
+            output.push(json!({"t": "reject", "reason": "proto_mismatch", "action": action}));
             if newer {
                 self.quit.store(true, Ordering::SeqCst);
             }
@@ -290,6 +389,7 @@ impl Hub {
             return;
         };
         let mut info = hello;
+        let rejected = self.claim_names(&id, &mut info["status"]);
         if let Some(fields) = info.as_object_mut() {
             for key in ["t", "proto", "role"] {
                 fields.remove(key);
@@ -310,24 +410,27 @@ impl Hub {
                     last_signal: Instant::now(),
                     gone_at: None,
                     conn,
+                    outbox: output.clone(),
                 },
             ));
         }
-        if send(
-            &mut output,
-            &json!({"t": "welcome", "proto": PROTO, "hub": APP_VERSION}),
-        )
-        .is_err()
-        {
+        if !output.push(json!({"t": "welcome", "proto": PROTO, "hub": APP_VERSION})) {
             return self.gone(&id, conn, None);
+        }
+        for msg in rejected {
+            output.push(msg);
         }
         let mut reason = None;
         while let Ok(Some(msg)) = recv(&mut input) {
             match msg["t"].as_str() {
                 Some("heartbeat") => self.signal(&id, None),
                 Some("status") => self.signal(&id, Some(&msg)),
+                Some("ack") => self.ack(msg["id"].as_str().unwrap_or_default()),
+                // Depois do `bye`, a instância não manda mais nada; a
+                // conexão fecha no `gone` (a janela ainda a lê numa thread).
                 Some("bye") => {
                     reason = Some(msg["reason"].as_str().unwrap_or("exit").to_string());
+                    break;
                 }
                 _ => {}
             }
@@ -355,6 +458,13 @@ impl Hub {
             if let Some(fields) = fields.as_object_mut() {
                 fields.remove("t");
             }
+            let rejected = self.claim_names_in(&state, id, &mut fields);
+            let Some(entry) = state.entry(id) else {
+                return;
+            };
+            for msg in rejected {
+                entry.outbox.push(msg);
+            }
             entry.info["status"] = fields.clone();
             changes.insert("status".into(), fields);
         }
@@ -372,6 +482,8 @@ impl Hub {
             return;
         };
         let reason = reason.unwrap_or_else(|| "crash".into());
+        // Fecha a conexão: a thread da janela que lê o hub vê o fim.
+        entry.outbox.conn.close();
         entry.health = Health::Gone;
         entry.gone_at = Some(Instant::now());
         entry.info["health"] = Health::Gone.as_str().into();
@@ -379,13 +491,8 @@ impl Hub {
         state.update(id, json!({"health": "gone", "reason": reason}));
     }
 
-    fn monitor(&self, conn: u64, mut input: BufReader<Conn>, mut output: Conn) {
-        if send(
-            &mut output,
-            &json!({"t": "welcome", "proto": PROTO, "hub": APP_VERSION}),
-        )
-        .is_err()
-        {
+    fn monitor(&self, conn: u64, mut input: BufReader<Conn>, output: Outbox) {
+        if !output.push(json!({"t": "welcome", "proto": PROTO, "hub": APP_VERSION})) {
             return;
         }
         loop {
@@ -397,13 +504,9 @@ impl Hub {
         }
         {
             let mut state = self.state();
+            // Com o lock, nenhuma mudança passa à frente do snapshot.
             let instances: Vec<&Value> = state.instances.iter().map(|(_, e)| &e.info).collect();
-            if send(
-                &mut output,
-                &json!({"t": "snapshot", "instances": instances}),
-            )
-            .is_err()
-            {
+            if !output.push(json!({"t": "snapshot", "instances": instances})) {
                 return;
             }
             state.monitors.push((conn, output));
@@ -449,7 +552,22 @@ impl Hub {
 mod tests {
     use super::*;
     use crate::hub::client;
+
     use crate::hub::protocol::Status;
+
+    #[test]
+    fn the_log_turns_into_log_1_past_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::in_dir(dir.path());
+        let log = Log::open(&endpoint);
+        let line = "x".repeat(1000);
+        for _ in 0..1100 {
+            log.line(&line);
+        }
+        let old = fs::metadata(endpoint.log.with_extension("log.1")).unwrap();
+        assert!(old.len() > LOG_MAX);
+        assert!(fs::metadata(&endpoint.log).unwrap().len() < LOG_MAX / 2);
+    }
 
     #[test]
     fn instances_join_update_and_leave_while_the_monitor_follows() {
@@ -493,6 +611,7 @@ mod tests {
             task: Some("Pensando...".into()),
             chats: 3,
             agents: 2,
+            ..Status::default()
         });
         let instances = wait("o status chegar", &|i| i[0].status.running);
         assert_eq!(instances[0].status.agents, 2);

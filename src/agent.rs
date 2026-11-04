@@ -8,6 +8,7 @@
 mod adapter;
 pub mod adapters;
 mod event;
+mod follow;
 pub mod guard;
 mod mode;
 
@@ -17,4 +18,5 @@ pub use adapter::{
     own_group,
 };
 pub use event::{AgentEvent, ReportedMode};
+pub use follow::follow;
 pub use mode::PermissionMode;

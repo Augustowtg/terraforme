@@ -136,6 +136,10 @@ impl StreamParser {
                         tokens,
                         window: context_window(&self.model),
                     });
+                    events.push(AgentEvent::Usage {
+                        tokens: self.tokens,
+                        cache_tokens: self.cache_tokens,
+                    });
                 }
             }
             "tool" => {
@@ -287,6 +291,10 @@ mod tests {
                     tokens: 8000,
                     window: Some(256_000)
                 },
+                AgentEvent::Usage {
+                    tokens: 8000,
+                    cache_tokens: 5,
+                },
                 AgentEvent::ToolUse {
                     name: "run_command".into(),
                     detail: "ls -la".into(),
@@ -301,6 +309,10 @@ mod tests {
                 AgentEvent::Context {
                     tokens: 7841,
                     window: Some(256_000)
+                },
+                AgentEvent::Usage {
+                    tokens: 15841,
+                    cache_tokens: 5,
                 },
                 // O `usage` do `result` é o da conversa: fica de fora.
                 AgentEvent::Done {
@@ -350,10 +362,16 @@ mod tests {
         );
         assert_eq!(
             events,
-            [AgentEvent::Context {
-                tokens: 120,
-                window: Some(160_000)
-            }]
+            [
+                AgentEvent::Context {
+                    tokens: 120,
+                    window: Some(160_000)
+                },
+                AgentEvent::Usage {
+                    tokens: 120,
+                    cache_tokens: 60,
+                },
+            ]
         );
         let spends = parser.take_spends();
         assert_eq!(spends.len(), 1);

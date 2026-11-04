@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ignore::WalkBuilder;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecursiveMode, Watcher};
 
 /// Limite de entradas, para um diretório enorme (ex.: a home) não pesar.
 const MAX_ENTRIES: usize = 50_000;
@@ -33,37 +33,40 @@ pub struct FileIndex {
     entries: Arc<RwLock<Arc<Vec<FileEntry>>>>,
     /// Desligado ao soltar o índice, para a thread terminar.
     alive: Arc<AtomicBool>,
-    _watcher: Option<RecommendedWatcher>,
+    /// Diretório observado; `None` num índice fixo.
+    root: Option<PathBuf>,
 }
 
 impl FileIndex {
     /// Começa a listar e observar `root`. A primeira lista chega logo depois.
     pub fn watch(root: PathBuf) -> Self {
+        let dir = root.clone();
         let entries = Arc::new(RwLock::new(Arc::new(Vec::new())));
         let alive = Arc::new(AtomicBool::new(true));
         let dirty = Arc::new(AtomicBool::new(true));
 
-        let watcher = {
-            let dirty = Arc::clone(&dirty);
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                if event.is_ok() {
-                    dirty.store(true, Ordering::Relaxed);
-                }
-            })
-            .ok()
-            .and_then(|mut watcher| {
-                watcher
-                    .watch(&root, RecursiveMode::Recursive)
-                    .ok()
-                    .map(|()| watcher)
-            })
-        };
-        let polling = watcher.is_none();
-
         {
             let entries = Arc::clone(&entries);
             let alive = Arc::clone(&alive);
+            // O observador é criado na thread: o `watch` recursivo percorre a
+            // árvore inteira (inclusive `target/`) e travava a primeira `@`.
             thread::spawn(move || {
+                let _watcher = {
+                    let dirty = Arc::clone(&dirty);
+                    notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                        if event.is_ok() {
+                            dirty.store(true, Ordering::Relaxed);
+                        }
+                    })
+                    .ok()
+                    .and_then(|mut watcher| {
+                        watcher
+                            .watch(&root, RecursiveMode::Recursive)
+                            .ok()
+                            .map(|()| watcher)
+                    })
+                };
+                let polling = _watcher.is_none();
                 let mut last_scan = Instant::now();
                 while alive.load(Ordering::Relaxed) {
                     let due = polling && last_scan.elapsed() >= POLL_FALLBACK;
@@ -82,7 +85,7 @@ impl FileIndex {
         Self {
             entries,
             alive,
-            _watcher: watcher,
+            root: Some(dir),
         }
     }
 
@@ -92,7 +95,7 @@ impl FileIndex {
         Self {
             entries: Arc::new(RwLock::new(Arc::new(entries))),
             alive: Arc::new(AtomicBool::new(false)),
-            _watcher: None,
+            root: None,
         }
     }
 
@@ -102,6 +105,17 @@ impl FileIndex {
             .read()
             .map(|entries| Arc::clone(&entries))
             .unwrap_or_default()
+    }
+
+    /// `path` (relativo ao diretório) existe: está na lista ou no disco,
+    /// mesmo que a lista ainda não tenha chegado ou o esconda (ex.: algo
+    /// do `.gitignore`).
+    pub fn exists(&self, path: &str) -> bool {
+        self.snapshot().iter().any(|entry| entry.path == path)
+            || self
+                .root
+                .as_ref()
+                .is_some_and(|root| root.join(path).exists())
     }
 }
 

@@ -339,7 +339,36 @@ fn at_opens_picker_and_tab_inserts_badge() {
 }
 
 #[test]
-fn badge_renders_as_gray_pill_and_backspace_removes_it_whole() {
+fn editing_a_closed_mention_reopens_the_picker() {
+    let mut input = input_with_files();
+    type_text(&mut input, "veja @src/hub/test");
+    // O espaço fecha a lista e o caminho, que não existe, vira um badge a
+    // criar; apagar o espaço e o badge volta para dentro do `@` e ela reabre.
+    type_text(&mut input, " ");
+    assert!(!input.picker_open());
+    assert_eq!(input.mentions, [Mention::Create("src/hub/test".into())]);
+    press(&mut input, KeyCode::Backspace);
+    press(&mut input, KeyCode::Backspace);
+    assert!(input.picker_open());
+    assert_eq!(input.query().as_deref(), Some("src/hub/test"));
+    // Um `@caminho` que chegou como texto (ex.: colado) também reabre a
+    // lista ao ser editado.
+    input.clear();
+    input.paste("@src/hub/test");
+    press(&mut input, KeyCode::Backspace);
+    assert!(input.picker_open());
+    assert_eq!(input.query().as_deref(), Some("src/hub/tes"));
+    input.clear();
+    // Fora de uma menção (ex.: um e-mail), nada abre.
+    type_text(&mut input, " a@b");
+    press(&mut input, KeyCode::Esc);
+    press(&mut input, KeyCode::Char('i'));
+    press(&mut input, KeyCode::Backspace);
+    assert!(!input.picker_open());
+}
+
+#[test]
+fn badge_renders_as_gray_pill_and_backspace_makes_it_editable() {
     let mut input = input_with_files();
     type_text(&mut input, "@main");
     press(&mut input, KeyCode::Enter);
@@ -350,8 +379,16 @@ fn badge_renders_as_gray_pill_and_backspace_removes_it_whole() {
     assert_eq!(buffer[(3, 2)].bg, theme::mention().bg.unwrap());
 
     press(&mut input, KeyCode::Backspace); // o espaço
-    press(&mut input, KeyCode::Backspace); // o badge inteiro
-    assert_eq!(input.text(), "");
+    press(&mut input, KeyCode::Backspace); // o badge volta a ser texto
+    assert_eq!(input.text(), "@src/main.rs");
+    assert!(input.picker_open());
+    // Editável: apagar e escrever muda a consulta, e a lista volta.
+    for _ in 0.."main.rs".len() {
+        press(&mut input, KeyCode::Backspace);
+    }
+    type_text(&mut input, "lib");
+    assert_eq!(input.text(), "@src/lib");
+    assert!(input.picker_open());
 }
 
 #[test]
@@ -371,7 +408,7 @@ fn picker_closes_on_esc_space_or_email() {
     press(&mut input, KeyCode::Esc);
     assert!(!input.picker_open());
     assert_eq!(input.mode(), InputMode::Insert, "Esc só fecha a lista");
-    assert_eq!(input.text(), "@ma");
+    assert_eq!(input.mentions, [Mention::Create("ma".into())]);
 
     type_text(&mut input, " @x y");
     assert!(!input.picker_open(), "espaço encerra a consulta");
@@ -387,8 +424,73 @@ fn enter_with_no_match_closes_without_sending() {
     type_text(&mut input, "@zzz");
     assert_eq!(press(&mut input, KeyCode::Enter), Outcome::Handled);
     assert!(!input.picker_open());
-    assert_eq!(input.text(), "@zzz");
+    assert_eq!(input.text(), "@zzz (ainda não existe: criar) ");
     assert_eq!(press(&mut input, KeyCode::Enter), Outcome::Submit);
+}
+
+#[test]
+fn typed_path_becomes_badge_on_space_existing_or_to_create() {
+    let mut input = input_with_files();
+    // O caminho certo, com espaço e sem Enter, vira o badge do arquivo.
+    type_text(
+        &mut input,
+        "@src/main.rs e @docs/test/script.js e @docs/test ",
+    );
+    assert_eq!(
+        input.mentions,
+        [
+            Mention::File("src/main.rs".into()),
+            Mention::Create("docs/test/script.js".into()),
+            Mention::Create("docs/test".into()),
+        ]
+    );
+    assert_eq!(
+        input.text(),
+        "@src/main.rs e @docs/test/script.js (ainda não existe: criar) e \
+         @docs/test (ainda não existe: criar) "
+    );
+    let terminal = render(&input);
+    let row = |y| {
+        (2..58)
+            .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+            .collect::<String>()
+    };
+    assert!(row(2).starts_with(" @/src/main.rs  e "), "{}", row(2));
+    // O badge a criar não cabe no resto da linha e desce inteiro.
+    assert!(
+        row(3).starts_with(" create(JavaScript):@docs/test/script.js  e "),
+        "{}",
+        row(3)
+    );
+}
+
+#[test]
+fn reopened_badge_comes_back_when_leaving_it() {
+    let mut input = input_with_files();
+    type_text(&mut input, "@src ");
+    assert_eq!(input.mentions, [Mention::File("src".into())]);
+    press(&mut input, KeyCode::Backspace);
+    press(&mut input, KeyCode::Backspace);
+    assert_eq!(input.query().as_deref(), Some("src"));
+    // Sair do `@src` (seta, Home, clique ou Esc) o deixa como badge de novo.
+    press(&mut input, KeyCode::Home);
+    assert!(!input.picker_open());
+    assert_eq!(input.mentions.last(), Some(&Mention::File("src".into())));
+    assert_eq!(input.len(), 1);
+    assert_eq!(input.cursor, 0);
+
+    press(&mut input, KeyCode::End);
+    press(&mut input, KeyCode::Backspace);
+    type_text(&mut input, "/tui/app.rs");
+    render(&input);
+    mouse(&mut input, MouseEventKind::Down(MouseButton::Left), 2, 2);
+    mouse(&mut input, MouseEventKind::Up(MouseButton::Left), 2, 2);
+    assert!(!input.picker_open());
+    assert_eq!(
+        input.mentions.last(),
+        Some(&Mention::File("src/tui/app.rs".into()))
+    );
+    assert_eq!(input.text(), "@src/tui/app.rs");
 }
 
 #[test]
@@ -611,6 +713,24 @@ fn up_and_down_browse_the_sent_messages() {
 }
 
 #[test]
+fn messages_from_other_runs_come_before_the_ones_of_this_run() {
+    let mut input = InputBox::default();
+    input.set_sent(vec!["antiga".into(), "um\ndois".into()]);
+    press(&mut input, KeyCode::Char('i'));
+    type_text(&mut input, "nova");
+    input.remember();
+    input.clear();
+
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "nova");
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "um\ndois");
+    press(&mut input, KeyCode::Up);
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "antiga");
+}
+
+#[test]
 fn up_and_down_move_between_lines_before_browsing() {
     let mut input = input_after_sending(&["antes"]);
     type_text(&mut input, "abc");
@@ -675,4 +795,50 @@ fn paste_of_exactly_the_limit_stays_text() {
     input.paste(&"y".repeat(mention::PASTE_LIMIT));
     assert_eq!(input.len(), mention::PASTE_LIMIT);
     assert!(input.mentions.is_empty());
+}
+
+#[test]
+fn ampersand_opens_patterns_and_sends_the_instruction() {
+    let mut input = input_with_files();
+    type_text(&mut input, "resuma &");
+    assert!(input.picker_open());
+    type_text(&mut input, "asd");
+    assert_eq!(press(&mut input, KeyCode::Enter), Outcome::Handled);
+    assert!(!input.picker_open());
+    assert_eq!(input.mentions, [Mention::Pattern("ASD-STE100".into())]);
+    type_text(&mut input, "isso");
+    assert_eq!(
+        input.text(),
+        "resuma (use ASD-STE100 com 75% de precisão) isso"
+    );
+    let terminal = render(&input);
+    let row: String = (0..60)
+        .map(|x| terminal.backend().buffer()[(x, 2)].symbol().to_string())
+        .collect();
+    assert!(row.contains("resuma  &ASD-STE100  isso"));
+}
+
+#[test]
+fn ampersand_inside_a_word_and_unknown_names_stay_text() {
+    let mut input = input_with_files();
+    type_text(&mut input, "a&b ");
+    assert!(!input.picker_open());
+    // Um `&nome` escrito à mão vira badge ao sair dele; um que não é padrão
+    // fica como texto.
+    type_text(&mut input, "&kiss &nada ");
+    assert_eq!(input.mentions, [Mention::Pattern("KISS".into())]);
+    assert_eq!(
+        input.text(),
+        "a&b (siga o KISS: a solução mais simples que resolve o pedido) &nada "
+    );
+}
+
+#[test]
+fn backspace_turns_a_pattern_badge_back_into_text() {
+    let mut input = input_with_files();
+    type_text(&mut input, "&tdd ");
+    press(&mut input, KeyCode::Backspace);
+    press(&mut input, KeyCode::Backspace);
+    assert!(input.picker_open());
+    assert_eq!(input.buffer, "&TDD");
 }

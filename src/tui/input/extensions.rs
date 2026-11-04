@@ -1,7 +1,11 @@
-//! Como o status do agente e o modo de permissão aparecem na tela.
+//! Extensões do input: o que aparece na borda e embaixo da caixa de texto,
+//! como o nome do provedor e o modelo (no título), o status do agente (no
+//! canto direito) e a cor do badge do modo de permissão.
+
+use ratatui::text::{Line, Span};
 
 use crate::agent::PermissionMode;
-use crate::theme::Variant;
+use crate::theme::{self, Variant};
 
 // TODO: "Aguardando" vai indicar um pedido de aprovação no modo Manual.
 #[allow(dead_code)]
@@ -37,6 +41,24 @@ impl AgentStatus {
     }
 }
 
+/// "[Provedor] Modelo - Versão", com o provedor no estilo de botão (pill):
+/// o título da caixa de input.
+pub fn model_title(provider: &str, model: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(format!(" {provider} "), theme::badge_text(Variant::Active)),
+        Span::styled(format!(" {model} "), theme::text()),
+    ])
+}
+
+/// O status do agente no canto direito da borda do input.
+pub fn status_line(status: AgentStatus) -> Line<'static> {
+    Line::styled(
+        format!(" {} ", status.label()),
+        theme::variant(status.variant()),
+    )
+}
+
 /// Cor do badge de cada modo de permissão.
 pub fn mode_variant(mode: PermissionMode) -> Variant {
     match mode {
@@ -49,14 +71,5 @@ pub fn mode_variant(mode: PermissionMode) -> Variant {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_mode_has_its_own_color() {
-        let variants: Vec<_> = PermissionMode::ALL.into_iter().map(mode_variant).collect();
-        for (i, v) in variants.iter().enumerate() {
-            assert!(!variants[i + 1..].contains(v), "cor repetida: {v:?}");
-        }
-    }
-}
+#[path = "tests/extensions.rs"]
+mod tests;

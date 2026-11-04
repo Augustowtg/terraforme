@@ -14,13 +14,31 @@ use crate::theme::{self, Variant};
 use crate::tui::widgets::popup;
 
 /// Comandos que já têm interface no terra.
-const INTERFACES: &[&str] = &["clear", "compact", "model", "login", "usage"];
+const INTERFACES: &[&str] = &[
+    "clear",
+    "compact",
+    "model",
+    "login",
+    "usage",
+    "agente",
+    "mensagens",
+];
 /// Comandos do terra que o agente não informa (o `/login` do Claude Code só
 /// existe no modo interativo dele): nome e descrição.
-const TERRA_COMMANDS: &[(&str, &str)] = &[(
-    "login",
-    "Entra de novo na conta do agente (ex.: token expirado ou revogado)",
-)];
+const TERRA_COMMANDS: &[(&str, &str)] = &[
+    (
+        "login",
+        "Entra de novo na conta do agente (ex.: token expirado ou revogado)",
+    ),
+    (
+        "agente",
+        "Dá um nome a este chat para receber mensagens de outros agentes (/agente <nome>)",
+    ),
+    (
+        "mensagens",
+        "Mostra as mensagens que outros agentes mandaram a este chat",
+    ),
+];
 /// Largura da coluna do nome (`/nome`).
 const NAME_WIDTH: usize = 18;
 
@@ -64,20 +82,6 @@ pub fn matches<'a>(commands: &'a [CommandInfo], query: &str) -> Vec<&'a CommandI
         .collect();
     found.sort_by(|a, b| (a.0, a.1, &a.2.name).cmp(&(b.0, b.1, &b.2.name)));
     found.into_iter().map(|(_, _, command)| command).collect()
-}
-
-#[cfg(test)]
-#[test]
-fn terra_commands_are_added_once() {
-    let login = |description: &str| CommandInfo {
-        name: "login".into(),
-        description: description.into(),
-        skill: false,
-    };
-    let added = with_terra(Vec::new());
-    assert_eq!(added.iter().filter(|c| c.name == "login").count(), 1);
-    // Se o agente um dia informar o /login, fica o dele.
-    assert_eq!(with_terra(vec![login("do agente")]), [login("do agente")]);
 }
 
 /// Desenha a lista acima de `input`. `None` em `found` é o catálogo ainda
@@ -141,67 +145,5 @@ fn item(command: &CommandInfo, selected: bool) -> Line<'static> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn long_names_do_not_stick_to_the_description() {
-        let text = |name: &str| {
-            let command = CommandInfo {
-                name: name.into(),
-                description: "faz algo".into(),
-                skill: false,
-            };
-            item(&command, false)
-                .spans
-                .iter()
-                .map(|s| s.content.to_string())
-                .collect::<String>()
-        };
-        assert!(text("usage").contains("/usage            faz algo"));
-        assert!(text("ai-memory-durable-pages").contains("/ai-memory-durable-pages faz algo"));
-        assert!(text("install-github-app").contains("/install-github-app faz algo"));
-    }
-
-    fn commands(names: &[(&str, &str)]) -> Vec<CommandInfo> {
-        names
-            .iter()
-            .map(|(name, description)| CommandInfo {
-                name: name.to_string(),
-                description: description.to_string(),
-                skill: false,
-            })
-            .collect()
-    }
-
-    fn found(list: &[CommandInfo], query: &str) -> Vec<String> {
-        matches(list, query)
-            .into_iter()
-            .map(|c| c.name.clone())
-            .collect()
-    }
-
-    #[test]
-    fn filters_by_name_then_description_with_interfaces_first() {
-        let list = commands(&[
-            ("compact", "Free up context by summarizing"),
-            ("context", "Show current context usage"),
-            ("clear", "Start a new session"),
-            ("model", "Set the AI model"),
-        ]);
-        // Sem consulta, todos; os com interface (/clear, /compact e /model)
-        // primeiro.
-        assert_eq!(found(&list, ""), ["clear", "compact", "model", "context"]);
-        assert_eq!(found(&list, "co"), ["compact", "context"]);
-        // "session" só aparece na descrição do /clear.
-        assert_eq!(found(&list, "session"), ["clear"]);
-        assert!(found(&list, "xyz").is_empty());
-    }
-
-    #[test]
-    fn knows_which_commands_have_an_interface() {
-        assert!(has_interface("clear"));
-        assert!(has_interface("compact"));
-        assert!(!has_interface("context"));
-    }
-}
+#[path = "tests/commands.rs"]
+mod tests;

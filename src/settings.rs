@@ -2,7 +2,7 @@
 //!
 //! As do agente são de cada workspace: ficam em
 //! `~/.terraforme/workspace/<nome do workspace>/config.json` ([`config_file`]),
-//! lido ao iniciar. Um workspace sem o arquivo começa com o padrão do router
+//! criado e lido ao iniciar. Um workspace novo começa com o padrão do router
 //! (o provedor): o modo, o modelo, a conta e o esforço que ele usa.
 //!
 //! ```json
@@ -25,9 +25,9 @@
 //! `"extensions": {"enabled": [...]}` do `config.json` só é lida uma vez, para
 //! levá-las ao banco.
 //!
-//! As do orquestrador ([`OrchestratorSettings`]) são uma só para a máquina,
-//! então ficam no `~/.terraforme/config.json` ([`global_file`]):
-//! `{"orchestrator": {"spawn_mode": "accept_edits", ...}}`.
+//! As do orquestrador ficam no `~/.terraforme/orchestrator.toml` (veja
+//! [`crate::orchestrator::config`]); as antigas, do `config.json` global
+//! ([`global_file`]), saem dele uma vez ([`take_legacy_orchestrator`]).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -379,83 +379,25 @@ impl ExtensionSettings {
     }
 }
 
-/// As configurações do orquestrador (aba Orquestrador), uma só para a
-/// máquina: como seriam os chats delegados. Por enquanto, só ficam salvas.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrchestratorSettings {
-    /// O modo com que começam os chats delegados. Accept Edits por padrão.
-    pub spawn_mode: StartMode,
-    /// O chat delegado fecha quando termina a tarefa (a resposta continua
-    /// indo para quem delegou). Ativado por padrão.
-    pub close_finished: bool,
-    /// O chat delegado aparece na aba Chat ao abrir, em vez de ficar em
-    /// segundo plano na barra de chats. Desativado por padrão.
-    pub focus_delegated: bool,
-    /// O modelo (um id do catálogo) e o esforço dos chats delegados,
-    /// escolhidos no menu do `/model` da aba Orquestrador. Sem modelo, eles
-    /// usam o modelo padrão.
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    /// O provedor dos chats delegados (o `id` de um adapter); `None` é o
-    /// mesmo do workspace. O modelo e o esforço são ids dele.
-    pub provider: Option<String>,
-}
-
-impl OrchestratorSettings {
-    pub const DEFAULT_SPAWN_MODE: StartMode = StartMode::Fixed(PermissionMode::AcceptEdits);
-
-    /// Lê do `config.json` global (ou da antiga chave `mcp`); sem o arquivo
-    /// ou a chave, os chats abrem em Accept Edits, em segundo plano, e
-    /// fecham ao terminar.
-    pub fn load_file(path: &Path) -> Self {
-        let mut json = read_file(path);
-        let json = match json["orchestrator"].is_object() {
-            true => json["orchestrator"].take(),
-            false => json["mcp"].take(),
-        };
-        Self {
-            spawn_mode: json["spawn_mode"]
-                .as_str()
-                .and_then(StartMode::from_key)
-                .unwrap_or(Self::DEFAULT_SPAWN_MODE),
-            close_finished: json["close_finished"] != false,
-            focus_delegated: json["focus_delegated"] == true,
-            model: json["model"].as_str().map(str::to_string),
-            effort: json["effort"].as_str().map(str::to_string),
-            provider: json["provider"].as_str().map(str::to_string),
+/// A migração das antigas configurações do orquestrador (as dos chats
+/// delegados, que só ficavam salvas) do `config.json` global: tira as chaves
+/// `orchestrator` e `mcp` do arquivo e devolve o "Ao abrir: mostrar o chat"
+/// delas, a única que vai para o `orchestrator.toml`
+/// (`aba_em_primeiro_plano`). `None` quando não havia nada a migrar.
+pub fn take_legacy_orchestrator(path: &Path) -> Option<bool> {
+    let json = read_file(path);
+    let old = ["orchestrator", "mcp"]
+        .into_iter()
+        .find(|key| json[*key].is_object())?;
+    let focus = json[old]["focus_delegated"] == true;
+    update_file(path, |json| {
+        if let Some(map) = json.as_object_mut() {
+            map.remove("orchestrator");
+            map.remove("mcp");
         }
-    }
-
-    /// Grava no `config.json` global, mantendo as outras chaves (a antiga
-    /// `mcp` sai).
-    pub fn save_file(&self, path: &Path) -> Result<()> {
-        update_file(path, |json| {
-            if let Some(map) = json.as_object_mut() {
-                map.remove("mcp");
-            }
-            json["orchestrator"] = json!({
-                "spawn_mode": self.spawn_mode.key(),
-                "close_finished": self.close_finished,
-                "focus_delegated": self.focus_delegated,
-                "model": self.model,
-                "effort": self.effort,
-                "provider": self.provider,
-            });
-        })
-    }
-}
-
-impl Default for OrchestratorSettings {
-    fn default() -> Self {
-        Self {
-            spawn_mode: Self::DEFAULT_SPAWN_MODE,
-            close_finished: true,
-            focus_delegated: false,
-            model: None,
-            effort: None,
-            provider: None,
-        }
-    }
+    })
+    .ok()?;
+    Some(focus)
 }
 
 /// Se o terra pergunta, ao sair, se o workspace deve ser salvo. O "Não
@@ -472,6 +414,14 @@ pub fn stop_asking_to_save(path: &Path) -> Result<()> {
         }
         json["workspace"]["ask_to_save"] = json!(false);
     })
+}
+
+/// Cria o `config.json` vazio (o padrão do router), se ele ainda não existe.
+pub fn create_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    update_file(path, |_| {})
 }
 
 /// O `config.json` como objeto (vazio quando não existe ou não é JSON).
@@ -506,6 +456,18 @@ pub fn global_file(root: &Path) -> PathBuf {
 /// `~/.terraforme`). Separadores no nome viram `-`, para o arquivo ficar
 /// sempre dentro de `workspace/`.
 pub fn config_file(root: &Path, name: &str) -> PathBuf {
+    workspace_dir(root, name).join("config.json")
+}
+
+/// O SQLite com o histórico de conversas do workspace `name` dentro de
+/// `root` (o `~/.terraforme`).
+pub fn history_file(root: &Path, name: &str) -> PathBuf {
+    let dir = workspace_dir(root, name);
+    let file = format!("{}.sql", dir.file_name().unwrap_or_default().display());
+    dir.join(file)
+}
+
+fn workspace_dir(root: &Path, name: &str) -> PathBuf {
     let name: String = name
         .trim()
         .chars()
@@ -515,7 +477,7 @@ pub fn config_file(root: &Path, name: &str) -> PathBuf {
         "" | "." | ".." => "root".to_string(),
         _ => name,
     };
-    root.join("workspace").join(name).join("config.json")
+    root.join("workspace").join(name)
 }
 
 #[cfg(test)]
@@ -529,6 +491,11 @@ mod tests {
         assert_eq!(
             path,
             dir.path().join("workspace/terraforme-cli/config.json")
+        );
+        assert_eq!(
+            history_file(dir.path(), "terraforme-cli"),
+            dir.path()
+                .join("workspace/terraforme-cli/terraforme-cli.sql")
         );
         assert_eq!(AgentSettings::load_file(&path), None, "sem arquivo");
 
@@ -627,57 +594,24 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_defaults_and_round_trips() {
+    fn the_old_orchestrator_settings_leave_the_global_file_once() {
         let dir = tempfile::tempdir().unwrap();
         let path = global_file(dir.path());
         assert_eq!(path, dir.path().join("config.json"));
-        assert_eq!(
-            OrchestratorSettings::load_file(&path),
-            OrchestratorSettings::default()
-        );
-        fs::write(&path, r#"{"outra": 1}"#).unwrap();
-        assert_eq!(
-            OrchestratorSettings::load_file(&path).spawn_mode,
-            StartMode::Fixed(PermissionMode::AcceptEdits),
-            "os chats do orquestrador começam em Accept Edits"
-        );
-        assert!(
-            OrchestratorSettings::load_file(&path).close_finished,
-            "os chats do orquestrador fecham ao terminar por padrão"
-        );
-        assert!(!OrchestratorSettings::load_file(&path).focus_delegated);
-        // A antiga chave `mcp` ainda é lida e sai ao salvar.
+        assert_eq!(take_legacy_orchestrator(&path), None);
         fs::write(
             &path,
-            r#"{"outra": 1, "mcp": {"enabled": true, "model": "opus"}}"#,
+            r#"{"outra": 1, "orchestrator": {"spawn_mode": "yolo", "focus_delegated": true}}"#,
         )
         .unwrap();
-        assert_eq!(
-            OrchestratorSettings::load_file(&path).model.as_deref(),
-            Some("opus")
-        );
-        let orchestrator = OrchestratorSettings {
-            spawn_mode: StartMode::Fixed(PermissionMode::Yolo),
-            close_finished: false,
-            focus_delegated: true,
-            model: Some("sonnet".into()),
-            effort: Some("high".into()),
-            provider: Some("claude".into()),
-        };
-        orchestrator.save_file(&path).unwrap();
-        assert_eq!(OrchestratorSettings::load_file(&path), orchestrator);
+        assert_eq!(take_legacy_orchestrator(&path), Some(true));
         let json: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            json,
-            json!({"outra": 1, "orchestrator": {
-                "spawn_mode": "yolo",
-                "close_finished": false,
-                "focus_delegated": true,
-                "model": "sonnet",
-                "effort": "high",
-                "provider": "claude",
-            }})
-        );
+        assert_eq!(json, json!({"outra": 1}));
+        // Só uma vez.
+        assert_eq!(take_legacy_orchestrator(&path), None);
+        // A antiga chave `mcp` também sai.
+        fs::write(&path, r#"{"mcp": {"enabled": true}}"#).unwrap();
+        assert_eq!(take_legacy_orchestrator(&path), Some(false));
     }
 
     #[test]

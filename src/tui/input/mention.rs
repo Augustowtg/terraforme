@@ -1,13 +1,18 @@
 //! Menções de arquivo no input: digitar `@` abre uma lista dos arquivos e
 //! pastas do diretório, filtrada pelo que vem depois do `@`; o escolhido vira
 //! um badge cinza (`@/src/main.rs`) que se comporta como um caractere só.
+//! Um `@caminho` escrito à mão também vira badge ao sair dele (espaço, `Esc`
+//! ou cursor fora); se o caminho não existe, o badge é de um arquivo a criar
+//! (`create:@docs/test`, ou `create(JavaScript):@docs/script.js` num arquivo
+//! de texto ou código).
 //!
 //! No texto do input, cada menção é um caractere da área de uso privado do
 //! Unicode ([`token`]), que aponta para o caminho guardado pela caixa. Assim o
 //! cursor, a seleção e o Backspace tratam o badge inteiro como uma unidade.
 //!
 //! Uma skill escolhida na lista da `/` vira um badge do mesmo jeito
-//! (`/docs`), em qualquer ponto do texto. Um texto colado com mais de
+//! (`/docs`), em qualquer ponto do texto, e um padrão da lista do `&`
+//! também (`&ASD-STE100`, [`patterns`]). Um texto colado com mais de
 //! [`PASTE_LIMIT`] caracteres também, como no Claude Code
 //! (`[Pasted text #1 +12 lines]`); ele vai inteiro na mensagem.
 
@@ -15,6 +20,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
+use super::patterns;
 use crate::files::FileEntry;
 use crate::theme;
 use crate::tui::widgets::popup;
@@ -44,18 +50,28 @@ pub fn token_index(c: char) -> Option<usize> {
 pub enum Mention {
     /// Caminho relativo ao diretório (ex.: `src/main.rs`).
     File(String),
+    /// Caminho que ainda não existe e deve ser criado (ex.: `docs/test`).
+    Create(String),
     /// Nome da skill, sem a `/` (ex.: `docs`).
     Skill(String),
+    /// Nome do padrão de prompt, sem o `&` (ex.: `ASD-STE100`).
+    Pattern(String),
     /// Texto colado grande: `number` é o `#` do badge (1, 2...).
     Paste { number: usize, text: String },
 }
 
-/// Texto do badge (sem os espaços do pill): `@/src/main.rs`, `/docs` ou
-/// `[Pasted text #1 +12 lines]` (sem quebras de linha, só `[Pasted text #1]`).
+/// Texto do badge (sem os espaços do pill): `@/src/main.rs`,
+/// `create(Rust):@src/novo.rs`, `/docs`, `&ASD-STE100` ou `[Pasted text #1 +12 lines]` (sem
+/// quebras de linha, só `[Pasted text #1]`).
 pub fn badge_label(mention: &Mention) -> String {
     match mention {
         Mention::File(path) => format!("@/{path}"),
+        Mention::Create(path) => match language(path) {
+            Some(language) => format!("create({language}):@{path}"),
+            None => format!("create:@{path}"),
+        },
         Mention::Skill(name) => format!("/{name}"),
+        Mention::Pattern(name) => format!("&{name}"),
         Mention::Paste { number, text } => match text.matches('\n').count() {
             0 => format!("[Pasted text #{number}]"),
             lines => format!("[Pasted text #{number} +{lines} lines]"),
@@ -78,14 +94,65 @@ pub fn badge_span(mention: &Mention, selected: bool) -> Span<'static> {
     Span::styled(format!(" {} ", badge_label(mention)), style)
 }
 
-/// Como a menção vai no texto enviado ao agente: `@src/main.rs`, `/docs` ou
-/// o texto colado inteiro.
+/// Como a menção vai no texto enviado ao agente: `@src/main.rs`,
+/// `@docs/test (ainda não existe: criar)`, `/docs`, a instrução do padrão
+/// (`(use ASD-STE100 com 75% de precisão)`) ou o texto colado inteiro.
 pub fn prompt_text(mention: &Mention) -> String {
     match mention {
         Mention::File(path) => format!("@{path}"),
+        Mention::Create(path) => format!("@{path} (ainda não existe: criar)"),
         Mention::Skill(name) => format!("/{name}"),
+        Mention::Pattern(name) => match patterns::find(name) {
+            Some(pattern) => format!("({})", pattern.instruction),
+            None => format!("&{name}"),
+        },
         Mention::Paste { text, .. } => text.clone(),
     }
+}
+
+/// Linguagem de um arquivo de texto ou código, pela extensão (ex.:
+/// `script.js` é `JavaScript`). `None` sem extensão ou se não for texto.
+pub fn language(path: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next()?;
+    let (_, ext) = name.rsplit_once('.')?;
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "js" | "mjs" | "cjs" => "JavaScript",
+        "jsx" => "JavaScript JSX",
+        "ts" | "mts" | "cts" => "TypeScript",
+        "tsx" => "TypeScript JSX",
+        "rs" => "Rust",
+        "py" => "Python",
+        "go" => "Go",
+        "java" => "Java",
+        "kt" | "kts" => "Kotlin",
+        "c" | "h" => "C",
+        "cpp" | "cc" | "cxx" | "hpp" => "C++",
+        "cs" => "C#",
+        "swift" => "Swift",
+        "rb" => "Ruby",
+        "php" => "PHP",
+        "dart" => "Dart",
+        "lua" => "Lua",
+        "ex" | "exs" => "Elixir",
+        "scala" => "Scala",
+        "sh" | "bash" | "zsh" => "Shell",
+        "ps1" => "PowerShell",
+        "sql" => "SQL",
+        "html" | "htm" => "HTML",
+        "css" => "CSS",
+        "scss" | "sass" => "Sass",
+        "vue" => "Vue",
+        "svelte" => "Svelte",
+        "json" | "jsonc" => "JSON",
+        "yaml" | "yml" => "YAML",
+        "toml" => "TOML",
+        "xml" => "XML",
+        "ini" | "cfg" | "conf" => "INI",
+        "md" | "markdown" => "Markdown",
+        "txt" => "Text",
+        "csv" => "CSV",
+        _ => return None,
+    })
 }
 
 /// A lista aberta: onde está o `@` e qual item está selecionado.
@@ -196,91 +263,5 @@ fn item(entry: &FileEntry, selected: bool) -> Line<'static> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entries(paths: &[&str]) -> Vec<FileEntry> {
-        paths
-            .iter()
-            .map(|p| FileEntry {
-                path: p.trim_end_matches('/').to_string(),
-                is_dir: p.ends_with('/'),
-            })
-            .collect()
-    }
-
-    fn found(paths: &[&str], query: &str) -> Vec<String> {
-        let entries = entries(paths);
-        matches(&entries, query)
-            .into_iter()
-            .map(|e| e.path.clone())
-            .collect()
-    }
-
-    #[test]
-    fn tokens_round_trip() {
-        for i in [0, 1, 500] {
-            assert_eq!(token_index(token(i)), Some(i));
-        }
-        assert_eq!(token_index('a'), None);
-        assert_eq!(token_index('@'), None);
-    }
-
-    #[test]
-    fn empty_query_lists_shallow_first() {
-        assert_eq!(
-            found(&["src/", "src/main.rs", "README.md", "src/tui/app.rs"], ""),
-            ["src", "README.md", "src/main.rs", "src/tui/app.rs"]
-        );
-    }
-
-    #[test]
-    fn query_prefers_file_name_then_path_then_letters() {
-        let paths = [
-            "src/tui/app.rs",
-            "src/apple.rs",
-            "docs/maps.md",
-            "a/p/p.txt",
-        ];
-        assert_eq!(
-            found(&paths, "app"),
-            ["src/apple.rs", "src/tui/app.rs", "a/p/p.txt"]
-        );
-        // Sem diferenciar maiúsculas.
-        assert_eq!(found(&["README.md"], "read"), ["README.md"]);
-        assert!(found(&paths, "xyz").is_empty());
-    }
-
-    #[test]
-    fn picker_wraps_around() {
-        let mut picker = Picker::new(0);
-        picker.up(3);
-        assert_eq!(picker.selected, 2);
-        picker.down(3);
-        assert_eq!(picker.selected, 0);
-        picker.down(0);
-        assert_eq!(picker.selected, 0);
-    }
-
-    #[test]
-    fn badge_label_and_prompt_text() {
-        let file = Mention::File("src/test.js".into());
-        assert_eq!(badge_label(&file), "@/src/test.js");
-        assert_eq!(badge_width(&file), 15);
-        assert_eq!(prompt_text(&file), "@src/test.js");
-        let skill = Mention::Skill("docs".into());
-        assert_eq!(badge_label(&skill), "/docs");
-        assert_eq!(prompt_text(&skill), "/docs");
-        let paste = Mention::Paste {
-            number: 2,
-            text: "a\nb\nc".into(),
-        };
-        assert_eq!(badge_label(&paste), "[Pasted text #2 +2 lines]");
-        assert_eq!(prompt_text(&paste), "a\nb\nc");
-        let line = Mention::Paste {
-            number: 1,
-            text: "x".repeat(150),
-        };
-        assert_eq!(badge_label(&line), "[Pasted text #1]");
-    }
-}
+#[path = "tests/mention.rs"]
+mod tests;
