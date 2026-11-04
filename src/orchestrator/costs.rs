@@ -101,6 +101,7 @@ mod tests {
             created: jiff::Timestamp::now().as_second() as u64,
             started: None,
             finished: None,
+            provider: "claude".into(),
             model: None,
             usage: cost.map(|cost_usd| Usage {
                 input: 10,

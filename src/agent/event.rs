@@ -57,6 +57,9 @@ pub enum AgentEvent {
     /// O agente compactou a conversa: o contexto volta a ser pequeno. Com o
     /// tamanho dele depois da compactação, quando o provedor informa.
     Compacted { tokens: Option<u64> },
+    /// O que este turno gastou até aqui, enquanto o provedor trabalha. O
+    /// [`AgentEvent::Done`] traz o total que vale.
+    Usage { tokens: u64, cache_tokens: u64 },
     /// Fim da resposta.
     Done {
         is_error: bool,

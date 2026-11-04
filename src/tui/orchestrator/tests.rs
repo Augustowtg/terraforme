@@ -192,6 +192,7 @@ fn runs_costs_and_budget_alerts_come_from_the_disk() {
             created: now,
             started: Some(now),
             finished: Some(now),
+            provider: "claude".into(),
             model: None,
             usage: Some(Usage {
                 input: 1000,
@@ -308,4 +309,80 @@ fn the_timeout_can_be_infinite() {
     tab.press(KeyCode::Enter);
     assert_eq!(tab.config().global.timeout_min, Some(45));
     assert!(tab.screen().contains("45 min"));
+}
+
+#[test]
+fn the_provider_and_the_model_come_from_the_live_catalog() {
+    let mut tab = Tab::new("[agents.api]\ncwd = \"/p\"\nmodelo = \"opus\"\n");
+    let model = |id: &str, label: &str| crate::agent::ModelInfo {
+        id: id.into(),
+        label: label.into(),
+        description: String::new(),
+        resolved: None,
+        efforts: vec!["low".into(), "high".into()],
+    };
+    tab.view.offer_catalog(
+        "claude",
+        &Catalog {
+            models: vec![model("opus", "Opus 5.5"), model("haiku", "Haiku 5.5")],
+            ..Catalog::default()
+        },
+    );
+    tab.view.offer_catalog(
+        "antigravity",
+        &Catalog {
+            models: vec![model("gemini-3.8-flash", "Gemini 3.8 Flash")],
+            ..Catalog::default()
+        },
+    );
+    let screen = tab.screen();
+    assert!(
+        screen.contains("Provedor                claude"),
+        "{screen}"
+    );
+    assert!(screen.contains(" claude  Opus 5.5"), "{screen}");
+
+    // O Enter no Modelo abre o menu do /model, sem esforço, no modelo atual.
+    let field = Action::AgentField("api".into(), AgentKey::Model);
+    tab.select(&field);
+    tab.press(KeyCode::Enter);
+    assert_eq!(tab.view.help(), HELP_MODEL);
+    let screen = tab.screen();
+    assert!(screen.contains("Selecione o modelo do agente"), "{screen}");
+    assert!(!screen.contains("Esforço"), "{screen}");
+    tab.press(KeyCode::Down);
+    tab.press(KeyCode::Enter);
+    assert!(tab.view.model_menu.is_none());
+    assert_eq!(
+        tab.config().agent("api").unwrap().model.as_deref(),
+        Some("haiku")
+    );
+    // O Default tira o modelo.
+    tab.press(KeyCode::Enter);
+    tab.press(KeyCode::Up);
+    tab.press(KeyCode::Up);
+    tab.press(KeyCode::Enter);
+    assert_eq!(tab.config().agent("api").unwrap().model, None);
+
+    // Trocar o provedor tira o modelo; o menu passa a ser o do agy.
+    tab.press(KeyCode::Right);
+    assert!(tab.config().agent("api").unwrap().model.is_some());
+    tab.select(&Action::AgentField("api".into(), AgentKey::Provider));
+    tab.press(KeyCode::Right);
+    let config = tab.config();
+    let api = config.agent("api").unwrap();
+    assert!(api.is_antigravity());
+    assert_eq!(api.model, None);
+    tab.select(&field);
+    tab.press(KeyCode::Right);
+    assert_eq!(
+        tab.config().agent("api").unwrap().model.as_deref(),
+        Some("gemini-3.8-flash")
+    );
+    let screen = tab.screen();
+    assert!(
+        screen.contains(" antigravity  Gemini 3.8 Flash"),
+        "{screen}"
+    );
+    assert!(screen.contains("não vale no antigravity"), "{screen}");
 }

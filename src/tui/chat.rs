@@ -11,10 +11,12 @@
 mod inbox;
 pub(super) mod model_menu;
 mod permission;
+mod record;
 #[cfg(test)]
 mod tests;
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -27,6 +29,7 @@ use ratatui::widgets::{Block, BorderType, Gauge, Paragraph};
 
 use self::model_menu::{ModelMenu, Target, effort_label};
 use self::permission::{Kind, Prompts};
+use self::record::Recorder;
 use super::history::{Entry, History};
 use super::input::extensions::{self, AgentStatus, mode_variant};
 use super::input::{self, InputBox, InputMode, Outcome, commands};
@@ -36,6 +39,7 @@ use crate::agent::{
     self, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, PermissionMode,
     ReportedMode, Request, Session, UsageWindow,
 };
+use crate::db::history::Conversation;
 use crate::extension::Contribution;
 use crate::platform::clipboard;
 use crate::settings::{AgentSettings, ContextSettings, StartMode, UsageSettings};
@@ -115,6 +119,9 @@ pub struct Chat {
     /// Modo em que o agente disse estar (no `init`) na última resposta.
     agent_mode: Option<PermissionMode>,
     history: History,
+    /// Grava a conversa no histórico do workspace (`None` nas abas de uma
+    /// execução despachada e nos testes).
+    recorder: Option<Recorder>,
     input: InputBox,
     /// Aviso temporário no rodapé (ex.: "Copiado") e ticks restantes.
     notice: Option<(String, u32)>,
@@ -126,6 +133,8 @@ pub struct Chat {
     tokens_used: u64,
     /// Os tokens de cache gastos neste chat.
     cache_tokens_used: u64,
+    /// O que o turno em andamento já somou nos dois acima (fora e de cache).
+    turn_spent: (u64, u64),
     /// Tamanho do contexto da sessão, depois da primeira chamada ao modelo.
     context: Option<u64>,
     /// Limite de contexto do modelo, quando o agente informa.
@@ -190,6 +199,7 @@ impl Default for Chat {
             requested_mode: None,
             agent_mode: None,
             history: History::default(),
+            recorder: None,
             input: InputBox::default(),
             notice: None,
             agent_status: AgentStatus::default(),
@@ -198,6 +208,7 @@ impl Default for Chat {
             spinner_frame: 0,
             tokens_used: 0,
             cache_tokens_used: 0,
+            turn_spent: (0, 0),
             context: None,
             context_window: None,
             context_settings: ContextSettings::default(),
@@ -278,6 +289,11 @@ impl Chat {
             self.load_catalog();
         }
         if account_changed && self.session_id.is_some() {
+            self.save_history();
+            let written = self.history.entries().len();
+            if let Some(recorder) = &mut self.recorder {
+                recorder.new_conversation(written);
+            }
             self.session_id = None;
             self.agent_mode = None;
             self.model = None;
@@ -726,8 +742,8 @@ impl Chat {
                 self.default_choice = Some((model, effort));
             }
             // Só a Config abre o menu dos sub agentes, e só a aba
-            // Orquestrador o dos chats delegados.
-            Target::Subagent => {}
+            // Orquestrador o dos agentes despachados.
+            Target::Subagent | Target::Dispatched => {}
         }
         self.history.follow();
     }
@@ -800,6 +816,11 @@ impl Chat {
     /// `/clear`: começa uma conversa nova, com o histórico limpo.
     fn clear_conversation(&mut self) {
         self.run = None;
+        self.turn_spent = (0, 0);
+        self.save_history();
+        if let Some(recorder) = &mut self.recorder {
+            recorder.new_conversation(0);
+        }
         self.prompts.clear();
         self.allowed.clear();
         self.session_id = None;
@@ -880,7 +901,7 @@ impl Chat {
         }
         // O `/agente <nome>` é o único comando do terra com argumento.
         if let Some(arg) = prompt.strip_prefix("/agente ") {
-            self.input.remember();
+            self.remember_sent(&prompt);
             self.input.clear();
             self.agent_command(arg.trim());
             self.history.follow();
@@ -889,22 +910,32 @@ impl Chat {
         if let Some(name) = prompt.strip_prefix('/')
             && commands::has_interface(name)
         {
-            self.input.remember();
+            self.remember_sent(&prompt);
             self.input.clear();
             self.run_command(name);
             return;
         }
         if prompt.starts_with('/') && self.route_to_provider(&prompt) {
-            self.input.remember();
+            self.remember_sent(&prompt);
             self.input.clear();
             self.history.follow();
             return;
         }
         if self.start(&prompt, Entry::User(prompt.clone())) {
-            self.input.remember();
+            self.remember_sent(&prompt);
             self.input.clear();
             // A auto compactação é para as mensagens, não para os comandos.
             self.auto_compact_armed = !prompt.starts_with('/');
+        }
+    }
+
+    /// Guarda a mensagem enviada para o ↑, nesta execução e no workspace.
+    fn remember_sent(&mut self, prompt: &str) {
+        self.input.remember();
+        if let Some(recorder) = &mut self.recorder
+            && let Err(err) = recorder.remember_sent(prompt)
+        {
+            self.recording_failed(err);
         }
     }
 
@@ -1016,6 +1047,7 @@ impl Chat {
     /// Interrompe a resposta em andamento (soltar a sessão a encerra).
     fn cancel(&mut self) {
         self.run = None;
+        self.turn_spent = (0, 0);
         self.prompts.clear();
         self.allowed.clear();
         self.auto_compact_armed = false;
@@ -1095,6 +1127,10 @@ impl Chat {
                 self.history
                     .push(Entry::Info("Conversa compactada.".to_string()));
             }
+            AgentEvent::Usage {
+                tokens,
+                cache_tokens,
+            } => self.count_turn(tokens, cache_tokens),
             AgentEvent::Done {
                 is_error,
                 message,
@@ -1102,8 +1138,10 @@ impl Chat {
                 cache_tokens,
                 denied,
             } => {
-                self.tokens_used += tokens;
-                self.cache_tokens_used += cache_tokens;
+                // Sem o uso no fim, fica o que o turno informou até aqui.
+                if tokens > 0 || cache_tokens > 0 {
+                    self.count_turn(tokens, cache_tokens);
+                }
                 if denied > 0 {
                     self.history.push(Entry::Info(format!(
                         "{denied} ferramenta(s) negada(s) no modo de permissão {}.",
@@ -1167,8 +1205,17 @@ impl Chat {
         }
     }
 
+    /// Troca o gasto do turno em andamento no consumo do chat.
+    fn count_turn(&mut self, tokens: u64, cache_tokens: u64) {
+        let (spent, cache_spent) = self.turn_spent;
+        self.tokens_used = self.tokens_used + tokens - spent;
+        self.cache_tokens_used = self.cache_tokens_used + cache_tokens - cache_spent;
+        self.turn_spent = (tokens, cache_tokens);
+    }
+
     fn finish(&mut self, is_error: bool) {
         self.run = None;
+        self.turn_spent = (0, 0);
         self.prompts.clear_asks();
         self.auto_compact_armed = false;
         self.agent_activity = None;
@@ -1186,6 +1233,47 @@ impl Chat {
             "Não foi possível copiar".to_string()
         };
         self.notice = Some((message, NOTICE_TICKS));
+    }
+
+    /// Grava a conversa no SQLite `file`, o histórico do workspace, e traz de
+    /// lá as últimas mensagens enviadas para o ↑.
+    pub fn set_history_file(&mut self, file: PathBuf) {
+        let mut recorder = Recorder::new(file);
+        match recorder.sent() {
+            Ok(sent) => self.input.set_sent(sent),
+            Err(err) => self.history.push(Entry::Error(format!(
+                "As últimas mensagens enviadas não foram carregadas: {err:#}"
+            ))),
+        }
+        self.recorder = Some(recorder);
+    }
+
+    /// Grava o que falta da conversa, mesmo uma resposta pela metade.
+    pub fn save_history(&mut self) {
+        self.record(self.history.entries().len());
+    }
+
+    /// Grava as `complete` primeiras entradas do histórico. Se não der, avisa
+    /// uma vez e para de gravar: a conversa continua na tela.
+    fn record(&mut self, complete: usize) {
+        let Some(recorder) = &mut self.recorder else {
+            return;
+        };
+        let info = Conversation {
+            provider: self.adapter.as_ref().map(|a| a.id()),
+            session_id: self.session_id.as_deref(),
+            model: self.model.as_deref(),
+        };
+        if let Err(err) = recorder.save(&self.history.entries()[..complete], info) {
+            self.recording_failed(err);
+        }
+    }
+
+    fn recording_failed(&mut self, err: anyhow::Error) {
+        self.recorder = None;
+        self.history.push(Entry::Error(format!(
+            "O histórico de conversas não foi salvo: {err:#}"
+        )));
     }
 
     /// Avança o spinner, o cursor piscante e os avisos, e lê o que o agente
@@ -1217,6 +1305,11 @@ impl Chat {
         for event in events {
             self.apply(event);
         }
+        // A resposta que ainda está chegando é gravada quando terminar.
+        let entries = self.history.entries();
+        let streaming = self.run.is_some() && matches!(entries.last(), Some(Entry::Assistant(_)));
+        let complete = entries.len() - usize::from(streaming);
+        self.record(complete);
         self.history.tick();
         self.input.tick();
         if let Some((_, ticks)) = &mut self.notice {

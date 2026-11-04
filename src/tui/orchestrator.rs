@@ -21,6 +21,8 @@
 //!  Agentes despachados
 //!   api              despachado · rodando · 3/40 hoje
 //!       Pasta                   /proj/api
+//!       Provedor                Claude
+//!       Modelo                  [Claude] Opus - 5.5
 //!       …
 //!   + Novo agente
 //!
@@ -33,6 +35,12 @@
 //! aba (ou abre a saída de uma execução); `d` duas vezes tira um agente,
 //! uma regra ou um modelo; `p` pausa ou retoma todos os despachos.
 //!
+//! O provedor de um agente passa entre os que o hub sabe lançar, e trocá-lo
+//! tira o modelo (o id de um não vale no outro). No Modelo, o `Enter` abre o
+//! menu do `/model` com o catálogo ao vivo do provedor do agente, carregado
+//! em segundo plano como o do chat; o `←`/`→` passa pelo padrão, pelos
+//! modelos do catálogo e pelos apelidos de `[modelos]`.
+//!
 //! Toda mudança passa pelo [`Editor`]: ela mantém os comentários do arquivo
 //! e só é gravada se o arquivo continuar válido; senão, o erro aparece no pé
 //! e nada muda. O hub relê o arquivo a cada segundo. Um arquivo inválido
@@ -41,7 +49,9 @@
 mod rows;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -52,8 +62,11 @@ use ratatui::widgets::{Block, Padding, Paragraph};
 
 pub use self::rows::Hub as HubView;
 use self::rows::{Action, AgentKey, GlobalKey, RoutingKey};
+use super::chat::model_menu::{self, ModelMenu};
+use crate::agent::Catalog;
+use crate::agent::adapters::{self, ProviderOption};
 use crate::hub::protocol::Instance;
-use crate::orchestrator::config::{Config, INFINITE, RunMode};
+use crate::orchestrator::config::{Config, INFINITE, PROVIDERS, RunMode};
 use crate::orchestrator::edit::{self, Editor};
 use crate::orchestrator::message::{self, Saved};
 use crate::orchestrator::run::{self, Run};
@@ -61,6 +74,7 @@ use crate::theme;
 
 pub const HELP: &str = "↑/↓ escolher · ←/→ mudar · Enter editar · d tirar · p pausar · Tab trocar aba · Esc ir para Sair";
 const HELP_PROMPT: &str = "Enter salvar · Esc cancelar";
+const HELP_MODEL: &str = "↑/↓ escolher · Enter selecionar · Esc fechar";
 /// De quanto em quanto tempo a aba relê o arquivo, as execuções e as
 /// mensagens.
 const REFRESH: Duration = Duration::from_secs(1);
@@ -78,6 +92,10 @@ pub struct Data {
     pub runs: Vec<Run>,
     /// As mais novas primeiro.
     pub messages: Vec<Saved>,
+    /// Os provedores, com o nome e se estão instalados.
+    pub providers: Vec<ProviderOption>,
+    /// Os catálogos que já chegaram, por provedor.
+    pub catalogs: HashMap<String, Catalog>,
     loaded: Option<Instant>,
 }
 
@@ -89,6 +107,8 @@ impl Default for Data {
             config: Ok(Config::default()),
             runs: Vec::new(),
             messages: Vec::new(),
+            providers: Vec::new(),
+            catalogs: HashMap::new(),
             loaded: None,
         }
     }
@@ -121,6 +141,14 @@ impl Data {
         if self.loaded.is_none_or(|t| t.elapsed() >= REFRESH) {
             self.reload();
         }
+    }
+
+    /// O nome do provedor para a tela (ex.: `Claude`).
+    pub fn provider_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.providers
+            .iter()
+            .find(|p| p.id == id)
+            .map_or(id, |p| p.name.as_str())
     }
 }
 
@@ -168,6 +196,10 @@ pub struct OrchestratorView {
     /// As instâncias do último desenho: as linhas dos workspaces são
     /// escolhíveis, e as teclas chegam sem o hub.
     hub: RefCell<Option<(bool, Vec<Instance>)>>,
+    /// O menu do `/model` aberto e o agente que ele escolhe.
+    model_menu: Option<(String, ModelMenu)>,
+    /// Os catálogos que estão carregando, por provedor.
+    loading: HashMap<String, Receiver<Result<Catalog, String>>>,
 }
 
 impl OrchestratorView {
@@ -179,10 +211,63 @@ impl OrchestratorView {
     }
 
     pub fn help(&self) -> &'static str {
-        if self.prompt.is_some() {
+        if self.model_menu.is_some() {
+            HELP_MODEL
+        } else if self.prompt.is_some() {
             HELP_PROMPT
         } else {
             HELP
+        }
+    }
+
+    /// O catálogo do provedor `id`, se já chegou.
+    fn catalog(&self, id: &str) -> Option<&Catalog> {
+        self.data.catalogs.get(id)
+    }
+
+    /// Um catálogo que o app já tem (o do chat, do provedor `id`): a aba não
+    /// precisa carregar de novo.
+    pub fn offer_catalog(&mut self, id: &str, catalog: &Catalog) {
+        if !self.data.catalogs.contains_key(id) {
+            self.loading.remove(id);
+            self.data.catalogs.insert(id.to_string(), catalog.clone());
+        }
+    }
+
+    /// Começa a carregar, em segundo plano, o catálogo dos provedores dos
+    /// agentes que ainda não o têm, e recebe os que chegaram. Um erro deixa
+    /// o catálogo vazio, para não carregar de novo a cada tick.
+    pub fn load_catalogs(&mut self) {
+        let used: Vec<String> = self
+            .config()
+            .map(|c| c.agents.iter().map(|a| a.provider().to_string()).collect())
+            .unwrap_or_default();
+        for id in used {
+            if self.data.catalogs.contains_key(&id) || self.loading.contains_key(&id) {
+                continue;
+            }
+            let receiver = adapters::select(Some(&id)).load_catalog(None);
+            match receiver {
+                Some(receiver) => {
+                    self.loading.insert(id, receiver);
+                }
+                None => {
+                    self.data.catalogs.insert(id, Catalog::default());
+                }
+            }
+        }
+        let arrived: Vec<(String, Catalog)> = self
+            .loading
+            .iter()
+            .filter_map(|(id, rx)| {
+                rx.try_recv()
+                    .ok()
+                    .map(|r| (id.clone(), r.unwrap_or_default()))
+            })
+            .collect();
+        for (id, catalog) in arrived {
+            self.loading.remove(&id);
+            self.data.catalogs.insert(id, catalog);
         }
     }
 
@@ -207,6 +292,10 @@ impl OrchestratorView {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Outcome {
+        if self.model_menu.is_some() {
+            self.menu_key(key);
+            return Outcome::Handled;
+        }
         if self.prompt.is_some() {
             self.prompt_key(key);
             return Outcome::Handled;
@@ -320,11 +409,37 @@ impl OrchestratorView {
                 let next = (i64::from(n) + step).clamp(1, i64::from(u32::MAX)) as u32;
                 self.edit(|e| e.set_global(key.key(), edit::number(next)));
             }
+            Action::AgentField(name, AgentKey::Provider) => {
+                let Some(agent) = config.agent(&name) else {
+                    return;
+                };
+                let i = PROVIDERS
+                    .iter()
+                    .position(|p| *p == agent.provider())
+                    .unwrap_or(0);
+                let next = PROVIDERS[(i as i64 + step).rem_euclid(PROVIDERS.len() as i64) as usize];
+                // O id do modelo de um provedor não vale no outro.
+                self.edit(|e| {
+                    e.set_agent(&name, "provedor", Some(next.into()));
+                    e.set_agent(&name, "modelo", None);
+                });
+            }
             Action::AgentField(name, AgentKey::Model) => {
                 let Some(agent) = config.agent(&name) else {
                     return;
                 };
+                // O padrão, os modelos do catálogo e os apelidos.
+                let models = self
+                    .catalog(agent.provider())
+                    .map(|c| {
+                        c.models
+                            .iter()
+                            .map(|m| Some(m.id.clone()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 let options: Vec<Option<String>> = std::iter::once(None)
+                    .chain(models)
                     .chain(config.models.iter().map(|(alias, _)| Some(alias.clone())))
                     .collect();
                 let i = options.iter().position(|o| *o == agent.model).unwrap_or(0);
@@ -398,13 +513,27 @@ impl OrchestratorView {
                 String::new(),
                 Target::NewAgent,
             ),
+            Action::AgentField(name, AgentKey::Model) => {
+                let Some(agent) = config.agent(&name) else {
+                    return Outcome::Handled;
+                };
+                let catalog = self.catalog(agent.provider());
+                let mut menu = ModelMenu::dispatched(agent.model.clone(), catalog);
+                menu.sync(catalog);
+                self.model_menu = Some((name, menu));
+                return Outcome::Handled;
+            }
+            Action::AgentField(_, AgentKey::Provider) => {
+                self.change(1);
+                return Outcome::Handled;
+            }
             Action::AgentField(name, key) => {
                 let Some(agent) = config.agent(&name) else {
                     return Outcome::Handled;
                 };
                 let label = match key {
                     AgentKey::Tools => format!("{name}: ferramentas, separadas por vírgula"),
-                    AgentKey::Model => format!("{name}: modelo (um apelido de [modelos] ou um id)"),
+                    AgentKey::Model | AgentKey::Provider => format!("{name}: {}", key.key()),
                     AgentKey::MaxTurns | AgentKey::Budget => {
                         format!("{name}: {} (vazio é sem limite)", key.key())
                     }
@@ -454,6 +583,27 @@ impl OrchestratorView {
         Outcome::Handled
     }
 
+    /// As teclas do menu do `/model`: escolher grava o `modelo` do agente;
+    /// o Default o tira.
+    fn menu_key(&mut self, key: KeyEvent) {
+        let Some((name, mut menu)) = self.model_menu.take() else {
+            return;
+        };
+        let provider = self
+            .config()
+            .and_then(|c| c.agent(&name))
+            .map(|a| a.provider().to_string())
+            .unwrap_or_default();
+        match menu.handle_key(key, self.data.catalogs.get(&provider)) {
+            model_menu::Outcome::Handled => self.model_menu = Some((name, menu)),
+            model_menu::Outcome::Close => {}
+            model_menu::Outcome::Chosen { model, .. } => {
+                self.edit(|e| e.set_agent(&name, "modelo", Some(model.as_str().into())));
+            }
+            model_menu::Outcome::Unset(_) => self.edit(|e| e.set_agent(&name, "modelo", None)),
+        }
+    }
+
     fn prompt_key(&mut self, key: KeyEvent) {
         let Some(prompt) = &mut self.prompt else {
             return;
@@ -490,7 +640,9 @@ impl OrchestratorView {
             Target::AgentField(name, key) => {
                 let value = match key {
                     AgentKey::Cwd => Some(cwd.join(&text).to_string_lossy().as_ref().into()),
-                    AgentKey::Model => (!text.is_empty()).then(|| text.as_str().into()),
+                    AgentKey::Model | AgentKey::Provider => {
+                        (!text.is_empty()).then(|| text.as_str().into())
+                    }
                     AgentKey::Tools => {
                         let tools: Vec<String> = text
                             .split(',')
@@ -587,6 +739,20 @@ impl OrchestratorView {
             (None, None) => Line::default(),
         };
         frame.render_widget(Paragraph::new(foot_line), foot);
+        if let Some((name, menu)) = &self.model_menu {
+            // Como o da Config: acima do pé da aba.
+            let bottom = Rect {
+                y: area.bottom(),
+                height: 0,
+                ..area
+            };
+            let provider = self
+                .config()
+                .and_then(|c| c.agent(name))
+                .map_or("claude", |a| a.provider());
+            let label = |m: &crate::agent::ModelInfo| rows::model_label(provider, m);
+            menu.draw(frame, bottom, self.catalog(provider), &label);
+        }
     }
 }
 

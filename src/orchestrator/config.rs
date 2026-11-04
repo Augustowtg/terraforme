@@ -13,6 +13,7 @@
 //!
 //! [agents.backend]
 //! cwd = "/proj/api"
+//! provedor = "claude"            # "claude" (padrão) ou "antigravity"
 //! modelo = "forte"
 //! ferramentas = ["Read", "Edit", "Bash(npm test:*)", "Bash(terra:*)"]
 //! max_turnos = 30
@@ -55,6 +56,10 @@ pub enum RunMode {
     Background,
 }
 
+/// Os provedores que o hub sabe lançar (os ids de
+/// [`crate::agent::adapters::options`]); o primeiro é o padrão.
+pub const PROVIDERS: [&str; 2] = ["claude", "antigravity"];
+
 /// O valor do `tempo_limite_min` sem limite.
 pub const INFINITE: &str = "infinito";
 
@@ -94,7 +99,10 @@ pub struct Agent {
     pub name: String,
     /// A pasta onde a execução roda.
     pub cwd: PathBuf,
-    /// Um apelido de `[modelos]` ou o id de um modelo; `None` é o padrão.
+    /// Um dos [`PROVIDERS`]; `None` é o Claude.
+    pub provider: Option<String>,
+    /// Um apelido de `[modelos]` ou o id de um modelo do provedor; `None` é
+    /// o padrão dele.
     pub model: Option<String>,
     /// As ferramentas liberadas (`--allowedTools`).
     pub tools: Vec<String>,
@@ -104,6 +112,19 @@ pub struct Agent {
     /// Sem o `ambiente = "completo"`, a execução sobe enxuta: só as
     /// ferramentas da lista, sem MCP, skills nem hooks.
     pub full_env: bool,
+}
+
+impl Agent {
+    /// O id do provedor: o escolhido ou o Claude.
+    pub fn provider(&self) -> &str {
+        self.provider.as_deref().unwrap_or(PROVIDERS[0])
+    }
+
+    /// Roda no Antigravity, que não tem lista de ferramentas nem limite de
+    /// turnos no `-p`.
+    pub fn is_antigravity(&self) -> bool {
+        self.provider() == "antigravity"
+    }
 }
 
 /// Uma regra do `[[roteamento.regra]]`: a tag escolhe o modelo.
@@ -286,6 +307,7 @@ fn agent(name: &str, table: &dyn TableLike, at: &str) -> Result<Agent, String> {
     let mut agent = Agent {
         name: name.to_string(),
         cwd: PathBuf::new(),
+        provider: None,
         model: None,
         tools: Vec::new(),
         max_turns: None,
@@ -296,6 +318,16 @@ fn agent(name: &str, table: &dyn TableLike, at: &str) -> Result<Agent, String> {
         let at = format!("{at}.{key}");
         match key {
             "cwd" => agent.cwd = PathBuf::from(text_of(item, &at)?),
+            "provedor" => {
+                let provider = text_of(item, &at)?;
+                if !PROVIDERS.contains(&provider.as_str()) {
+                    return Err(format!(
+                        "{at}: \"{provider}\" não é {}",
+                        PROVIDERS.map(|p| format!("\"{p}\"")).join(" nem ")
+                    ));
+                }
+                agent.provider = Some(provider);
+            }
             "modelo" => agent.model = Some(text_of(item, &at)?),
             "ferramentas" => agent.tools = texts(item, &at)?,
             "max_turnos" => agent.max_turns = Some(positive(item, &at)?),
@@ -432,10 +464,21 @@ modelo = "leve"
         assert_eq!(backend.tools.len(), 4);
         assert_eq!(backend.max_turns, Some(30));
         assert_eq!(backend.daily_budget, Some(40));
+        assert_eq!(backend.provider(), "claude");
+        assert!(!backend.is_antigravity());
         assert_eq!(config.model_id("forte"), "opus");
         assert_eq!(config.model_id("sonnet"), "sonnet");
         assert!(!config.routing.active);
         assert_eq!(config.routing.rules[0].tag, "testes");
+    }
+
+    #[test]
+    fn the_provider_is_claude_or_antigravity() {
+        let config =
+            Config::parse("[agents.web]\ncwd = \"/w\"\nprovedor = \"antigravity\"\n").unwrap();
+        let web = config.agent("web").unwrap();
+        assert_eq!(web.provider(), "antigravity");
+        assert!(web.is_antigravity());
     }
 
     #[test]
@@ -459,6 +502,9 @@ modelo = "leve"
         assert!(err("[agents.api]\ncwd = \"/x\"\nferramentas = \"Read\"").contains("lista"));
         assert!(err("[roteamento]\npadrao = \"forte\"").contains("[modelos]"));
         assert!(err("[outra]").contains("[outra]"));
+        assert!(
+            err("[agents.api]\ncwd = \"/x\"\nprovedor = \"gpt\"").contains("agents.api.provedor")
+        );
         assert!(err("[global").contains("TOML inválido"));
     }
 

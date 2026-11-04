@@ -1,13 +1,14 @@
-//! Uma execução despachada: o `claude` em modo não interativo que processa
-//! uma mensagem para um agente da configuração.
+//! Uma execução despachada: o `claude` (ou o `agy`, no provedor
+//! Antigravity) em modo não interativo que processa uma mensagem para um
+//! agente da configuração.
 //!
 //! Cada execução fica em `~/.terraforme/runs/<id>/`:
 //!
 //! | Arquivo | O que é |
 //! | --- | --- |
-//! | `run.json` | O registro: agente, mensagem, estado, tempos, modelo, uso e erro |
-//! | `output.jsonl` | A saída do `claude` (`--output-format stream-json`) |
-//! | `stderr.log` | O erro do `claude` |
+//! | `run.json` | O registro: agente, mensagem, estado, tempos, provedor, modelo, uso e erro |
+//! | `output.jsonl` | A saída do agente (`--output-format stream-json`) |
+//! | `stderr.log` | O erro do agente |
 //!
 //! Estados: `queued → running → done | failed | timeout`, ou `rejected`
 //! (o orçamento recusou antes da fila).
@@ -18,7 +19,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::config::{Agent, Config};
+use super::config::{Agent, Config, PROVIDERS};
+use crate::agent::adapters::antigravity;
 
 /// Onde as execuções ficam, na pasta do terra.
 pub const DIR: &str = "runs";
@@ -114,6 +116,8 @@ pub struct Run {
     pub created: u64,
     pub started: Option<u64>,
     pub finished: Option<u64>,
+    /// O provedor com que rodou (um dos [`PROVIDERS`]).
+    pub provider: String,
     /// O id do modelo com que rodou.
     pub model: Option<String>,
     pub usage: Option<Usage>,
@@ -136,6 +140,7 @@ impl Run {
             "created": self.created,
             "started": self.started,
             "finished": self.finished,
+            "provider": self.provider,
             "model": self.model,
             "usage": self.usage.as_ref().map(Usage::to_json),
             "error": self.error,
@@ -157,6 +162,8 @@ impl Run {
             created: value["created"].as_u64().unwrap_or(0),
             started: value["started"].as_u64(),
             finished: value["finished"].as_u64(),
+            // Os registros de antes do provedor são do Claude.
+            provider: text("provider").unwrap_or_else(|| PROVIDERS[0].to_string()),
             model: text("model"),
             usage: Usage::from_json(&value["usage"]),
             error: text("error"),
@@ -166,6 +173,10 @@ impl Run {
 
     pub fn dir(&self, home: &Path) -> PathBuf {
         dir(home, &self.id)
+    }
+
+    pub fn is_antigravity(&self) -> bool {
+        self.provider == "antigravity"
     }
 
     /// Grava o `run.json` (temporário + rename).
@@ -241,6 +252,28 @@ pub fn prompt(agent: &str, note: &Path, text: Option<&str>) -> String {
     )
 }
 
+/// Os argumentos de uma execução do `agent`, pelo provedor dele: os do
+/// [`claude_args`] ou, no Antigravity, os do [`antigravity::run_args`] (o
+/// modo auto e o modelo: o `-p` do `agy` não tem lista de ferramentas nem
+/// limite de turnos).
+pub fn args(agent: &Agent, config: &Config) -> Vec<String> {
+    if agent.is_antigravity() {
+        let model = agent.model.as_deref().map(|m| config.model_id(m));
+        return antigravity::run_args(model);
+    }
+    claude_args(agent, config)
+}
+
+/// O que vai na entrada do agente: o prompt, como texto para o `claude` e
+/// como uma mensagem em stream-json para o `agy`.
+pub fn input(agent: &Agent, prompt: &str) -> String {
+    if agent.is_antigravity() {
+        antigravity::run_input(prompt)
+    } else {
+        prompt.to_string()
+    }
+}
+
 /// Os argumentos do `claude` de uma execução do `agent`: não interativo,
 /// com a saída em stream-json (para o uso de tokens), o modelo, só as
 /// ferramentas da configuração (o resto é negado sem perguntar) e o limite
@@ -248,7 +281,7 @@ pub fn prompt(agent: &str, note: &Path, text: Option<&str>) -> String {
 /// só as ferramentas da lista são carregadas (`--tools`) e ficam de fora os
 /// servidores MCP, as skills e os hooks do usuário: eles custavam cerca de
 /// 20 mil tokens no começo de cada execução.
-pub fn args(agent: &Agent, config: &Config) -> Vec<String> {
+fn claude_args(agent: &Agent, config: &Config) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--output-format",
@@ -312,8 +345,12 @@ pub struct Outcome {
     pub model: Option<String>,
 }
 
-/// Lê o `result` (a última linha dele) e o modelo do `init` da saída.
-pub fn outcome(output: &str) -> Outcome {
+/// Lê o `result` (a última linha dele) e o modelo do `init` da saída: a do
+/// `claude` ou, com `antigravity`, a do `agy`.
+pub fn outcome(output: &str, antigravity: bool) -> Outcome {
+    if antigravity {
+        return agy_outcome(output);
+    }
     let mut result = None;
     let mut model = None;
     for line in output.lines() {
@@ -365,6 +402,64 @@ pub fn outcome(output: &str) -> Outcome {
     }
 }
 
+/// O [`outcome`] do `agy`: o `result` tem `status` e `error`, e o uso da
+/// execução é a soma dos `usage` das respostas do modelo (os passos
+/// `agent_response` em `DONE`; o do `result` é o da conversa inteira). O
+/// `agy` não informa o custo.
+fn agy_outcome(output: &str) -> Outcome {
+    let mut result = None;
+    let mut model = None;
+    let mut usage = Usage::default();
+    for line in output.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match value["event"].as_str() {
+            Some("init") => {
+                model = value["init"]["model"]
+                    .as_str()
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_string);
+            }
+            Some("step_update") => {
+                let step = &value["step_update"];
+                if step["state"] == "DONE" && step["step_type"] == "agent_response" {
+                    let tokens = |key: &str| step["usage"][key].as_u64().unwrap_or(0);
+                    usage.input += tokens("input_tokens");
+                    usage.output += tokens("output_tokens");
+                    usage.cache_read += tokens("cache_read_tokens");
+                }
+            }
+            Some("result") => result = Some(value["result"].clone()),
+            _ => {}
+        }
+    }
+    let Some(result) = result else {
+        return Outcome {
+            success: false,
+            usage: None,
+            error: Some("o agy terminou sem resultado".into()),
+            model,
+        };
+    };
+    usage.turns = result["num_turns"].as_u64().unwrap_or(0);
+    let success = result["status"] == "SUCCESS";
+    let error = (!success).then(|| {
+        result["error"]
+            .as_str()
+            .filter(|e| !e.is_empty())
+            .or(result["status"].as_str())
+            .unwrap_or("erro")
+            .to_string()
+    });
+    Outcome {
+        success,
+        usage: Some(usage),
+        error,
+        model,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +477,7 @@ mod tests {
             created,
             started: None,
             finished: None,
+            provider: "claude".into(),
             model: None,
             usage: None,
             error: None,
@@ -482,7 +578,7 @@ mod tests {
     fn the_outcome_comes_from_the_result_line() {
         let ok = r#"{"type":"system","subtype":"init","model":"claude-haiku-5-5"}
 {"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.0048,"usage":{"input_tokens":6,"output_tokens":590,"cache_read_input_tokens":64151,"cache_creation_input_tokens":19247}}"#;
-        let outcome = outcome(ok);
+        let outcome = outcome(ok, false);
         assert!(outcome.success);
         assert_eq!(outcome.model.as_deref(), Some("claude-haiku-5-5"));
         let usage = outcome.usage.unwrap();
@@ -490,14 +586,61 @@ mod tests {
         assert_eq!(usage.cache_read, 64151);
 
         let turns = r#"{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":2,"errors":["Reached maximum number of turns (1)"]}"#;
-        let failed = super::outcome(turns);
+        let failed = super::outcome(turns, false);
         assert!(!failed.success);
         assert_eq!(
             failed.error.as_deref(),
             Some("Reached maximum number of turns (1)")
         );
 
-        let nothing = super::outcome("não é json\n");
+        let nothing = super::outcome("não é json\n", false);
         assert!(!nothing.success && nothing.usage.is_none());
+    }
+
+    #[test]
+    fn the_antigravity_runs_agy_in_auto_mode_with_the_model() {
+        let config = Config::parse(
+            "[agents.web]\ncwd = \"/w\"\nprovedor = \"antigravity\"\n\
+             modelo = \"gemini-3.8-flash\"\nferramentas = [\"Read\"]\nmax_turnos = 3\n",
+        )
+        .unwrap();
+        let web = config.agent("web").unwrap();
+        let args = args(web, &config);
+        let has = |pair: [&str; 2]| args.windows(2).any(|w| w == pair);
+        assert!(has(["--mode", "auto"]));
+        assert!(has(["--model", "gemini-3.8-flash"]));
+        assert!(has(["--input-format", "stream-json"]));
+        assert_eq!(args.last().map(String::as_str), Some("-p="));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "--allowedTools" || a == "--max-turns")
+        );
+        let input = input(web, "faça X");
+        assert!(input.ends_with('\n') && input.contains(r#""content":"faça X""#));
+    }
+
+    #[test]
+    fn the_outcome_of_agy_sums_the_model_calls() {
+        let ok = r#"{"event":"init","conversation_id":"c1","init":{"model":"gemini-3.8-flash"}}
+{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"o","usage":{"input_tokens":5,"output_tokens":1}}}
+{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":100,"output_tokens":20,"cache_read_tokens":60}}}
+{"event":"step_update","step_update":{"step_index":4,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":50,"output_tokens":5}}}
+{"event":"result","result":{"status":"SUCCESS","response":"oi","num_turns":1,"usage":{"input_tokens":99999}}}"#;
+        let outcome = outcome(ok, true);
+        assert!(outcome.success);
+        assert_eq!(outcome.model.as_deref(), Some("gemini-3.8-flash"));
+        let usage = outcome.usage.unwrap();
+        assert_eq!((usage.input, usage.output, usage.cache_read), (150, 25, 60));
+        assert_eq!(usage.turns, 1);
+
+        let error = r#"{"event":"result","result":{"status":"ERROR","error":"You are not logged into Antigravity"}}"#;
+        let failed = super::outcome(error, true);
+        assert!(!failed.success);
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("You are not logged into Antigravity")
+        );
+        assert!(!super::outcome("", true).success);
     }
 }

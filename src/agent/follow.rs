@@ -1,6 +1,7 @@
 //! Acompanha a saída de uma execução despachada (`output.jsonl`, em
 //! stream-json) como uma [`Session`]: a aba de execução é um chat só de
-//! leitura que mostra o que o `claude` faz enquanto ele roda.
+//! leitura que mostra o que o agente faz enquanto ele roda. Cada provedor
+//! passa o leitor do stream dele.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -9,8 +10,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
-use super::stream::StreamParser;
-use crate::agent::{AgentEvent, Session};
+use super::{AgentEvent, Session};
 
 /// A espera entre o fim do arquivo e a próxima leitura.
 const POLL: Duration = Duration::from_millis(200);
@@ -28,14 +28,18 @@ impl Session for Follow {
     fn respond(&mut self, _id: &str, _allow: bool) {}
 }
 
-/// Segue `path` até o `result` do `claude` (ou até a sessão ser fechada).
-/// Os pedidos de permissão não aparecem: a execução nega sozinha o que não
-/// está liberado, e o resultado diz o que foi negado.
-pub fn follow(path: &Path) -> Box<dyn Session> {
+/// Segue `path` até a linha do fim (a que contém `end`) ou até a sessão ser
+/// fechada, transformando cada linha em eventos com `parse`. Os pedidos de
+/// permissão não aparecem: a execução nega sozinha o que não está liberado,
+/// e o resultado diz o que foi negado.
+pub fn follow(
+    path: &Path,
+    end: &'static str,
+    mut parse: impl FnMut(&str) -> Vec<AgentEvent> + Send + 'static,
+) -> Box<dyn Session> {
     let (tx, events) = mpsc::channel();
     let path: PathBuf = path.to_path_buf();
     thread::spawn(move || {
-        let mut parser = StreamParser::default();
         let mut reader = None;
         let mut line = String::new();
         loop {
@@ -51,8 +55,8 @@ pub fn follow(path: &Path) -> Box<dyn Session> {
                 Ok(0) | Err(_) => thread::sleep(POLL),
                 Ok(_) if !line.ends_with('\n') => thread::sleep(POLL),
                 Ok(_) => {
-                    let end = line.contains("\"type\":\"result\"");
-                    for event in parser.parse(line.trim_end()) {
+                    let last = line.contains(end);
+                    for event in parse(line.trim_end()) {
                         if matches!(
                             event,
                             AgentEvent::PermissionRequest { .. } | AgentEvent::Blocked { .. }
@@ -64,7 +68,7 @@ pub fn follow(path: &Path) -> Box<dyn Session> {
                         }
                     }
                     line.clear();
-                    if end {
+                    if last {
                         return;
                     }
                 }
@@ -84,7 +88,7 @@ mod tests {
     fn follows_the_file_while_it_grows_until_the_result() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.jsonl");
-        let mut session = follow(&path);
+        let mut session = crate::agent::adapters::claude::follow(&path);
         let mut file = File::create(&path).unwrap();
         writeln!(file, r#"{{"type":"system","subtype":"init","session_id":"s","model":"claude-haiku-5-5","permissionMode":"dontAsk"}}"#).unwrap();
         write!(

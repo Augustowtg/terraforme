@@ -202,7 +202,7 @@ recolhe o processo se ele sair antes do terra (sem zumbi).
 - O status vai por **push quando muda**, sempre o estado inteiro; o `heartbeat` é só um "estou vivo" vazio.
 - O hub acrescenta ao objeto da instância: `health` (`alive`, `stale`, `gone`), `last_seen` (segundos Unix do último sinal) e `reason` (`exit`, `crash` ou `null`).
 - `changes` traz só os campos que mudaram; o monitor os copia por cima do objeto.
-- O `workspace` é o nome salvo do diretório ou, sem um, o nome da pasta (o mesmo das configurações do workspace). É por ele que a lista é separada.
+- O `workspace` é o nome salvo do diretório ou, sem um, o nome da pasta, com um sufixo (`projeto-2`) se outro diretório já usa esse nome (o mesmo das configurações do workspace). É por ele que a lista é separada.
 - Cada instância é uma **janela** (um `terra cli`). Em `tabs` vão as **abas com agente** dela: o chat principal e os do `Alt+N`, cada um com um id aleatório criado com o chat, o título, o nome de agente dado no `/agente` (`name`) e o que o agente faz (`task`, `null` quando parado). O `kind` é sempre `manual` por enquanto: o usuário abriu a aba e conversa nela.
 - **Uma linha tem no máximo 1 MB.** Quem recebe uma linha maior fecha a conexão, e quem envia não chega a mandá-la.
 - **O hub nunca escreve direto num cliente.** Cada conexão tem uma fila de saída de 256 mensagens e uma thread que escreve. Um cliente que não lê enche a fila e é desconectado (`cliente lento` no log), sem segurar o hub nem os outros. No Unix, a conexão fecha com um `shutdown`; no Windows, com o `DisconnectNamedPipe`.

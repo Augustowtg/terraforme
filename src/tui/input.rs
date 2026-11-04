@@ -105,7 +105,8 @@ pub struct InputBox {
     commands: Option<Vec<CommandInfo>>,
     /// Lista de padrões aberta pelo `&`.
     pattern_picker: Option<Picker>,
-    /// Mensagens enviadas nesta execução, a mais antiga primeiro.
+    /// Mensagens enviadas: as guardadas do workspace e as desta execução, a
+    /// mais antiga primeiro.
     sent: Vec<Draft>,
     /// A mensagem enviada mostrada com ↑/↓ e o texto que estava sendo
     /// escrito antes, para voltar a ele.
@@ -168,6 +169,18 @@ impl InputBox {
         if !draft.buffer.trim().is_empty() && self.sent.last() != Some(&draft) {
             self.sent.push(draft);
         }
+    }
+
+    /// As mensagens enviadas em outras execuções, a mais antiga primeiro; as
+    /// menções voltam como texto (`@caminho`).
+    pub fn set_sent(&mut self, messages: Vec<String>) {
+        self.sent = messages
+            .into_iter()
+            .map(|buffer| Draft {
+                buffer,
+                mentions: Vec::new(),
+            })
+            .collect();
     }
 
     /// Esvazia a caixa (depois de enviar), sem sair do modo atual.

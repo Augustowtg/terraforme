@@ -149,11 +149,24 @@ struct Workspace {
     saved: bool,
 }
 
-/// Os `config.json` do terra: o do workspace (as configurações) e o global
+/// Os arquivos do terra: o `config.json` do workspace (as configurações), o
+/// SQLite do workspace (o histórico de conversas) e o `config.json` global
 /// (as do orquestrador).
 pub struct ConfigFiles {
     pub workspace: PathBuf,
+    pub history: PathBuf,
     pub global: PathBuf,
+}
+
+impl ConfigFiles {
+    /// Cria o que falta do workspace (a pasta, o `config.json` e o histórico),
+    /// como o `terra.sqlite`, sem mexer no que já existe.
+    pub fn create(&self) -> anyhow::Result<()> {
+        crate::settings::create_file(&self.workspace)?;
+        crate::db::history::move_old_file(&self.history)?;
+        crate::db::history::ChatHistory::open(&self.history)?;
+        Ok(())
+    }
 }
 
 /// Um chat novo, aberto com `Alt+N`, além do principal.
@@ -195,6 +208,8 @@ pub struct App {
     /// O `config.json` do workspace, onde as configurações são salvas
     /// (`None` nos testes).
     config: Option<PathBuf>,
+    /// O SQLite do histórico de conversas do workspace (`None` nos testes).
+    history: Option<PathBuf>,
     /// A aba Orquestrador, com o que ela lê do disco.
     orchestrator_view: OrchestratorView,
     /// Os provedores conhecidos (Config e Orquestrador), detectados ao abrir.
@@ -234,14 +249,17 @@ impl App {
                 ..Default::default()
             },
         );
+        let mut chat = Chat::connect(&settings);
+        chat.set_history_file(files.history.clone());
         let mut app = Self {
-            chat: Chat::connect(&settings),
+            chat,
             chat_id: hub::protocol::new_id(),
             providers: crate::agent::adapters::options(),
             open_provider: settings.interface == Interface::Provider,
             settings,
             registry: Registry::detect(),
             config: Some(config),
+            history: Some(files.history),
             orchestrator_view: OrchestratorView::new(orchestrator_tab::Data::new(
                 hub::endpoint::Endpoint::current().ok().map(|e| e.home),
                 dir.clone(),
@@ -251,6 +269,7 @@ impl App {
             hub,
             ..Self::default()
         };
+        app.orchestrator_view.data.providers = app.providers.clone();
         app.load_extensions();
         app.update_view.check();
         app.migrate_orchestrator(&files.global);
@@ -292,6 +311,9 @@ impl App {
         let mut chat = Chat::connect(&self.settings);
         chat.set_extensions(self.chat.extensions().clone());
         chat.set_session_usage(self.session_usage.window().cloned());
+        if let Some(file) = &self.history {
+            chat.set_history_file(file.clone());
+        }
         let title = format!("Chat {}", self.chats.len() + 2);
         self.chats.push(ChatTab {
             id: hub::protocol::new_id(),
@@ -306,9 +328,18 @@ impl App {
     /// não fecha).
     fn close_chat(&mut self) {
         if self.active_chat > 0 {
-            let tab = self.chats.remove(self.active_chat - 1);
+            let mut tab = self.chats.remove(self.active_chat - 1);
+            tab.chat.save_history();
             self.closed_tokens += tab.chat.tokens_used();
             self.active_chat -= 1;
+        }
+    }
+
+    /// Grava o que falta dos chats no histórico do workspace, ao sair.
+    pub fn save_history(&mut self) {
+        self.chat.save_history();
+        for tab in &mut self.chats {
+            tab.chat.save_history();
         }
     }
 
@@ -835,6 +866,15 @@ impl App {
                 self.hub_monitor = Monitor::start();
             }
             self.orchestrator_view.data.refresh_if_stale();
+            // O catálogo do chat serve aos agentes do mesmo provedor; os
+            // outros carregam em segundo plano (só num workspace: não nos
+            // testes).
+            if let (Some(id), Some(catalog)) = (self.chat.provider_id(), self.chat.catalog()) {
+                self.orchestrator_view.offer_catalog(id, catalog);
+            }
+            if self.workspace.is_some() {
+                self.orchestrator_view.load_catalogs();
+            }
         }
     }
 
@@ -921,7 +961,7 @@ impl App {
     }
 
     /// Uma execução despachada começou: abre uma aba só de leitura que
-    /// acompanha a saída do `claude`. Ela vai para a frente só com
+    /// acompanha a saída do agente. Ela vai para a frente só com
     /// `aba_em_primeiro_plano` no `orchestrator.toml`.
     fn show_run(&mut self, run: &crate::orchestrator::run::Run, output: &std::path::Path) {
         self.push_run(run, output);
@@ -947,13 +987,24 @@ impl App {
             run.hops,
             run.note.display()
         );
-        use crate::agent::adapters::claude;
-        let session = claude::follow(output);
+        use crate::agent::adapters::{antigravity, claude};
+        // A saída de cada provedor tem o leitor dele.
+        let (session, provider): (_, super::chat::ViewerProvider) = if run.is_antigravity() {
+            (
+                antigravity::follow(output),
+                (antigravity::NAME, str::to_string),
+            )
+        } else {
+            (
+                claude::follow(output),
+                (claude::NAME, claude::display_model),
+            )
+        };
         self.chats.push(ChatTab {
             id: hub::protocol::new_id(),
             run: Some(run.id.clone()),
             title: format!("▶ {}", run.agent),
-            chat: Chat::viewer(session, intro, (claude::NAME, claude::display_model)),
+            chat: Chat::viewer(session, intro, provider),
         });
     }
 
@@ -1628,6 +1679,32 @@ mod tests {
         assert!(app.term.is_some());
     }
 
+    #[test]
+    fn opening_creates_the_workspace_and_keeps_what_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = ConfigFiles {
+            workspace: crate::settings::config_file(dir.path(), "projeto"),
+            history: crate::settings::history_file(dir.path(), "projeto"),
+            global: crate::settings::global_file(dir.path()),
+        };
+
+        files.create().unwrap();
+        assert_eq!(
+            AgentSettings::load_file(&files.workspace),
+            Some(AgentSettings::default()),
+            "o arquivo novo é o padrão do router"
+        );
+        assert!(files.history.is_file());
+
+        let settings = AgentSettings {
+            model: Some("opus".into()),
+            ..AgentSettings::default()
+        };
+        settings.save_file(&files.workspace).unwrap();
+        files.create().unwrap();
+        assert_eq!(AgentSettings::load_file(&files.workspace), Some(settings));
+    }
+
     /// Uma tela num workspace não salvo, com o `config.json` em `dir`.
     fn unsaved_app(dir: &std::path::Path) -> App {
         App {
@@ -1839,6 +1916,7 @@ mod tests {
             created: 0,
             started: None,
             finished: None,
+            provider: "claude".into(),
             model: None,
             usage: None,
             error: None,
