@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::parse_mode;
-use crate::agent::{AgentEvent, ReportedMode};
+use crate::agent::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
 
 /// Tamanho máximo do detalhe de uma ferramenta ou resultado na tela.
 const DETAIL_MAX: usize = 80;
@@ -30,6 +30,12 @@ pub struct StreamParser {
     /// O uso de cada mensagem do agente principal nesta resposta, na ordem de
     /// [`USAGE_KEYS`]. A mesma mensagem informa o uso várias vezes.
     spent: HashMap<String, [u64; 4]>,
+    /// Os caracteres que a mensagem principal já escreveu, e os tokens que ela
+    /// já pensou: até o `message_delta`, a saída informada fica parada.
+    written_chars: u64,
+    thinking_tokens: u64,
+    /// O último gasto informado com [`AgentEvent::Usage`].
+    reported: (u64, u64),
     /// Mensagens cujo texto já chegou em trechos; o texto inteiro que vem
     /// depois nelas é ignorado para não duplicar.
     streamed: HashSet<String>,
@@ -63,9 +69,17 @@ impl StreamParser {
         let (id, usage) = match (value["type"].as_str(), event["type"].as_str()) {
             (Some("stream_event"), Some("message_start")) => {
                 self.main_message = event["message"]["id"].as_str().map(str::to_string);
+                self.written_chars = 0;
+                self.thinking_tokens = 0;
                 (self.main_message.clone()?, &event["message"]["usage"])
             }
+            (Some("stream_event"), Some("content_block_delta")) => {
+                self.count_written(&event["delta"]);
+                return self.report_usage();
+            }
             (Some("stream_event"), Some("message_delta")) => {
+                self.written_chars = 0;
+                self.thinking_tokens = 0;
                 (self.main_message.clone()?, &event["usage"])
             }
             (Some("assistant"), _) => (
@@ -78,17 +92,41 @@ impl StreamParser {
         // Campo a campo: o `message_delta` pode trazer só a saída, e uma linha
         // atrasada não diminui o que a mensagem já informou.
         let updated = USAGE_KEYS.map(|key| usage[key].as_u64().unwrap_or(0));
-        let updated = std::array::from_fn(|i| spent[i].max(updated[i]));
-        if updated == *spent {
-            return None;
-        }
-        *spent = updated;
+        *spent = std::array::from_fn(|i| spent[i].max(updated[i]));
+        self.report_usage()
+    }
+
+    /// Soma um trecho da mensagem em andamento: o texto, a entrada de uma
+    /// ferramenta ou o pensamento, que vem sem o texto, só com a estimativa.
+    fn count_written(&mut self, delta: &Value) {
+        let chars = ["text", "partial_json"]
+            .iter()
+            .filter_map(|key| delta[*key].as_str())
+            .map(|text| text.chars().count() as u64)
+            .sum::<u64>();
+        self.written_chars += chars;
+        self.thinking_tokens += delta["estimated_tokens"].as_u64().unwrap_or(0);
+    }
+
+    /// O [`AgentEvent::Usage`] do gasto até aqui, se ele mudou.
+    fn report_usage(&mut self) -> Option<AgentEvent> {
         let (tokens, cache_tokens) = self.spent.values().fold((0, 0), |sum, spent| {
             (sum.0 + spent[0] + spent[1], sum.1 + spent[2] + spent[3])
         });
+        let informed = self
+            .main_message
+            .as_ref()
+            .and_then(|id| self.spent.get(id))
+            .map_or(0, |spent| spent[1]);
+        let estimate = self.thinking_tokens + self.written_chars / CHARS_PER_TOKEN;
+        let reported = (tokens + estimate.saturating_sub(informed), cache_tokens);
+        if reported == self.reported {
+            return None;
+        }
+        self.reported = reported;
         Some(AgentEvent::Usage {
-            tokens,
-            cache_tokens,
+            tokens: reported.0,
+            cache_tokens: reported.1,
         })
     }
 
@@ -416,6 +454,38 @@ mod tests {
             })
             .collect();
         assert_eq!(usage, [(11, 100), (30, 100), (36, 100), (38, 100)]);
+    }
+
+    #[test]
+    fn usage_grows_while_the_message_is_generated() {
+        let events = parse_all(&[
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"m1","usage":{"input_tokens":2,"cache_read_input_tokens":100,"output_tokens":2}}}}"#,
+            // O pensamento vem sem texto, com a estimativa do trecho.
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"","estimated_tokens":null}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"abcdefghijklmnopqrstuvwxyz"}}}"#,
+            // O texto e a entrada de uma ferramenta contam pelos caracteres.
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"abcdefgh"}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"abcd"}}}"#,
+            // O subagente fica de fora.
+            r#"{"type":"stream_event","parent_tool_use_id":"t1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"abcdefghijklmnopqrstuvwxyz"}}}"#,
+            // O `assistant` no meio da mensagem não desfaz a estimativa.
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m1","usage":{"input_tokens":2,"cache_read_input_tokens":100,"output_tokens":2},"content":[]}}"#,
+            // O `message_delta` troca a estimativa pelo uso de verdade.
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_delta","usage":{"output_tokens":40}}}"#,
+            // A chamada seguinte estima do zero, em cima da anterior.
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"m2","usage":{"input_tokens":1,"output_tokens":1}}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"abcdefgh"}}}"#,
+        ]);
+        let usage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Usage { tokens, .. } => Some(*tokens),
+                _ => None,
+            })
+            .collect();
+        // 2 + 2; 2 + 50; + 2 do texto; + 1 da ferramenta; 2 + 40; + 2; + 1.
+        assert_eq!(usage, [4, 52, 54, 55, 42, 44, 45]);
     }
 
     #[test]

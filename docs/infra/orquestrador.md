@@ -18,8 +18,6 @@ depois, controlar os terminais e os sub agentes. Hoje (v0.12.0), o hub:
       ● Studio-4242              Principal, api               rodando · 5 min
       ● Studio-4300              Principal                    parado · 2 min
    ▸ smart-mecanica · 1 instância
-   Sub agentes em execução
-      ▶ api              1a2b3c4d  nível 2
 
  Configuração
    Modo de execução        Demonstrativo (visível nas abas)
@@ -413,7 +411,7 @@ local), fora as recusadas. Esgotado, a mensagem é recusada (`orcamento`), a
 execução fica `rejected` e o hub avisa: no `hub.log` e aos monitores
 (`{"t":"budget","agent":…,"used":…,"limit":…,"blocked":true}`). A partir de
 80%, o mesmo aviso sai com `"blocked":false`. A aba Orquestrador mostra esses
-avisos na Fase 4.
+avisos em **Custos de hoje**.
 
 ### O escalonamento
 
@@ -473,4 +471,4 @@ tail -f ~/.terraforme/hub.log
 
 ## Próximos passos
 
-- **Fase 4, aba Orquestrador**: todas as seções (agentes, filas, mensagens, custos, guardrails, roteamento e o interruptor geral), com a recarga a quente do `orchestrator.toml`.
+- **Aba Orquestrador**: mostra o interruptor geral, as sessões, o `[global]` e os custos, com a recarga a quente do `orchestrator.toml`. Desde a v0.13.19, os agentes, as filas e execuções, as mensagens e o roteamento não aparecem na aba: continuam gravados como antes, e agentes, regras e modelos se editam à mão no arquivo.

@@ -39,7 +39,6 @@ Este documento mapeia todos os pontos em que o terraforme fala com o provedor de
 **Acoplamentos ao Claude fora do adapter, para resolver antes ou junto:**
 - **Escolha do provedor:**
   - não há troca de provedor: só se usa `adapters::default()`, e o router não troca (`src/tui/chat.rs:1356`);
-  - a aba Orquestrador só exibe o provedor;
   - `AgentSettings` e `OrchestratorSettings` não guardam de qual provedor são a conta, o modelo e o esforço.
 - **Hooks e extensões:**
   - `Hook.event` e `matcher` usam os nomes do Claude Code;
@@ -165,7 +164,7 @@ Qualquer outro `control_request` recebe uma resposta de erro (`unsupported_respo
    - Quando o usuário responde a um pedido `Ask`, o chat chama `run.respond`.
    - Quando permite um `Blocked`, a regra vai para `self.allowed`. Depois do `Done`, `resume_allowed` manda uma mensagem nova com `allowed_tools` (`:948-975`).
    - Se a mensagem de erro fala em autenticação, o chat sugere `/login` (`hint_login`, `:651`).
-   - A auto compactação manda o texto `/compact` como prompt (`:809`).
+   - A auto compactação encerra a sessão do agente, como o `/clear`, e mantém a conversa na tela (`Chat::auto_compact`).
 5. **Cancelar**: `Chat::cancel` faz `self.run = None`. O drop de `Run` mata o processo.
 
 ### Interface original (`src/agent/adapters/claude/interactive.rs`)
@@ -203,7 +202,7 @@ O que precisa ser implementado nesta área:
 
 O que hoje é específico do Claude fora do adapter:
 - **Hooks das extensões**: `Hook::event` usa os nomes de evento do Claude Code (ex.: `PreToolUse`, `src/extension/contract.rs:25`). A extensão RTK registra `rtk hook claude` (`src/extension/extensions/rtk.rs:68`), e a ai-memory gera os hooks e o MCP com `--agent claude-code` / `--client claude-code` (`src/extension/extensions/ai_memory.rs:41-42`).
-- **`/compact`**: a compactação, manual ou automática, manda o texto `/compact` como prompt e conta que o agente compacte (`src/tui/chat.rs:809`). `INTERFACES` e `TERRA_COMMANDS` partem do princípio de que existem `/compact` e `/login` do Claude (`src/tui/input/commands.rs:15-40`).
+- **`/compact`**: a compactação manual manda o texto `/compact` como prompt e conta que o agente compacte (`src/tui/chat.rs:809`). `INTERFACES` e `TERRA_COMMANDS` partem do princípio de que existem `/compact` e `/login` do Claude (`src/tui/input/commands.rs:15-40`).
 - **Login**: `src/tui/login.rs:19-23` procura na saída do `claude auth login` o texto `visit: `, `Invalid code` e o prompt `Paste code here if prompted >`. `hint_login` procura as palavras `authenticate`, `oauth` e `log in again` nas mensagens de erro (`src/tui/chat.rs:651`).
 - **Contas e config**: a conta é o nome de uma pasta `.claude-*` (`src/settings.rs:13`), e `settings.rs:43` fala do `defaultMode` do Claude.
 - **Interface original**: o pseudo-terminal foi ajustado para o `claude` interativo (`src/tui/term.rs:2`, `:105`).
@@ -249,7 +248,7 @@ O caminho de entrada é `Outcome::Command(name)` → `Chat::run_command` (`chat.
 | Comando | Para onde vai | Onde |
 |---|---|---|
 | `/clear` | terra: conversa nova (zera sessão, histórico e contexto) | `chat.rs:495`, `chat.rs:777` |
-| `/compact` | terra decide quando; manda o prompt `"/compact"` ao agente na sessão atual. Também roda sozinho pela auto compactação. | `chat.rs:795-811`, `chat.rs:1281` |
+| `/compact` | terra decide quando; manda o prompt `"/compact"` ao agente na sessão atual. A auto compactação não usa este comando: ela limpa a conversa. | `chat.rs:795-811`, `chat.rs:1281` |
 | `/login` | terra: roda `adapter.login(account)` fora da tela (no Claude, `claude auth login --email …`) e depois recarrega o catálogo | `chat.rs:497`, `chat.rs:597`, `claude.rs:142` |
 | `/usage` | terra: abre a aba Consumo | `chat.rs:499` |
 | `/model` | terra: abre o `ModelMenu` | `chat.rs:500-507` |
@@ -300,7 +299,6 @@ Fica em `src/tui/chat/model_menu.rs`. A tela é do terra; os modelos e os nívei
 | `Session` | `/model` (`chat.rs:504`) | `session_model` e `session_effort` desta conversa (`chat.rs:685-693`) | sim |
 | `Default` | Enter no Default do menu da conversa (`model_menu.rs:213`) | `default_choice`, que vai para a Config via `take_default_choice` (`chat.rs:694-702`, `chat.rs:713`). Esc volta ao menu da conversa. | sim |
 | `Subagent` | Config (`src/tui/config.rs:276`, `ModelMenu::subagents`) | modelo dos sub agentes; no Claude vai em `CLAUDE_CODE_SUBAGENT_MODEL` (`claude.rs:42`). Default é "o agente escolhe" (`Outcome::Unset`). | não |
-| `Delegated` | aba Orquestrador (`src/tui/orchestrator.rs`, `ModelMenu::delegated`) | modelo e esforço dos chats delegados, salvos no `config.json` global | sim |
 
 - **Para o provedor.** O modelo e o esforço vão no `Request.model`/`effort`: primeiro os da sessão, senão os da Config (`chat.rs:886-899`). No Claude viram `--model` e `--effort` (`claude.rs:336-339`), e também na interface original (`claude.rs:180-185`).
 - **Rótulos.** `Chat::model_label_of` (`chat.rs:734-748`): se o `ModelInfo` tem `resolved`, usa `adapter.model_label(resolved)`; senão, o `label` do catálogo; senão, o próprio id. No Claude, `display_model` transforma `claude-opus-5-5` em `Opus - 5.5` e tira as datas do id (`claude.rs:249`, `claude.rs:685-702`). O padrão do trait devolve o id (`adapter.rs:258`).
@@ -512,12 +510,13 @@ Cada extensão é uma estratégia que implementa o trait `Extension` (`src/exten
 
 O terra **não grava arquivos** do Claude. Tudo vai por flags e variáveis de ambiente de cada processo.
 
-### RTK e ai-memory
+### RTK, ai-memory e Graphify
 
 | Extensão | Detecção | O que injeta no Claude | Relatório |
 |---|---|---|---|
 | **RTK** (`src/extension/extensions/rtk.rs`) | `rtk` no PATH (`:29`) | Um hook fixo, `PreToolUse` com matcher `Bash` e comando `rtk hook claude` (`:63-73`). Ele reescreve o comando do Bash (`git status` → `rtk git status`). O argumento `claude` é específico do provedor | `rtk gain --all --format json`, com gráfico de 14 dias (`:75-133`) |
 | **ai-memory** (`src/extension/extensions/ai_memory.rs`) | `ai-memory` no PATH (`:29`) | Roda uma vez (num `OnceCell`) `ai-memory install-hooks --agent claude-code` e `install-mcp --client claude-code` (`:39-48`). `parse_hooks` (`:95-118`) lê o bloco `hooks` no formato dos settings do Claude Code: SessionStart, prompts, ferramentas, Stop etc. `parse_mcp` (`:122-143`) lê o `mcpServers` sugerido para o `.claude.json` (stdio, ex.: `ai-memory mcp-bridge`). A configuração do Claude não é alterada (não usa `--apply`) | `ai-memory status --json` (`:146-188`) |
+| **Graphify** (`src/extension/extensions/graphify.rs`) | `graphify` no PATH | Dois hooks fixos `PreToolUse`: matcher `Bash\|Grep` com `graphify hook-guard search` e matcher `Read\|Glob` com `graphify hook-guard read`. Sem grafo no projeto, eles não dizem nada | `graph.json` e `cost.json` de `graphify-out/`, na pasta do terra: nós, arestas, comunidades e tokens da extração |
 
 ### Como a Config lê as skills do provedor
 

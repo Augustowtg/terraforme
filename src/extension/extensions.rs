@@ -5,6 +5,7 @@
 //! já usam o que ela informa.
 
 pub mod ai_memory;
+pub mod graphify;
 pub mod rtk;
 
 use std::env;
@@ -26,6 +27,7 @@ pub fn all() -> Vec<Box<dyn Extension>> {
     vec![
         Box::new(rtk::Rtk::detect()),
         Box::new(ai_memory::AiMemory::detect()),
+        Box::new(graphify::Graphify::detect()),
     ]
 }
 
@@ -105,7 +107,7 @@ mod tests {
     fn all_extensions_have_unique_ids() {
         let all = all();
         let mut ids: Vec<_> = all.iter().map(|e| e.id()).collect();
-        assert_eq!(ids, ["rtk", "ai-memory"]);
+        assert_eq!(ids, ["rtk", "ai-memory", "graphify"]);
         ids.dedup();
         assert_eq!(ids.len(), all.len());
     }
