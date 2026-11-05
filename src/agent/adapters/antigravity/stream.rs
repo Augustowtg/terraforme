@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use super::daily::Spend;
-use crate::agent::{AgentEvent, ReportedMode};
+use crate::agent::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
 
 /// Até quantos caracteres vão no resumo de uma ferramenta.
 const SUMMARY_MAX: usize = 80;
@@ -38,6 +38,9 @@ pub struct StreamParser {
     tokens: u64,
     /// Leitura de cache somada nos passos deste turno.
     cache_tokens: u64,
+    /// Os caracteres escritos desde o último `usage`, que só vem no fim da
+    /// chamada ao modelo.
+    written_chars: u64,
     /// A conversa do turno (do `init`, ou do passo).
     conversation: String,
     /// As chamadas ao modelo ainda não entregues ao registro de consumo.
@@ -113,12 +116,22 @@ impl StreamParser {
                     }
                     self.wrote_text = true;
                     events.push(AgentEvent::TextDelta(delta.to_string()));
+                    let before = self.written_chars / CHARS_PER_TOKEN;
+                    self.written_chars += delta.chars().count() as u64;
+                    let estimate = self.written_chars / CHARS_PER_TOKEN;
+                    if estimate > before {
+                        events.push(AgentEvent::Usage {
+                            tokens: self.tokens + estimate,
+                            cache_tokens: self.cache_tokens,
+                        });
+                    }
                 }
                 if let Some(usage) = step.get("usage").filter(|u| u.is_object()) {
                     let tokens = count(&usage["input_tokens"]) + count(&usage["output_tokens"]);
                     let cache = count(&usage["cache_read_tokens"]);
                     self.tokens += tokens;
                     self.cache_tokens += cache;
+                    self.written_chars = 0;
                     if done {
                         let conversation = step["conversation_id"]
                             .as_str()
@@ -258,6 +271,26 @@ fn summary(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_grows_while_the_text_is_generated() {
+        let mut parser = StreamParser::new(Some("gemini-3.8-flash-low"));
+        let mut usage = Vec::new();
+        for line in [
+            r#"{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"abc"}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"defgh"}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":100,"output_tokens":20}}}"#,
+            r#"{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"abcd"}}"#,
+        ] {
+            for event in parser.parse(line) {
+                if let AgentEvent::Usage { tokens, .. } = event {
+                    usage.push(tokens);
+                }
+            }
+        }
+        // 8 caracteres são 2 tokens; o `usage` troca a estimativa pelo real.
+        assert_eq!(usage, [2, 120, 121]);
+    }
 
     /// Um turno real do `agy` 1.4.7: texto, ferramenta e resultado.
     const TURN: &[&str] = &[

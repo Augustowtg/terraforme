@@ -201,38 +201,6 @@ pub fn load(home: &Path, id: &str) -> Option<Message> {
     Message::from_json(&serde_json::from_str(&text).ok()?)
 }
 
-/// Uma mensagem gravada com o estado e o motivo da recusa (ou da falha).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Saved {
-    pub message: Message,
-    pub state: State,
-    pub reason: Option<String>,
-}
-
-/// As `n` mensagens mais novas.
-pub fn recent(home: &Path, n: usize) -> Vec<Saved> {
-    let Ok(entries) = fs::read_dir(home.join(DIR)) else {
-        return Vec::new();
-    };
-    let mut saved: Vec<Saved> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let text = fs::read_to_string(entry.path().join("message.json")).ok()?;
-            let value: Value = serde_json::from_str(&text).ok()?;
-            Some(Saved {
-                message: Message::from_json(&value)?,
-                state: State::parse(value["state"].as_str()?)?,
-                reason: value["reason"]["text"].as_str().map(str::to_string),
-            })
-        })
-        .collect();
-    saved.sort_by(|a, b| {
-        (b.message.created, &b.message.id).cmp(&(a.message.created, &a.message.id))
-    });
-    saved.truncate(n);
-    saved
-}
-
 /// O estado gravado de uma mensagem.
 #[cfg(test)]
 pub fn state(home: &Path, id: &str) -> Option<State> {
