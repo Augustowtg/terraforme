@@ -32,9 +32,12 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Bar, BarChart, BarGroup, Block, Padding, Paragraph};
 
+mod context;
+
 use super::chat::compact_count;
 use crate::agent::{ChatAdapter, DailyTokens, Usage, UsageWindow};
 use crate::theme::{self, Variant};
+use context::SkillCost;
 
 pub const HELP: &str =
     "clique num dia: horas · c com/sem cache · r atualizar · Tab trocar aba · Esc ir para Sair";
@@ -84,6 +87,12 @@ pub struct UsageView {
     back_button: Cell<Option<Rect>>,
     /// Onde cada barra de dia ficou (com o rótulo), para o clique.
     day_bars: RefCell<Vec<(Rect, Date)>>,
+    /// As skills do agente e o que pesam no contexto.
+    skills: Vec<SkillCost>,
+    /// A página das skills mostrada (0 é a primeira).
+    skill_page: usize,
+    /// Onde os botões `‹` e `›` das skills ficaram no último desenho.
+    pager: Cell<[Rect; 2]>,
 }
 
 impl UsageView {
@@ -99,9 +108,17 @@ impl UsageView {
             KeyCode::Char('r') => self.refresh(adapter, account),
             KeyCode::Char('c') => self.with_cache = !self.with_cache,
             KeyCode::Esc if self.selected_day.is_some() => self.selected_day = None,
+            KeyCode::Left => self.turn_page(-1),
+            KeyCode::Right => self.turn_page(1),
             _ => return false,
         }
         true
+    }
+
+    /// Passa `by` páginas das skills, sem sair do primeiro e do último.
+    fn turn_page(&mut self, by: isize) {
+        let last = context::pages(self.skills.len()) - 1;
+        self.skill_page = self.skill_page.saturating_add_signed(by).min(last);
     }
 
     /// Recarrega se nunca carregou, se passou [`STALE`], se a conta mudou ou
@@ -146,6 +163,12 @@ impl UsageView {
         if self.loading.is_none() {
             self.usage = None;
         }
+        self.skills = adapter
+            .filter(|a| a.is_available())
+            .zip(std::env::current_dir().ok())
+            .map(|(a, cwd)| a.skills(&cwd, account).iter().map(SkillCost::new).collect())
+            .unwrap_or_default();
+        self.turn_page(0);
         self.daily_loading = adapter
             .filter(|a| a.is_available())
             .and_then(|a| a.load_daily(account, DAYS));
@@ -240,9 +263,25 @@ impl UsageView {
                 })
             }
         };
+        let padding = Padding::new(1, 2, 1, 0);
         frame.render_widget(
-            Paragraph::new(lines).block(Block::new().padding(Padding::new(1, 2, 1, 0))),
+            Paragraph::new(lines.clone()).block(Block::new().padding(padding)),
             bars_area,
+        );
+        // O Contexto vem embaixo do consumo do provedor (e do gráfico, em telas estreitas).
+        let below = match (side_by_side, chart_area) {
+            (false, Some(chart)) => chart.y + chart.height,
+            (false, None) => bars_area.y + lines.len() as u16 + 1,
+            (true, _) => bars_area.y + lines.len() as u16 + 1,
+        };
+        self.draw_context(
+            frame,
+            Rect {
+                y: below,
+                height: (bars_area.y + bars_area.height).saturating_sub(below),
+                ..bars_area
+            },
+            padding,
         );
         if let Some(chart_area) = chart_area {
             let pad = if side_by_side { 1 } else { 0 };
@@ -251,6 +290,31 @@ impl UsageView {
                 .inner(chart_area);
             self.draw_daily(frame, chart_area, today);
         }
+    }
+
+    /// A seção **Contexto** em `area`; guarda onde os botões de página ficaram.
+    fn draw_context(&self, frame: &mut Frame, area: Rect, padding: Padding) {
+        self.pager.set([Rect::default(); 2]);
+        if area.height < 2 {
+            return;
+        }
+        let lines = context::lines(&self.skills, self.skill_page, self.with_cache);
+        let inner = Block::new().padding(padding).inner(area);
+        frame.render_widget(Paragraph::new(lines.clone()), inner);
+        if self.skills.is_empty() {
+            return;
+        }
+        let y = inner.y + lines.len() as u16 - 1;
+        let columns = context::pager_columns(self.skills.len(), self.skill_page);
+        self.pager.set(columns.map(|(x, width)| {
+            Rect {
+                x: inner.x + x,
+                y,
+                width,
+                height: 1,
+            }
+            .intersection(area)
+        }));
     }
 
     /// O gráfico: **Consumo por dia** (os últimos dias) ou, com um dia
@@ -436,7 +500,9 @@ impl UsageView {
             return;
         }
         let at = Position::new(mouse.column, mouse.row);
-        if let Some(i) = self.buttons.get().iter().position(|r| r.contains(at)) {
+        if let Some(i) = self.pager.get().iter().position(|r| r.contains(at)) {
+            self.turn_page(if i == 0 { -1 } else { 1 });
+        } else if let Some(i) = self.buttons.get().iter().position(|r| r.contains(at)) {
             self.with_cache = BUTTONS[i].1;
         } else if self.back_button.get().is_some_and(|r| r.contains(at)) {
             self.selected_day = None;

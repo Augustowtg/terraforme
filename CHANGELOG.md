@@ -4,6 +4,49 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.22] - 2026-11-04
+
+### Adicionado
+
+- Extensão **Graphify**, no mesmo molde do RTK: detectada pelo `graphify` no `PATH` e ativada na seção Extensões da Config. No agente, entra com os hooks `PreToolUse` `graphify hook-guard search` (Bash e Grep) e `graphify hook-guard read` (Read e Glob), que lembram o agente de consultar o grafo quando o projeto tem um. Na aba Extensões, mostra os nós, as arestas, as comunidades e os tokens da extração, lidos do `graphify-out` do workspace.
+- Os instaladores oferecem o Graphify no menu de extensões: `uv tool install graphifyy` (ou `pipx install graphifyy`) e `graphify install`, que registra a skill `/graphify`.
+
+## [0.13.21] - 2026-11-04
+
+### Adicionado
+
+- A aba **Consumo** ganha a seção **Contexto**, embaixo do consumo do provedor: um resumo do `/context` do agente pelas skills. Mostra o total de skills e de tokens, a contagem por grupo (usuário, projeto, plugin...) e as skills em páginas de 3, com o grupo e os tokens de cada uma. `←`/`→` ou o clique em `‹` `›` mudam de página.
+- Os botões **Sem cache** e **Com cache** do gráfico valem também para o Contexto: sem cache conta o nome e a descrição de cada skill, e com cache soma o `SKILL.md` inteiro. Os tokens são estimados (1 a cada 4 caracteres).
+
+## [0.13.20] - 2026-11-04
+
+### Alterado
+
+- `src/tui/app.rs` e `src/tui/chat.rs` foram divididos por responsabilidade, sem mudar o comportamento. A tela principal passa a ter `app/keys.rs` (teclado, colagem e mouse), `app/draw.rs` (desenho), `app/hub_sync.rs` (conversa com o hub), `app/settings.rs` (extensões e valores da Config), `app/provider.rs` (login, interface original, atualização e terminal) e `app/tests.rs` (testes). O chat passa a ter `chat/slash.rs` (comandos de `/`, login, limpeza e compactação), `chat/model.rs` (catálogo e menu do `/model`), `chat/turn.rs` (envio, permissões e eventos do agente) e `chat/draw.rs` (desenho). `app.rs` cai de 1.927 para 411 linhas, e `chat.rs` de 1.572 para 606.
+
+## [0.13.19] - 2026-11-04
+
+### Removido
+
+- A aba **Orquestrador** não mostra mais as seções **Agentes despachados**, **Filas e execuções**, **Mensagens** e **Roteamento**, nem a lista **Sub agentes em execução** das Sessões. Continuam na aba o interruptor de **Despachos**, as **Sessões**, a **Configuração** e os **Custos de hoje**.
+- Com essas seções, saem da aba a edição de agentes, regras e modelos, o menu de modelo do agente, o `d` para tirar um item e o `Enter` que abria a saída de uma execução.
+
+### Alterado
+
+- Agentes, regras de roteamento e modelos agora só se editam à mão, no `~/.terraforme/orchestrator.toml`. Nada muda no que é salvo: o arquivo, `runs/<id>/` e `messages/<id>/` continuam sendo gravados, e o hub, o despacho e o `terra send` funcionam como antes.
+
+## [0.13.18] - 2026-11-04
+
+### Alterado
+
+- A auto compactação não resume mais a conversa: ao chegar no ponto de compactar, o terra limpa a conversa, como o `/clear`, sem gastar tokens com um resumo. A resposta que acabou de chegar continua na tela, e a próxima mensagem começa uma conversa nova, sem o contexto da anterior. Com uma permissão pendente, a conversa não é limpa. O `/compact` manual continua igual.
+
+## [0.13.17] - 2026-11-04
+
+### Corrigido
+
+- O consumo ficava parado enquanto o modelo gerava a resposta, porque o provedor só informa a saída no fim de cada chamada. Agora o badge **Consumo** e o **Consumo geral** sobem durante a geração, com uma estimativa: no Claude, a do pensamento que vem no stream mais 1 token a cada 4 caracteres de texto e de entrada de ferramenta; no Antigravity, a do texto. O uso informado no fim da chamada troca a estimativa, e o número pode ajustar um pouco nessa hora.
+
 ## [0.13.16] - 2026-11-04
 
 ### Alterado

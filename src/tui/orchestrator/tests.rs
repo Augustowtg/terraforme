@@ -20,7 +20,7 @@ impl Tab {
     fn new(config: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("orchestrator.toml"), config).unwrap();
-        let mut data = Data::new(Some(dir.path().to_path_buf()), dir.path().to_path_buf());
+        let mut data = Data::new(Some(dir.path().to_path_buf()));
         data.reload();
         Self {
             dir,
@@ -36,7 +36,7 @@ impl Tab {
         Config::parse(&self.file()).unwrap()
     }
 
-    fn press(&mut self, code: KeyCode) -> Outcome {
+    fn press(&mut self, code: KeyCode) -> bool {
         self.view
             .handle_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -95,49 +95,60 @@ fn p_pauses_and_resumes_every_dispatch() {
 }
 
 #[test]
-fn agents_are_created_edited_and_removed_from_the_tab() {
-    let mut tab = Tab::new("[modelos]\nforte = \"opus\"\n");
-    tab.select(&Action::AddAgent);
-    tab.press(KeyCode::Enter);
-    tab.type_text("api sub");
-    tab.press(KeyCode::Enter);
-    let config = tab.config();
-    let api = config.agent("api").unwrap();
-    assert_eq!(api.cwd, tab.dir.path().join("sub"));
+fn dispatched_agents_routing_messages_and_runs_stay_on_disk_and_off_the_tab() {
+    let config = "[agents.api]\ncwd = \"/p\"\n\n[modelos]\nforte = \"opus\"\n\n\
+                  [roteamento]\n[[roteamento.regra]]\ntag = \"testes\"\nmodelo = \"forte\"\n";
+    let mut tab = Tab::new(config);
+    let now = jiff::Timestamp::now().as_second() as u64;
+    let run = Run {
+        id: "aa01".into(),
+        agent: "api".into(),
+        message: "ab12".into(),
+        from: "usuario".into(),
+        level: 1,
+        hops: 1,
+        note: "/n.md".into(),
+        state: RunState::Running,
+        created: now,
+        started: Some(now),
+        finished: None,
+        provider: "claude".into(),
+        model: None,
+        usage: None,
+        error: None,
+        summary: None,
+    };
+    run.save(tab.dir.path()).unwrap();
+    let saved = tab.dir.path().join("messages/ab12");
+    fs::create_dir_all(&saved).unwrap();
+    fs::write(saved.join("message.json"), "{\"id\":\"ab12\"}").unwrap();
+    tab.view.data.reload();
 
-    // ←/→ no Modelo passa pelos apelidos de [modelos].
-    tab.select(&Action::AgentField("api".into(), AgentKey::Model));
-    tab.press(KeyCode::Right);
-    assert_eq!(
-        tab.config().agent("api").unwrap().model.as_deref(),
-        Some("forte")
-    );
-    assert!(tab.screen().contains("forte (opus)"));
+    let screen = tab.screen();
+    for hidden in [
+        "Agentes despachados",
+        "Filas e execuções",
+        "Mensagens",
+        "Roteamento",
+        "Sub agentes em execução",
+        "aa01",
+        "ab12",
+        "Regra #testes",
+        "Novo agente",
+    ] {
+        assert!(!screen.contains(hidden), "{hidden}: {screen}");
+    }
+    assert!(screen.contains("Custos de hoje"), "{screen}");
 
-    // As ferramentas no prompt, separadas por vírgula.
-    tab.select(&Action::AgentField("api".into(), AgentKey::Tools));
-    tab.press(KeyCode::Enter);
-    tab.type_text("Read, Bash(terra:*)");
-    tab.press(KeyCode::Enter);
-    assert_eq!(
-        tab.config().agent("api").unwrap().tools,
-        ["Read", "Bash(terra:*)"]
-    );
-
-    // O orçamento: → dá 1, ← volta a sem limite.
-    tab.select(&Action::AgentField("api".into(), AgentKey::Budget));
-    tab.press(KeyCode::Right);
-    assert_eq!(tab.config().agent("api").unwrap().daily_budget, Some(1));
-    tab.press(KeyCode::Left);
-    assert_eq!(tab.config().agent("api").unwrap().daily_budget, None);
-
-    // d duas vezes tira o agente.
-    tab.select(&Action::Agent("api".into()));
-    tab.press(KeyCode::Char('d'));
-    assert!(tab.screen().contains("d de novo para tirar"));
-    assert!(tab.config().agent("api").is_some());
-    tab.press(KeyCode::Char('d'));
-    assert!(tab.config().agent("api").is_none());
+    // Mudar o que a aba mostra não mexe no que ela esconde.
+    tab.press(KeyCode::Char('p'));
+    assert!(tab.config().global.paused);
+    let file = tab.config();
+    assert!(file.agent("api").is_some());
+    assert_eq!(file.routing.rules.len(), 1);
+    assert_eq!(file.model_id("forte"), "opus");
+    assert!(tab.dir.path().join("runs/aa01/run.json").exists());
+    assert!(saved.join("message.json").exists());
 }
 
 #[test]
@@ -155,14 +166,6 @@ fn an_invalid_change_shows_the_error_and_the_file_stays() {
     tab.press(KeyCode::Enter);
     assert_eq!(tab.file(), before);
     assert!(tab.screen().contains("não é um número maior que zero"));
-
-    // Uma regra para um modelo que não existe: o Config recusa.
-    tab.select(&Action::AddRule);
-    tab.press(KeyCode::Enter);
-    tab.type_text("testes sumiu");
-    tab.press(KeyCode::Enter);
-    assert_eq!(tab.file(), before);
-    assert!(tab.screen().contains("Não salvo"), "{}", tab.screen());
 }
 
 #[test]
@@ -217,11 +220,6 @@ fn runs_costs_and_budget_alerts_come_from_the_disk() {
         "{screen}"
     );
     assert!(screen.contains("api sem orçamento hoje (2/2)"), "{screen}");
-
-    // Enter numa execução abre a saída dela.
-    tab.select(&Action::Run("bb02".into()));
-    assert!(tab.screen().contains("resumo: feito"));
-    assert_eq!(tab.press(KeyCode::Enter), Outcome::OpenRun("bb02".into()));
 }
 
 fn instance(workspace: &str, pid: u64, health: Health, tabs: &[&str]) -> Instance {
@@ -309,80 +307,4 @@ fn the_timeout_can_be_infinite() {
     tab.press(KeyCode::Enter);
     assert_eq!(tab.config().global.timeout_min, Some(45));
     assert!(tab.screen().contains("45 min"));
-}
-
-#[test]
-fn the_provider_and_the_model_come_from_the_live_catalog() {
-    let mut tab = Tab::new("[agents.api]\ncwd = \"/p\"\nmodelo = \"opus\"\n");
-    let model = |id: &str, label: &str| crate::agent::ModelInfo {
-        id: id.into(),
-        label: label.into(),
-        description: String::new(),
-        resolved: None,
-        efforts: vec!["low".into(), "high".into()],
-    };
-    tab.view.offer_catalog(
-        "claude",
-        &Catalog {
-            models: vec![model("opus", "Opus 5.5"), model("haiku", "Haiku 5.5")],
-            ..Catalog::default()
-        },
-    );
-    tab.view.offer_catalog(
-        "antigravity",
-        &Catalog {
-            models: vec![model("gemini-3.8-flash", "Gemini 3.8 Flash")],
-            ..Catalog::default()
-        },
-    );
-    let screen = tab.screen();
-    assert!(
-        screen.contains("Provedor                claude"),
-        "{screen}"
-    );
-    assert!(screen.contains(" claude  Opus 5.5"), "{screen}");
-
-    // O Enter no Modelo abre o menu do /model, sem esforço, no modelo atual.
-    let field = Action::AgentField("api".into(), AgentKey::Model);
-    tab.select(&field);
-    tab.press(KeyCode::Enter);
-    assert_eq!(tab.view.help(), HELP_MODEL);
-    let screen = tab.screen();
-    assert!(screen.contains("Selecione o modelo do agente"), "{screen}");
-    assert!(!screen.contains("Esforço"), "{screen}");
-    tab.press(KeyCode::Down);
-    tab.press(KeyCode::Enter);
-    assert!(tab.view.model_menu.is_none());
-    assert_eq!(
-        tab.config().agent("api").unwrap().model.as_deref(),
-        Some("haiku")
-    );
-    // O Default tira o modelo.
-    tab.press(KeyCode::Enter);
-    tab.press(KeyCode::Up);
-    tab.press(KeyCode::Up);
-    tab.press(KeyCode::Enter);
-    assert_eq!(tab.config().agent("api").unwrap().model, None);
-
-    // Trocar o provedor tira o modelo; o menu passa a ser o do agy.
-    tab.press(KeyCode::Right);
-    assert!(tab.config().agent("api").unwrap().model.is_some());
-    tab.select(&Action::AgentField("api".into(), AgentKey::Provider));
-    tab.press(KeyCode::Right);
-    let config = tab.config();
-    let api = config.agent("api").unwrap();
-    assert!(api.is_antigravity());
-    assert_eq!(api.model, None);
-    tab.select(&field);
-    tab.press(KeyCode::Right);
-    assert_eq!(
-        tab.config().agent("api").unwrap().model.as_deref(),
-        Some("gemini-3.8-flash")
-    );
-    let screen = tab.screen();
-    assert!(
-        screen.contains(" antigravity  Gemini 3.8 Flash"),
-        "{screen}"
-    );
-    assert!(screen.contains("não vale no antigravity"), "{screen}");
 }

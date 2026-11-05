@@ -1,6 +1,6 @@
 //! Extensões: aplicações secundárias que melhoram o agente do chat (ex.: o
-//! RTK, que enxuga a saída dos comandos, e o ai-memory, a memória de longo
-//! prazo entre sessões).
+//! RTK, que enxuga a saída dos comandos, o ai-memory, a memória de longo
+//! prazo entre sessões, e o Graphify, o grafo de conhecimento do projeto).
 //!
 //! Cada extensão é uma estratégia (padrão Strategy) que implementa
 //! [`Extension`]: diz se está instalada, o que acrescenta ao agente

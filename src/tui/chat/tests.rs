@@ -8,10 +8,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
 
-use crossterm::event::KeyModifiers;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::Rect;
 use ratatui::{Terminal, backend::TestBackend};
 
+use super::draw::{HELP_MODEL, HELP_NORMAL, HELP_PERMISSION};
 use super::*;
+use crate::agent::{Interactive, ReportedMode, Request};
+use crate::theme::{self, Variant};
 
 /// O que o chat pediu ao provedor: texto, modo, sessão e modelo.
 type Sent = Rc<RefCell<Vec<(String, PermissionMode, Option<String>, Option<String>)>>>;
@@ -1181,60 +1185,75 @@ fn hidden_context_bar_does_not_take_the_badge_row() {
 }
 
 #[test]
-fn auto_compact_runs_once_at_the_compact_point() {
+fn auto_compact_clears_the_conversation_at_the_compact_point() {
     let auto = ContextSettings {
         auto_compact: true,
         compact_at: 50,
         ..ContextSettings::default()
     };
-    let (_, sent) = chat_with_context(99_000, auto);
-    assert_eq!(
-        sent.borrow().len(),
-        1,
-        "abaixo de 50% de 200K, não compacta"
-    );
+    let (chat, sent) = chat_with_context(99_000, auto);
+    assert_eq!(sent.borrow().len(), 1, "abaixo de 50% de 200K, não limpa");
+    assert!(chat.session_id.is_some());
 
-    let (mut full, sent) = chat_with_context(100_000, auto);
-    assert_eq!(sent.borrow().last().unwrap().0, "/compact");
+    let (full, sent) = chat_with_context(100_000, auto);
+    assert_eq!(sent.borrow().len(), 1, "não manda nada ao agente");
+    assert_eq!(full.session_id, None);
+    assert_eq!(full.context, None);
+    assert!(full.run.is_none());
+    let entries = full.history.entries();
     assert_eq!(
-        full.history.entries().last(),
+        entries.last(),
         Some(&Entry::Info(
-            "O contexto chegou em 50% do limite: compactando a conversa...".into()
+            "O contexto chegou em 50% do limite: a próxima mensagem começa uma conversa nova."
+                .into()
         ))
     );
-    // A compactação responde com o mesmo contexto (ela falhou sem avisar): a
-    // auto compactação não entra em loop.
-    full.tick();
-    assert_eq!(sent.borrow().len(), 2);
-    assert!(full.run.is_none());
+    assert!(entries.len() > 1, "a resposta continua na tela");
 }
 
 #[test]
-fn auto_compact_runs_once_per_user_message() {
+fn auto_compact_starts_a_new_session_for_the_next_message() {
     let auto = ContextSettings {
         auto_compact: true,
         ..ContextSettings::default()
     };
     let (mut chat, sent) = chat_with_context(150_000, auto);
-    chat.tick();
-    assert_eq!(sent.borrow().len(), 2, "oi e a auto compactação");
+    assert_eq!(chat.session_id, None);
 
-    // Um /compact pedido à mão não puxa outra auto compactação.
-    type_text(&mut chat, "/compact");
-    press(&mut chat, KeyCode::Enter);
-    chat.tick();
-    assert_eq!(sent.borrow().len(), 3);
-    assert!(chat.run.is_none());
-
-    // Cada mensagem nova do usuário pode compactar de novo, uma vez.
     type_text(&mut chat, "e agora?");
     press(&mut chat, KeyCode::Enter);
-    chat.tick();
-    chat.tick();
     let sent = sent.borrow();
-    assert_eq!(sent.len(), 5);
-    assert_eq!(sent[3].0, "e agora?");
-    assert_eq!(sent[4].0, "/compact");
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].0, "e agora?");
+    assert_eq!(sent[1].2, None, "sem retomar a sessão anterior");
+}
+
+#[test]
+fn auto_compact_waits_for_a_pending_permission() {
+    let auto = ContextSettings {
+        auto_compact: true,
+        ..ContextSettings::default()
+    };
+    let settings = AgentSettings {
+        context: auto,
+        ..AgentSettings::default()
+    };
+    let reply = vec![
+        init(PermissionMode::Agente),
+        AgentEvent::Context {
+            tokens: 150_000,
+            window: Some(200_000),
+        },
+        done(1),
+    ];
+    let (mut chat, sent) = fake_chat_with(true, reply, &settings);
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "oi");
+    press(&mut chat, KeyCode::Enter);
+    chat.allowed.push("Bash".into());
+    chat.tick();
+    assert_eq!(chat.session_id.as_deref(), Some("s1"));
+    assert_eq!(sent.borrow().len(), 2, "retoma o que foi permitido");
 }
 
 #[test]

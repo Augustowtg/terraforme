@@ -12,10 +12,11 @@ Os instaladores mostram o banner TERRAFORME, a versão, uma barra de progresso c
 
 Se o **terraforme antigo** (o de antes do terra, com o `terraforme-mcp` e o `terraforme-pet`) estiver na máquina, aparece o passo **Desinstalar o terraforme antigo**, com SIM ou NÃO (com `-y`, desinstala). Com SIM, o instalador encerra o daemon e o mascote (no Windows, também o `terraforme`), remove os binários e guarda a config e os dados dele com o sufixo `.antigo-<data>` (`~/.config/terraforme` e `~/.local/share/terraforme` no Linux; `%APPDATA%\terraforme` e `%LOCALAPPDATA%\terraforme` no Windows), em vez de apagar. O RTK, o ai-memory e o `~/.terraforme` do terra ficam. Sem o antigo, o passo nem aparece.
 
-Depois, o instalador pergunta se é para instalar as [extensões](#aba-extensões) (SIM ou NÃO, como na confirmação; com `-y`, instala as que faltam). Com SIM, aparece um menu no estilo da lista de extensões das Configurações (`[x] 1. RTK - descrição`), com as duas marcadas: `↑`/`↓` escolhem, `Espaço` marca ou desmarca e `Enter` confirma. As que já estão instaladas (no `PATH`) aparecem com uma bola verde (`● 1. RTK - descrição (instalada)`), sem a caixa, e não entram na instalação; com as duas instaladas, o instalador nem pergunta. Só então os passos das escolhidas entram na lista do instalador. Para cada uma:
+Depois, o instalador pergunta se é para instalar as [extensões](#aba-extensões) (SIM ou NÃO, como na confirmação; com `-y`, instala as que faltam). Com SIM, aparece um menu no estilo da lista de extensões das Configurações (`[x] 1. RTK - descrição`), com as três marcadas: `↑`/`↓` escolhem, `Espaço` marca ou desmarca e `Enter` confirma. As que já estão instaladas (no `PATH`) aparecem com uma bola verde (`● 1. RTK - descrição (instalada)`), sem a caixa, e não entram na instalação; com todas instaladas, o instalador nem pergunta. Só então os passos das escolhidas entram na lista do instalador. Para cada uma:
 
 - instala o **RTK** com `cargo install --git https://github.com/rtk-ai/rtk rtk` (se o `rtk` ainda não estiver no `PATH`). O RTK não precisa de setup: o terra passa o hook dele ao agente;
 - instala o **ai-memory** pelo instalador oficial (`install.sh` no Linux, `install.ps1` pelo PowerShell no Windows), se ainda não estiver no `PATH`, e roda o `ai-memory setup --yes`: o servidor como serviço do usuário (ou ao fazer login, no Windows) e os hooks, o MCP e as skills nos agentes que ele detectar. Rodar de novo não muda nada.
+- instala o **Graphify** com `uv tool install graphifyy` (ou `pipx install graphifyy`, sem o `uv`), se o `graphify` ainda não estiver no `PATH`, e roda o `graphify install`, que registra a skill `/graphify` nos agentes;
 
 Com NÃO, os passos das extensões nem aparecem. O LLM do ai-memory (para a consolidação das memórias) continua desligado até você configurar um provedor (`AI_MEMORY_LLM_PROVIDER`, ver a documentação do ai-memory).
 
@@ -160,10 +161,11 @@ Extensões são aplicações secundárias que melhoram o agente do chat. Hoje:
 | --- | --- | --- |
 | [RTK](https://github.com/rtk-ai/rtk) | Filtra e comprime a saída dos comandos antes de ela chegar ao agente (60-90% menos tokens) | Hook `PreToolUse` do Bash (`rtk hook claude`), que troca o comando pelo do RTK (ex.: `git status` → `rtk git status`); o agente também inicia pelo `rtk` (`rtk claude`) |
 | [ai-memory](https://github.com/akitaonrails/ai-memory) | Memória de longo prazo entre sessões e agentes, num wiki versionado com git | Servidor MCP e hooks do ciclo de vida, os que o próprio `ai-memory install-mcp`/`install-hooks` imprime para o Claude Code; o agente inicia pelo `ai-memory run --no-autowire` (com `--fresh` numa conversa nova), que abre a sessão no workstream do projeto |
+| [Graphify](https://github.com/Graphify-Labs/graphify) | Transforma o projeto num grafo de conhecimento que o agente consulta em vez de reler os arquivos | Hooks `PreToolUse` do Bash e do Grep (`graphify hook-guard search`) e do Read e do Glob (`graphify hook-guard read`), que lembram o agente de consultar o grafo quando o projeto tem um; o grafo é gerado com `/graphify .` no agente |
 
-Cada extensão precisa estar instalada e no `PATH` (o instalador oferece instalar as duas); o terra em si não muda a configuração do Claude: ele só passa as extensões ativas para o agente, em cada mensagem (e para a Interface original do provedor).
+Cada extensão precisa estar instalada e no `PATH` (o instalador oferece instalar as três); o terra em si não muda a configuração do Claude: ele só passa as extensões ativas para o agente, em cada mensagem (e para a Interface original do provedor).
 
-A aba lista as extensões (ativa, inativa ou não instalada) e mostra, da escolhida com `↑`/`↓`, a versão, o link e o relatório: no RTK, os tokens economizados (do `rtk gain`), com o gráfico dos tokens economizados por dia; no ai-memory, as páginas, sessões e observações guardadas, o tamanho do banco e o estado dos embeddings e do LLM (do `ai-memory status`). O relatório é carregado ao abrir a aba e atualizado a cada minuto com ela aberta; `r` atualiza na hora.
+A aba lista as extensões (ativa, inativa ou não instalada) e mostra, da escolhida com `↑`/`↓`, a versão, o link e o relatório: no RTK, os tokens economizados (do `rtk gain`), com o gráfico dos tokens economizados por dia; no ai-memory, as páginas, sessões e observações guardadas, o tamanho do banco e o estado dos embeddings e do LLM (do `ai-memory status`); no Graphify, os nós, as arestas, as comunidades e os tokens da extração (do `graphify-out` do workspace). O relatório é carregado ao abrir a aba e atualizado a cada minuto com ela aberta; `r` atualiza na hora.
 
 ### Aba Configurações
 
@@ -198,7 +200,7 @@ Dentro da seção Agente, separada por uma linha, fica a seção **Contexto**, d
 | Configuração | Valores |
 | --- | --- |
 | Display | **Oculto** (o padrão) ou **Visível**: mostra ou esconde a barra de contexto |
-| Auto compactação | **Não** (o padrão) ou **Sim**: ao fim de uma resposta que deixou o contexto no ponto de compactar, o terra manda o `/compact` sozinho, no máximo uma vez por mensagem enviada (nunca depois de um `/compact`, nem quando o próprio agente já compactou a conversa naquela resposta) |
+| Auto compactação | **Não** (o padrão) ou **Sim**: ao fim de uma resposta que deixou o contexto no ponto de compactar, o terra limpa a conversa sozinho, sem resumir: a resposta continua na tela e a próxima mensagem começa uma conversa nova, sem o contexto da anterior (nunca depois de um `/compact`, com uma permissão pendente ou quando o próprio agente já compactou a conversa naquela resposta) |
 | Limite de tokens | Um limite fixo, de 50K a 1M (padrão **200K**), ou **Do modelo** (o limite que o agente informa, ou 200K até ele informar). No `config.json`, `"limit"` aceita qualquer número de tokens, e `null` é o do modelo |
 | Compactar em | O ponto de compactar, de 50% a 95% do limite de tokens (padrão **75%**), com os tokens que ele representa (ex.: `75% · 150K tokens`). A barra vai até ele: fica laranja na metade, vermelha a partir de 75% dele e mostra **Compacte a conversa** ao chegar nele |
 
@@ -212,37 +214,31 @@ Embaixo do Contexto, também separada por uma linha, fica a seção **Consumo**,
 
 ### Aba Orquestrador
 
-A aba **Orquestrador**, entre Extensões e Configurações, mostra os terminais do terra abertos na máquina, separados por workspace, e as configurações dos chats delegados (os sub agentes): o provedor, o modelo, o modo e o que fazer ao abrir e ao terminar.
+A aba **Orquestrador**, entre Extensões e Configurações, mostra o interruptor dos despachos, os terminais do terra abertos na máquina, separados por workspace, o `[global]` do `~/.terraforme/orchestrator.toml` e os custos de hoje.
 
 A lista vem do **daemon orquestrador** (o hub): um processo só por usuário que o primeiro `terra cli` inicia e que fecha sozinho quando o último fecha. Cada terminal conta a ele se está parado ou rodando, o que o agente está fazendo e quantos chats estão abertos (os além do principal são os sub agentes). Uma instância sem sinal por 6 s fica `stale`; uma que fechou fica `gone` por 30 s. O protocolo e o ciclo de vida estão em [`docs/infra/orquestrador.md`](docs/infra/orquestrador.md).
 
 ```
  Orquestrador
+  Despachos               ● ativos (p pausa todos)
 
- Workspaces
-   terraforme-cli  ·  3 instâncias ativas + 2 sub agentes
-     7f3a12bc  pid 4812    alive  Pensando...   3 chats  aberto há 5m  sinal há 1s  ← este
-     …
+ Sessões
+   ▾ Studio · 2 instâncias · 1 sub agente
+      ● Studio-4242              Principal, api               rodando · 5 min
+   ▸ terraforme-cli · 1 instância
 
- Configurações
-   Provedor            Claude
-   Modelo              Default (Opus - 5.5)
-   Modo dos chats      Accept Edits
-   Ao terminar         Fechar o chat
-   Ao abrir            Em segundo plano
+ Configuração
+   Modo de execução        Demonstrativo (visível nas abas)
+   Tempo limite            30 min
+   …
+
+ Custos de hoje
+   api              2 execuções · 3,0 mil tokens · US$ 1,0000
 ```
 
-`↑`/`↓` passam pelas configurações; `←`/`→` (ou `Enter`) mudam a escolhida. No Provedor, `←`/`→` passam pelo do workspace e pelos provedores conhecidos. No Modelo, `Enter` abre o mesmo menu do `/model` (`↑`/`↓` escolhem o modelo, `←`/`→` o esforço, `Esc` fecha).
+`↑`/`↓` passam pelas linhas escolhíveis; `←`/`→` mudam o valor; `Enter` abre um workspace ou edita um número; `p` pausa ou retoma todos os despachos.
 
-As configurações ficam no `~/.terraforme/config.json` (`{"orchestrator": {...}}`), valem para todos os workspaces e, por enquanto, só ficam salvas: o terra ainda não delega chats. A antiga chave `mcp` ainda é lida e sai ao salvar.
-
-| Configuração | O que faz |
-| --- | --- |
-| Provedor | O provedor dos chats delegados: o do workspace ou outro dos conhecidos |
-| Modelo | O modelo e o esforço dos chats delegados. `Enter` abre o mesmo menu do `/model`. **Default** (o padrão): no Claude, Sonnet com esforço médio; nos outros provedores, o modelo padrão |
-| Modo dos chats | O modo com que começam os chats delegados. **Accept Edits** por padrão |
-| Ao terminar | **Fechar o chat** (o padrão) ou **Manter aberto** |
-| Ao abrir | **Em segundo plano** (o padrão) ou **Mostrar o chat** |
+Os agentes, as regras de roteamento e os modelos não aparecem na aba: edite-os à mão no `orchestrator.toml`. As execuções e as mensagens continuam gravadas em `~/.terraforme/runs/` e `~/.terraforme/messages/`, sem aparecer na aba.
 
 ### Navegação no `terra workspace`
 
@@ -344,7 +340,8 @@ src/
 │   ├── registry.rs       # Registry: as extensões e o que as ativas acrescentam
 │   └── extensions.rs     # registro das extensões conhecidas
 │       ├── rtk.rs        # RTK: hook do Bash e o rtk gain
-│       └── ai_memory.rs  # ai-memory: MCP, hooks e o ai-memory status
+│       ├── ai_memory.rs  # ai-memory: MCP, hooks e o ai-memory status
+│       └── graphify.rs   # Graphify: hooks de busca e leitura e o graphify-out
 ├── agent.rs              # o agente por trás do chat (só o contrato)
 │   ├── adapter.rs        # ChatAdapter, Session e Request: o contrato
 │   ├── event.rs          # AgentEvent: o que volta de uma resposta
@@ -359,12 +356,22 @@ src/
 │   └── keyboard.rs       # Caps Lock (LED no Linux, API no Windows)
 └── tui.rs                # loop da tela principal e do terminal
     ├── app.rs            # tela principal: abas, Sair e confirmação
+    │   ├── keys.rs       # teclado, colagem e mouse
+    │   ├── draw.rs       # barras, conteúdo da aba e caixas de confirmação
+    │   ├── hub_sync.rs   # o que este terra conta ao hub e recebe dele
+    │   ├── settings.rs   # extensões, valores da Config e modelo padrão
+    │   ├── provider.rs   # login, interface original, atualização e terminal
+    │   └── tests.rs
     ├── workspace.rs      # navegador de workspaces
     ├── config.rs         # aba Configurações: seções Agente, Consumo, Extensões
-    ├── orchestrator.rs   # aba Orquestrador: terminais por workspace e configurações dos chats delegados
+    ├── orchestrator.rs   # aba Orquestrador: despachos, sessões, configuração e custos de hoje
     ├── extensions.rs     # aba Extensões: relatório de cada extensão
     ├── widgets.rs → widgets/badge.rs, widgets/popup.rs
     └── chat.rs           # aba Chat: liga o adapter, histórico, input e badges
+        ├── slash.rs      # comandos de /, login, limpeza e compactação
+        ├── model.rs      # catálogo, menu do /model e rótulos
+        ├── turn.rs       # envio, permissões, eventos do agente e auto compactação
+        ├── draw.rs       # histórico, painel de entrada, badges e barras
         ├── mode.rs       # como status e modo aparecem
         ├── input.rs      # caixa de input: edição, cursor, seleção, Insert
         │   └── tests.rs
