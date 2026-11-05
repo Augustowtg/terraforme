@@ -176,6 +176,25 @@ install_ai_memory() {
   ui_note "ai-memory configurado: servidor como serviço do usuário e agentes ligados"
 }
 
+install_graphify() {
+  if command -v graphify >/dev/null 2>&1; then
+    ui_note "Graphify já instalado: $(graphify --version)"
+  elif command -v uv >/dev/null 2>&1; then
+    uv tool install graphifyy
+  elif command -v pipx >/dev/null 2>&1; then
+    pipx install graphifyy
+  else
+    ui_note "${C_YELLOW}aviso: o Graphify não foi instalado: ele precisa do uv ou do pipx. Instale o uv em https://docs.astral.sh/uv e rode o instalador de novo.${C_RESET}"
+    return
+  fi
+  if ! command -v graphify >/dev/null 2>&1; then
+    ui_note "${C_YELLOW}aviso: o graphify foi instalado, mas não está no PATH. Abra um novo terminal e rode 'graphify install'.${C_RESET}"
+    return
+  fi
+  graphify install
+  ui_note "Graphify configurado: a skill /graphify nos agentes"
+}
+
 # O terraforme antigo, o de antes do terra (com o daemon terraforme-mcp e
 # o mascote terraforme-pet): os binários dele no PATH ou em BIN_DIR.
 OLD_BINS=(terraforme terraforme-mcp terraforme-pet)
@@ -200,7 +219,7 @@ backup_dir() {
 
 # Encerra o daemon e o mascote (o `terraforme cli` aberto continua até ser
 # fechado), remove os binários e guarda a config e os dados. O RTK, o
-# ai-memory e o ~/.terraforme do terra ficam.
+# ai-memory, o Graphify e o ~/.terraforme do terra ficam.
 uninstall_old_terraforme() {
   local path
   pkill -x terraforme-mcp || true
@@ -213,11 +232,12 @@ uninstall_old_terraforme() {
   backup_dir "${XDG_DATA_HOME:-$HOME/.local/share}/terraforme"
 }
 
-# As extensões que já estão no PATH (como o terra as detecta): 1 para o RTK
-# e para o ai-memory, na ordem do menu.
-EXT_INSTALLED=(0 0)
+# As extensões que já estão no PATH (como o terra as detecta): 1 para o RTK,
+# o ai-memory e o Graphify, na ordem do menu.
+EXT_INSTALLED=(0 0 0)
 if command -v rtk >/dev/null 2>&1; then EXT_INSTALLED[0]=1; fi
 if command -v ai-memory >/dev/null 2>&1; then EXT_INSTALLED[1]=1; fi
+if command -v graphify >/dev/null 2>&1; then EXT_INSTALLED[2]=1; fi
 
 # O passo 2 baixa a última release, usa o binário baixado pelo install.sh ou
 # compila (--dev).
@@ -263,7 +283,7 @@ if [ "${#OLD_PATHS[@]}" -gt 0 ]; then
   ui_add_step "Desinstalar o terraforme antigo" "encerra e remove terraforme, terraforme-mcp e terraforme-pet"
 fi
 # Com todas as extensões instaladas, o instalador nem pergunta.
-if [ "${EXT_INSTALLED[0]}" -eq 0 ] || [ "${EXT_INSTALLED[1]}" -eq 0 ]; then
+if [ "${EXT_INSTALLED[0]}" -eq 0 ] || [ "${EXT_INSTALLED[1]}" -eq 0 ] || [ "${EXT_INSTALLED[2]}" -eq 0 ]; then
   ui_add_step "Instalar as extensões?" ""
 fi
 
@@ -276,20 +296,25 @@ if [ "${#OLD_PATHS[@]}" -gt 0 ]; then
 fi
 # Os passos das extensões só entram na lista com o SIM, e só os das
 # escolhidas no menu; as já instaladas aparecem nele com a bola verde.
-if [ "${EXT_INSTALLED[0]}" -eq 1 ] && [ "${EXT_INSTALLED[1]}" -eq 1 ]; then
-  ui_note "Extensões já instaladas: RTK e ai-memory"
-elif ui_ask "Instalar as extensões (RTK e ai-memory)?"; then
+if [ "${EXT_INSTALLED[0]}" -eq 1 ] && [ "${EXT_INSTALLED[1]}" -eq 1 ] && [ "${EXT_INSTALLED[2]}" -eq 1 ]; then
+  ui_note "Extensões já instaladas: RTK, ai-memory e Graphify"
+elif ui_ask "Instalar as extensões (RTK, ai-memory e Graphify)?"; then
   UI_INSTALLED=("${EXT_INSTALLED[@]}")
   ui_select "Quais extensões instalar?" \
     "RTK - filtra e comprime a saída dos comandos antes de ela chegar ao agente" \
-    "ai-memory - memória de longo prazo entre sessões e agentes"
+    "ai-memory - memória de longo prazo entre sessões e agentes" \
+    "Graphify - grafo de conhecimento do projeto, que o agente consulta antes de ler os arquivos"
   if [ "${UI_SELECTED[0]}" -eq 1 ]; then
     ui_add_step "Instalar o RTK" "cargo install --git https://github.com/rtk-ai/rtk rtk"
   fi
   if [ "${UI_SELECTED[1]}" -eq 1 ]; then
     ui_add_step "Instalar e configurar o ai-memory" "install.sh do GitHub e ai-memory setup"
   fi
+  if [ "${UI_SELECTED[2]}" -eq 1 ]; then
+    ui_add_step "Instalar e configurar o Graphify" "uv tool install graphifyy e graphify install"
+  fi
   if [ "${UI_SELECTED[0]}" -eq 1 ]; then ui_step install_rtk; fi
   if [ "${UI_SELECTED[1]}" -eq 1 ]; then ui_step install_ai_memory; fi
+  if [ "${UI_SELECTED[2]}" -eq 1 ]; then ui_step install_graphify; fi
 fi
 ui_finish "Pronto! Abra um novo terminal (ou rode 'source ~/.bashrc') e use: terra workspace"

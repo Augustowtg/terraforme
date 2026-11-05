@@ -45,15 +45,12 @@ pub enum Target {
     Default,
     /// O modelo dos sub agentes, salvo na Config (aberto pela Config).
     Subagent,
-    /// O modelo de um agente despachado, salvo no `orchestrator.toml`
-    /// (aberto pela aba Orquestrador).
-    Dispatched,
 }
 
 impl Target {
     /// Escolhe só o modelo: o esforço não é ajustável.
     fn without_effort(self) -> bool {
-        matches!(self, Target::Subagent | Target::Dispatched)
+        self == Target::Subagent
     }
 }
 
@@ -104,23 +101,13 @@ impl ModelMenu {
     /// Abre o menu do modelo dos sub agentes, com o foco em `current`
     /// (`None` é o Default).
     pub fn subagents(current: Option<String>, catalog: Option<&Catalog>) -> Self {
-        Self::without_effort(Target::Subagent, current, catalog)
-    }
-
-    /// Abre o menu do modelo de um agente despachado, com o foco em
-    /// `current` (`None` é o Default) e o catálogo do provedor dele.
-    pub fn dispatched(current: Option<String>, catalog: Option<&Catalog>) -> Self {
-        Self::without_effort(Target::Dispatched, current, catalog)
-    }
-
-    fn without_effort(target: Target, current: Option<String>, catalog: Option<&Catalog>) -> Self {
         let models = catalog.map_or(&[][..], |c| &c.models[..]);
         let selected = current
             .as_ref()
             .and_then(|id| models.iter().position(|m| matches_id(m, id)))
             .map_or(0, |i| i + 1);
         Self {
-            target,
+            target: Target::Subagent,
             selected,
             effort: None,
             default_model: None,
@@ -276,10 +263,6 @@ impl ModelMenu {
                 "Selecione o modelo dos sub agentes",
                 "Os sub agentes usam este modelo e ele fica salvo nas Configurações.",
             ),
-            Target::Dispatched => (
-                "Selecione o modelo do agente",
-                "As próximas execuções do agente usam este modelo; ele fica salvo no orchestrator.toml.",
-            ),
         };
         let mut lines = vec![
             Line::styled(
@@ -307,9 +290,6 @@ impl ModelMenu {
             let text = match item {
                 Item::Default if self.target == Target::Subagent => {
                     "Default (o agente escolhe)".to_string()
-                }
-                Item::Default if self.target == Target::Dispatched => {
-                    "Default (o padrão do provedor)".to_string()
                 }
                 Item::Default => {
                     let current = self
