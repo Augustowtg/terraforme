@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use super::daily::Spend;
-use crate::agent::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
+use crate::agent::{AgentEvent, CHARS_PER_TOKEN, ModelSpend, ReportedMode, SpendScope};
 
 /// Até quantos caracteres vão no resumo de uma ferramenta.
 const SUMMARY_MAX: usize = 80;
@@ -38,6 +38,9 @@ pub struct StreamParser {
     tokens: u64,
     /// Leitura de cache somada nos passos deste turno.
     cache_tokens: u64,
+    /// Entrada e saída de `tokens`, separadas.
+    input: u64,
+    output: u64,
     /// Os caracteres escritos desde o último `usage`, que só vem no fim da
     /// chamada ao modelo.
     written_chars: u64,
@@ -131,6 +134,8 @@ impl StreamParser {
                     let cache = count(&usage["cache_read_tokens"]);
                     self.tokens += tokens;
                     self.cache_tokens += cache;
+                    self.input += count(&usage["input_tokens"]);
+                    self.output += count(&usage["output_tokens"]);
                     self.written_chars = 0;
                     if done {
                         let conversation = step["conversation_id"]
@@ -152,6 +157,16 @@ impl StreamParser {
                     events.push(AgentEvent::Usage {
                         tokens: self.tokens,
                         cache_tokens: self.cache_tokens,
+                    });
+                    events.push(AgentEvent::Spent {
+                        models: vec![ModelSpend {
+                            model: self.model.clone(),
+                            input: self.input,
+                            output: self.output,
+                            cache_read: self.cache_tokens,
+                            ..ModelSpend::default()
+                        }],
+                        scope: SpendScope::Turn,
                     });
                 }
             }
@@ -311,7 +326,24 @@ mod tests {
 
     #[test]
     fn a_turn_becomes_events_with_the_tokens_of_its_steps() {
-        let events = parse_all(TURN);
+        let mut events = parse_all(TURN);
+        let spent: Vec<AgentEvent> = events
+            .extract_if(.., |e| matches!(e, AgentEvent::Spent { .. }))
+            .collect();
+        // O último gasto é o do turno inteiro, e o `usage` do `result` fica de fora.
+        assert_eq!(
+            spent.last(),
+            Some(&AgentEvent::Spent {
+                models: vec![ModelSpend {
+                    model: "gemini-3.8-flash-low".into(),
+                    input: 15802,
+                    output: 39,
+                    cache_read: 5,
+                    ..ModelSpend::default()
+                }],
+                scope: SpendScope::Turn,
+            })
+        );
         assert_eq!(
             events,
             vec![
@@ -390,9 +422,10 @@ mod tests {
     fn a_resumed_conversation_spends_with_the_requested_model() {
         let mut parser = StreamParser::new(Some("claude-sonnet-4-6"));
         parser.parse(r#"{"event":"init","conversation_id":"c7","init":{"cwd":"/tmp"}}"#);
-        let events = parser.parse(
+        let mut events = parser.parse(
             r#"{"event":"step_update","step_update":{"step_index":4,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":100,"output_tokens":20,"cache_read_tokens":60}}}"#,
         );
+        events.retain(|e| !matches!(e, AgentEvent::Spent { .. }));
         assert_eq!(
             events,
             [

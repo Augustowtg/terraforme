@@ -264,6 +264,7 @@ mod messages {
                     title: "Principal".into(),
                     name: Some(name.into()),
                     task: None,
+                    subagent: None,
                 }],
                 ..Status::default()
             };
@@ -559,6 +560,9 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
             "--allowedTools Read",
             "--tools Read",
             "--strict-mcp-config",
+            "mcp__terra",
+            "--mcp-config",
+            "\"--execucao\"",
         ] {
             assert!(args.contains(flag), "{flag} em {args}");
         }

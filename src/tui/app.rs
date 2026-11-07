@@ -18,7 +18,10 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
+
+use ratatui::layout::Rect;
 
 use super::chat::Chat;
 use super::config::ConfigView;
@@ -154,8 +157,34 @@ struct ChatTab {
     id: String,
     /// A execução despachada que a aba mostra (só leitura).
     run: Option<String>,
+    /// O subagente que a aba mostra (só leitura).
+    subagent: Option<SubagentTab>,
     title: String,
     chat: Chat,
+}
+
+/// De onde vem o que a aba de um subagente mostra.
+struct SubagentTab {
+    /// O id da chamada que o lançou.
+    id: String,
+    /// O id do chat que o lançou.
+    parent: String,
+    /// Por onde a aba recebe os eventos; `None` depois que ele termina.
+    feed: Option<std::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+    /// Terminou com erro (ou o chat que o lançou parou antes dele).
+    failed: bool,
+}
+
+impl SubagentTab {
+    /// Em que pé ele está, para o hub.
+    fn state(&self) -> crate::hub::protocol::SubagentState {
+        use crate::hub::protocol::SubagentState;
+        match (&self.feed, self.failed) {
+            (Some(_), _) => SubagentState::Running,
+            (None, false) => SubagentState::Done,
+            (None, true) => SubagentState::Failed,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -172,6 +201,13 @@ pub struct App {
     /// O chat que aparece na aba Chat: 0 é o do terra, os outros são os
     /// de [`App::chats`].
     active_chat: usize,
+    /// Onde cada aba foi desenhada na última tela, para o clique do mouse.
+    tab_rects: RefCell<Vec<(Rect, Tab)>>,
+    /// Onde cada chat da barra de chats foi desenhado (índice como em
+    /// [`App::active_chat`]); vazio quando a barra não aparece.
+    chat_rects: RefCell<Vec<(Rect, usize)>>,
+    /// Onde o botão "Sair" foi desenhado.
+    quit_rect: Cell<Rect>,
     config_view: ConfigView,
     usage: UsageView,
     /// O consumo da sessão, para a barra de consumo do chat.
@@ -230,7 +266,12 @@ impl App {
         );
         let mut chat = Chat::connect(&settings);
         chat.set_history_file(files.history.clone());
+        let folder = dir.to_string_lossy().into_owned();
+        chat.set_usage_folder(folder.clone());
+        let mut usage = UsageView::default();
+        usage.set_session(files.history.clone(), folder);
         let mut app = Self {
+            usage,
             chat,
             chat_id: hub::protocol::new_id(),
             providers: crate::agent::adapters::options(),
@@ -291,10 +332,14 @@ impl App {
         if let Some(file) = &self.history {
             chat.set_history_file(file.clone());
         }
+        if let Some(workspace) = &self.workspace {
+            chat.set_usage_folder(workspace.dir.to_string_lossy().into_owned());
+        }
         let title = format!("Chat {}", self.chats.len() + 2);
         self.chats.push(ChatTab {
             id: hub::protocol::new_id(),
             run: None,
+            subagent: None,
             title,
             chat,
         });
@@ -373,10 +418,12 @@ impl App {
         for tab in &mut self.chats {
             tab.chat.tick();
         }
+        self.sync_subagents();
         // O consumo só é carregado com a aba aberta.
         if self.tab == Tab::Consumo {
             self.usage
                 .refresh_if_stale(self.chat.adapter(), self.settings.account.as_deref());
+            self.usage.refresh_session();
         }
         self.usage.tick();
         // A barra de consumo carrega só enquanto está visível.

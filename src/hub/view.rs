@@ -1,7 +1,7 @@
 //! A lista do hub para pessoas: as instâncias separadas por workspace,
 //! usada pela aba Orquestrador e pelo `terra status`.
 
-use super::protocol::{Health, Instance, Tab, now};
+use super::protocol::{Health, Instance, SubagentState, Tab, now};
 
 /// As instâncias de um workspace.
 pub struct Workspace<'a> {
@@ -90,7 +90,7 @@ pub fn instance_line(instance: &Instance) -> String {
 /// agente (com `@`) e o que o agente dela está fazendo (ex.:
 /// `Chat 2       @frontend    parado`).
 pub fn tab_line(tab: &Tab) -> String {
-    let doing = tab.task.as_deref().unwrap_or("parado");
+    let doing = tab_doing(tab);
     let name = tab
         .name
         .as_deref()
@@ -101,6 +101,18 @@ pub fn tab_line(tab: &Tab) -> String {
         truncate(&name, 12),
         truncate(doing, 40)
     )
+}
+
+/// O que o agente de uma aba está fazendo: a tarefa ou, sem ela, `parado`;
+/// a aba de um subagente diz `rodando`, `concluído` ou `falhou`.
+pub fn tab_doing(tab: &Tab) -> &str {
+    match (&tab.task, tab.subagent) {
+        (Some(task), _) => task,
+        (None, Some(SubagentState::Running)) => "rodando",
+        (None, Some(SubagentState::Done)) => "concluído",
+        (None, Some(SubagentState::Failed)) => "falhou",
+        (None, None) => "parado",
+    }
 }
 
 /// As colunas de uma instância na aba Orquestrador: o que faz, as sessões
@@ -197,6 +209,7 @@ mod tests {
             title: "Principal".into(),
             name: None,
             task: None,
+            subagent: None,
         };
         assert_eq!(tab_line(&tab), "Principal                 parado");
         let busy = Tab {
@@ -205,6 +218,12 @@ mod tests {
             ..tab
         };
         assert_eq!(tab_line(&busy), "Principal    @frontend    Usando Bash...");
+        let failed = Tab {
+            title: "▶ Revisar".into(),
+            subagent: Some(SubagentState::Failed),
+            ..Tab::default()
+        };
+        assert_eq!(tab_doing(&failed), "falhou");
     }
 
     #[test]

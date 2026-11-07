@@ -194,6 +194,7 @@ impl Chat {
             recorder.new_conversation(written);
         }
         self.session_id = None;
+        self.session_spend.clear();
         self.agent_mode = None;
         self.model = None;
         self.context = None;
@@ -202,7 +203,8 @@ impl Chat {
     /// `/clear`: começa uma conversa nova, com o histórico limpo.
     pub(super) fn clear_conversation(&mut self) {
         self.run = None;
-        self.turn_spent = (0, 0);
+        self.close_turn_spend();
+        self.session_spend.clear();
         self.save_history();
         if let Some(recorder) = &mut self.recorder {
             recorder.new_conversation(0);

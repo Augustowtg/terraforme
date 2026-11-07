@@ -5,7 +5,7 @@
 use ratatui::text::{Line, Span};
 
 use super::Data;
-use crate::hub::protocol::{Health, Instance};
+use crate::hub::protocol::{Health, Instance, Tab};
 use crate::hub::view;
 use crate::orchestrator::config::{Config, INFINITE, RunMode};
 use crate::orchestrator::costs::{self, Alert};
@@ -16,8 +16,11 @@ use crate::theme;
 const LABEL: usize = 24;
 /// Largura da coluna `workspace-PID` de uma instância.
 const INSTANCE_WIDTH: usize = 24;
-/// Largura da coluna do nome da instância (as abas dela).
+/// Largura da coluna do nome da instância (a aba principal dela).
 const NAME_WIDTH: usize = 28;
+/// Largura do título de um sub agente, sob o `workspace-PID` (o `↳` come
+/// dois caracteres).
+const SUB_WIDTH: usize = INSTANCE_WIDTH - 2;
 
 /// Uma chave do `[global]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,10 +333,15 @@ fn sessions(rows: &mut Vec<Row>, hub: &Hub, expanded: &[String], is: &dyn Fn(&Ac
                     "instâncias"
                 },
             );
-            match workspace.agents() {
+            let agents = workspace.agents();
+            match agents {
                 0 => {}
                 1 => text.push_str(" · 1 sub agente"),
                 n => text.push_str(&format!(" · {n} sub agentes")),
+            }
+            if agents > 0 {
+                let subs = workspace.instances.iter().flat_map(|i| subagents(i));
+                text.push_str(&format!(" ({})", states(subs)));
             }
             rows.push(item(text, theme::text(), action.clone(), is(&action)));
             if !open {
@@ -346,17 +354,13 @@ fn sessions(rows: &mut Vec<Row>, hub: &Hub, expanded: &[String], is: &dyn Fn(&Ac
                 };
                 let [doing, _, elapsed] = view::instance_columns(instance);
                 let id = format!("{}-{}", instance.workspace, instance.pid);
-                let names: Vec<&str> = instance
+                let name = instance
                     .status
                     .tabs
-                    .iter()
-                    .map(|tab| tab.name.as_deref().unwrap_or(&tab.title))
-                    .collect();
-                let name = if names.is_empty() {
-                    instance.app.clone()
-                } else {
-                    names.join(", ")
-                };
+                    .first()
+                    .map_or(instance.app.clone(), |tab| {
+                        tab.name.clone().unwrap_or_else(|| tab.title.clone())
+                    });
                 rows.push(info(Line::from(vec![
                     Span::styled("      ● ", dot),
                     Span::styled(
@@ -369,8 +373,65 @@ fn sessions(rows: &mut Vec<Row>, hub: &Hub, expanded: &[String], is: &dyn Fn(&Ac
                     ),
                     Span::styled(format!("{doing} · {elapsed}"), theme::muted()),
                 ])));
+                for tab in subagents(instance) {
+                    let doing = view::tab_doing(tab);
+                    let name = tab
+                        .name
+                        .as_deref()
+                        .map_or(String::new(), |name| format!("@{name}"));
+                    rows.push(info(Line::from(vec![
+                        Span::styled("        ↳ ", theme::muted()),
+                        Span::styled(
+                            format!("{:<SUB_WIDTH$} ", short(&tab.title, SUB_WIDTH)),
+                            theme::text(),
+                        ),
+                        Span::styled(
+                            format!("{:<NAME_WIDTH$} ", short(&name, NAME_WIDTH)),
+                            theme::path(),
+                        ),
+                        Span::styled(short(doing, NAME_WIDTH), state_style(doing, tab)),
+                    ])));
+                }
             }
         }
+    }
+}
+
+/// Os sub agentes de uma instância: as abas além da principal.
+fn subagents(instance: &Instance) -> impl Iterator<Item = &Tab> {
+    instance.status.tabs.iter().skip(1)
+}
+
+/// Quantos sub agentes estão em cada estado (ex.: `2 rodando, 1 concluído`).
+fn states<'a>(tabs: impl Iterator<Item = &'a Tab>) -> String {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for tab in tabs {
+        let state = if tab.task.is_some() {
+            "rodando"
+        } else {
+            view::tab_doing(tab)
+        };
+        match counts.iter_mut().find(|(s, _)| *s == state) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((state, 1)),
+        }
+    }
+    counts.sort_by_key(|(state, _)| STATES.iter().position(|s| s == state));
+    counts
+        .iter()
+        .map(|(state, n)| format!("{n} {state}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A ordem dos estados no resumo do workspace.
+const STATES: [&str; 4] = ["rodando", "parado", "concluído", "falhou"];
+
+fn state_style(doing: &str, tab: &Tab) -> ratatui::style::Style {
+    match (doing, tab.task.is_some()) {
+        (_, true) | ("rodando", _) => theme::alive(),
+        ("falhou", _) => theme::error(),
+        _ => theme::muted(),
     }
 }
 

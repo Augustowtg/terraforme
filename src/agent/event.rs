@@ -17,6 +17,133 @@ pub enum ReportedMode {
 /// escrevendo: o uso de verdade só vem no fim de cada chamada.
 pub const CHARS_PER_TOKEN: u64 = 4;
 
+/// O que um modelo gastou. O custo vem em milionésimos de dólar e é o que o
+/// provedor informa (`None` quando ele não informa).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelSpend {
+    pub model: String,
+    pub input: u64,
+    pub output: u64,
+    pub cache_creation: u64,
+    pub cache_read: u64,
+    /// O pensamento do modelo, que já está em `output`.
+    pub thinking: u64,
+    pub web_searches: u64,
+    pub cost_micros: Option<u64>,
+}
+
+impl ModelSpend {
+    pub fn cache(&self) -> u64 {
+        self.cache_creation + self.cache_read
+    }
+
+    /// Soma `other`, menos o nome do modelo.
+    pub fn add(&mut self, other: &ModelSpend) {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_creation += other.cache_creation;
+        self.cache_read += other.cache_read;
+        self.thinking += other.thinking;
+        self.web_searches += other.web_searches;
+        self.cost_micros = match (self.cost_micros, other.cost_micros) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+        };
+    }
+
+    fn since(&self, base: &ModelSpend) -> ModelSpend {
+        ModelSpend {
+            model: self.model.clone(),
+            input: self.input.saturating_sub(base.input),
+            output: self.output.saturating_sub(base.output),
+            cache_creation: self.cache_creation.saturating_sub(base.cache_creation),
+            cache_read: self.cache_read.saturating_sub(base.cache_read),
+            thinking: self.thinking.saturating_sub(base.thinking),
+            web_searches: self.web_searches.saturating_sub(base.web_searches),
+            cost_micros: self
+                .cost_micros
+                .map(|cost| cost.saturating_sub(base.cost_micros.unwrap_or(0))),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.input + self.output + self.cache() + self.web_searches == 0
+            && self.cost_micros.unwrap_or(0) == 0
+    }
+}
+
+/// Soma `spend` em `into`, modelo a modelo.
+pub fn merge_spend(into: &mut Vec<ModelSpend>, spend: &[ModelSpend]) {
+    for item in spend {
+        match into.iter_mut().find(|known| known.model == item.model) {
+            Some(known) => known.add(item),
+            None => into.push(item.clone()),
+        }
+    }
+}
+
+/// O que `now`, um acumulado, gastou depois de `base`.
+pub fn spend_since(now: &[ModelSpend], base: &[ModelSpend]) -> Vec<ModelSpend> {
+    now.iter()
+        .map(|item| match base.iter().find(|b| b.model == item.model) {
+            Some(known) => item.since(known),
+            None => item.clone(),
+        })
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// A soma de todos os modelos.
+pub fn total_spend(spend: &[ModelSpend]) -> ModelSpend {
+    let mut total = ModelSpend::default();
+    for item in spend {
+        total.add(item);
+    }
+    total
+}
+
+/// A que período um [`AgentEvent::Spent`] se refere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpendScope {
+    /// Só esta resposta, até aqui.
+    Turn,
+    /// A sessão do agente inteira, mesmo com o que veio antes de um `--resume`:
+    /// o chat tira o que já contou.
+    Session,
+}
+
+/// Uma pergunta do agente ao usuário.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    /// O rótulo curto da pergunta (ex.: `Cor`).
+    pub header: String,
+    pub text: String,
+    /// O usuário pode marcar mais de uma opção.
+    pub multi_select: bool,
+    pub options: Vec<QuestionOption>,
+}
+
+/// O que acontece com um subagente que o agente lançou. O `id` é o da chamada
+/// da ferramenta que o lançou.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubagentEvent {
+    /// O subagente começou.
+    Started { id: String, description: String },
+    /// O subagente usou uma ferramenta, recebeu o resultado ou escreveu.
+    Activity { id: String, event: Box<AgentEvent> },
+    /// O subagente terminou; `error` diz o motivo quando não deu certo.
+    Finished { id: String, error: Option<String> },
+    /// O agente principal parou, mas a resposta segue: falta subagente.
+    Waiting,
+}
+
+/// Uma opção de resposta de uma [`Question`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
     /// Sessão iniciada: id, modelo (ex.: `claude-opus-5-5`) e modo de
@@ -42,6 +169,12 @@ pub enum AgentEvent {
         name: String,
         detail: String,
     },
+    /// O agente faz perguntas ao usuário e espera: o chat mostra as opções e
+    /// responde com [`Session::answer`](super::Session::answer) e o `id`.
+    Question {
+        id: String,
+        questions: Vec<Question>,
+    },
     /// O modo do agente bloqueou uma ferramenta sem perguntar (ex.: o
     /// classificador do modo Agente). O agente segue sem ela; se o usuário
     /// permitir, `allow` vai em
@@ -65,6 +198,14 @@ pub enum AgentEvent {
     /// estimativa da chamada em andamento. O [`AgentEvent::Done`] traz o total
     /// que vale.
     Usage { tokens: u64, cache_tokens: u64 },
+    /// O gasto separado por tipo de token e por modelo; cada um substitui o
+    /// anterior do mesmo turno.
+    Spent {
+        models: Vec<ModelSpend>,
+        scope: SpendScope,
+    },
+    /// Um subagente começou, trabalhou ou terminou.
+    Subagent(SubagentEvent),
     /// Fim da resposta.
     Done {
         is_error: bool,

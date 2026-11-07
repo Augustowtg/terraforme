@@ -6,7 +6,9 @@
 //! thread lê a saída (um JSON por linha) e a transforma em [`AgentEvent`]s,
 //! que a interface consome sem travar. Os pedidos de permissão do agente
 //! chegam pela mesma saída: no modo Yolo, a thread aprova; nos outros, viram
-//! [`AgentEvent::PermissionRequest`] e o usuário decide no chat.
+//! [`AgentEvent::PermissionRequest`] e o usuário decide no chat. As perguntas
+//! do agente (`AskUserQuestion`) chegam do mesmo jeito e viram
+//! [`AgentEvent::Question`] em todo modo, porque só o usuário pode responder.
 
 mod accounts;
 mod catalog;
@@ -22,17 +24,19 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use self::stream::{StreamParser, text, tool_detail};
 use crate::agent::{
     AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
-    ModelOption, PermissionMode, ProviderSkill, Request, Session, Usage, kill_tree, launch,
-    own_group,
+    ModelOption, PermissionMode, ProviderSkill, Question, QuestionOption, Request, Session,
+    SubagentEvent, Usage, kill_tree, launch, own_group,
 };
 use crate::extension::{Contribution, Hook};
 
@@ -40,6 +44,8 @@ const NOT_FOUND: &str =
     "Claude CLI não encontrado no PATH. Instale em https://claude.com/claude-code";
 /// A variável com que o `claude` escolhe o modelo dos sub agentes.
 const SUBAGENT_MODEL_ENV: &str = "CLAUDE_CODE_SUBAGENT_MODEL";
+/// A ferramenta com que o agente faz perguntas ao usuário.
+const ASK_TOOL: &str = "AskUserQuestion";
 
 /// O Claude CLI do `PATH` como provedor do chat.
 pub struct ClaudeAdapter {
@@ -372,7 +378,7 @@ fn hook_settings(hooks: &[Hook]) -> String {
 
 /// `--mcp-config` com os servidores MCP das extensões (vazio sem nenhum),
 /// somados aos do usuário.
-fn mcp_args(extensions: &Contribution) -> Vec<String> {
+pub(crate) fn mcp_args(extensions: &Contribution) -> Vec<String> {
     if extensions.mcp_servers.is_empty() {
         return Vec::new();
     }
@@ -432,6 +438,48 @@ fn tool_request(line: &str) -> Option<(String, String, Value)> {
         text(&request["tool_name"]),
         request["input"].clone(),
     ))
+}
+
+/// As perguntas de um pedido do `AskUserQuestion`; `None` em outra ferramenta
+/// ou sem perguntas (fica como um pedido de permissão comum).
+fn questions(tool: &str, input: &Value) -> Option<Vec<Question>> {
+    if tool != ASK_TOOL {
+        return None;
+    }
+    let questions: Vec<Question> = input["questions"]
+        .as_array()?
+        .iter()
+        .map(|question| Question {
+            header: text(&question["header"]),
+            text: text(&question["question"]),
+            multi_select: question["multiSelect"].as_bool().unwrap_or(false),
+            options: question["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|option| QuestionOption {
+                    label: text(&option["label"]),
+                    description: text(&option["description"]),
+                })
+                .collect(),
+        })
+        .collect();
+    (!questions.is_empty()).then_some(questions)
+}
+
+/// A resposta a um `AskUserQuestion`: a entrada aprovada, com `answers` (o
+/// texto de cada pergunta e a resposta dela), que o `claude` entrega ao modelo.
+fn answer_response(request_id: &str, input: &Value, answers: &[String]) -> String {
+    let answers: serde_json::Map<String, Value> = input["questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .zip(answers)
+        .map(|(question, answer)| (text(&question["question"]), Value::from(answer.as_str())))
+        .collect();
+    let mut input = input.clone();
+    input["answers"] = Value::Object(answers);
+    permission_response(request_id, true, &input)
 }
 
 /// A resposta a um pedido de permissão: aprovado com a entrada como veio, ou
@@ -520,6 +568,13 @@ struct Run {
 
 type Stdin = Arc<Mutex<Option<ChildStdin>>>;
 
+/// Quanto o agente principal tem para continuar depois de um subagente acabar.
+const CONTINUATION_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(15)
+};
+
 impl Run {
     /// Inicia o `claude` com a mensagem, na conta da pasta `config_dir`. No
     /// Yolo, o terra aprova tudo o que o agente pedir; nos outros, cada
@@ -590,8 +645,20 @@ impl Run {
             send_line(&stdin, &message);
             let mut parser = StreamParser::default();
             let mut done = false;
+            // O fim da resposta, enquanto falta subagente: as continuações
+            // somam o uso, e o stdin segue aberto para os pedidos dele.
+            let mut held = None;
+            let activity = Arc::new(AtomicU64::new(0));
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                activity.fetch_add(1, Ordering::Relaxed);
                 if let Some((id, name, input)) = tool_request(&line) {
+                    if let Some(questions) = questions(&name, &input) {
+                        pending.lock().unwrap().insert(id.clone(), input);
+                        if tx.send(AgentEvent::Question { id, questions }).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     if auto_allow {
                         send_line(&stdin, &permission_response(&id, true, &input));
                         continue;
@@ -611,14 +678,38 @@ impl Run {
                     continue;
                 }
                 for event in parser.parse(&line) {
-                    if matches!(event, AgentEvent::Done { .. }) {
-                        done = true;
-                        *stdin.lock().unwrap() = None;
+                    // O último subagente acabou depois do fim do principal:
+                    // a continuação tem o mesmo prazo para começar.
+                    if held.is_some()
+                        && !parser.subagents_running()
+                        && matches!(event, AgentEvent::Subagent(SubagentEvent::Finished { .. }))
+                    {
+                        close_when_silent(&stdin, &activity);
                     }
+                    let event = if matches!(event, AgentEvent::Done { .. }) {
+                        let event = merge_done(held.take(), event);
+                        if parser.subagents_pending() {
+                            if !parser.subagents_running() {
+                                close_when_silent(&stdin, &activity);
+                            }
+                            held = Some(event);
+                            AgentEvent::Subagent(SubagentEvent::Waiting)
+                        } else {
+                            done = true;
+                            *stdin.lock().unwrap() = None;
+                            event
+                        }
+                    } else {
+                        event
+                    };
                     if tx.send(event).is_err() {
                         return;
                     }
                 }
+            }
+            if let Some(event) = held.filter(|_| !done) {
+                done = true;
+                let _ = tx.send(event);
             }
             if !done {
                 let stderr = stderr.join().unwrap_or_default();
@@ -647,6 +738,17 @@ impl Session for Run {
             return;
         };
         send_line(&self.stdin, &permission_response(id, allow, &input));
+    }
+
+    fn answer(&mut self, id: &str, answers: Option<Vec<String>>) {
+        let Some(input) = self.pending.lock().unwrap().remove(id) else {
+            return;
+        };
+        let response = match answers {
+            Some(answers) => answer_response(id, &input, &answers),
+            None => permission_response(id, false, &input),
+        };
+        send_line(&self.stdin, &response);
     }
 }
 
@@ -678,6 +780,48 @@ fn command(claude: &Path) -> Command {
     } else {
         Command::new(claude)
     }
+}
+
+/// O fim da resposta com o uso das partes que já acabaram: cada `result` traz
+/// só o da parte dele.
+fn merge_done(held: Option<AgentEvent>, last: AgentEvent) -> AgentEvent {
+    match (held, last) {
+        (
+            Some(AgentEvent::Done {
+                tokens: spent,
+                cache_tokens: cache_spent,
+                denied: denied_before,
+                ..
+            }),
+            AgentEvent::Done {
+                is_error,
+                message,
+                tokens,
+                cache_tokens,
+                denied,
+            },
+        ) => AgentEvent::Done {
+            is_error,
+            message,
+            tokens: spent + tokens,
+            cache_tokens: cache_spent + cache_tokens,
+            denied: denied_before + denied,
+        },
+        (_, last) => last,
+    }
+}
+
+/// Fecha o stdin, que encerra o `claude`, se nada chegar em [`CONTINUATION_WAIT`].
+/// É a saída para uma continuação que não vem depois de o subagente acabar.
+fn close_when_silent(stdin: &Stdin, activity: &Arc<AtomicU64>) {
+    let (stdin, activity) = (Arc::clone(stdin), Arc::clone(activity));
+    let seen = activity.load(Ordering::Relaxed);
+    thread::spawn(move || {
+        thread::sleep(CONTINUATION_WAIT);
+        if activity.load(Ordering::Relaxed) == seen {
+            *stdin.lock().unwrap() = None;
+        }
+    });
 }
 
 /// Escreve uma linha JSON no stdin do `claude`. Se ele já fechou, desiste.
@@ -882,6 +1026,220 @@ mod tests {
 
         assert_eq!(tool_request(r#"{"type":"assistant"}"#), None);
         assert_eq!(unsupported_response(r#"{"type":"assistant"}"#), None);
+    }
+
+    const ASK_INPUT: &str = r#"{"questions":[
+        {"question":"Qual cor?","header":"Cor","multiSelect":false,"options":[
+            {"label":"Azul","description":"O céu"},{"label":"Verde"}]},
+        {"question":"Quais?","header":"Itens","multiSelect":true,"options":[{"label":"A"}]}
+    ]}"#;
+
+    #[test]
+    fn ask_user_question_becomes_questions_and_is_answered_with_the_input() {
+        let input: Value = serde_json::from_str(ASK_INPUT).unwrap();
+        let parsed = questions(ASK_TOOL, &input).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].header, "Cor");
+        assert_eq!(parsed[0].text, "Qual cor?");
+        assert!(!parsed[0].multi_select);
+        assert_eq!(
+            parsed[0].options,
+            [
+                QuestionOption {
+                    label: "Azul".into(),
+                    description: "O céu".into()
+                },
+                QuestionOption {
+                    label: "Verde".into(),
+                    description: String::new()
+                },
+            ]
+        );
+        assert!(parsed[1].multi_select);
+
+        // Outra ferramenta, ou sem perguntas, é um pedido de permissão comum.
+        assert_eq!(questions("Bash", &input), None);
+        assert_eq!(
+            questions(ASK_TOOL, &serde_json::json!({ "questions": [] })),
+            None
+        );
+        assert_eq!(questions(ASK_TOOL, &Value::Null), None);
+
+        let answers = ["Verde".to_string(), "A, B".to_string()];
+        let reply: Value = serde_json::from_str(&answer_response("r1", &input, &answers)).unwrap();
+        assert_eq!(reply["response"]["request_id"], "r1");
+        let decision = &reply["response"]["response"];
+        assert_eq!(decision["behavior"], "allow");
+        assert_eq!(decision["updatedInput"]["questions"], input["questions"]);
+        assert_eq!(
+            decision["updatedInput"]["answers"],
+            serde_json::json!({ "Qual cor?": "Verde", "Quais?": "A, B" })
+        );
+    }
+
+    /// Mesmo no Yolo, que aprova o resto sozinho, a pergunta espera o usuário.
+    #[cfg(unix)]
+    #[test]
+    fn questions_wait_for_the_user_even_in_yolo() {
+        let dir = tempfile::tempdir().unwrap();
+        let reply = dir.path().join("resposta");
+        let request = serde_json::json!({
+            "type": "control_request",
+            "request_id": "r1",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": ASK_TOOL,
+                "input": serde_json::from_str::<Value>(ASK_INPUT).unwrap(),
+            },
+        });
+        let script = format!(
+            "#!/bin/sh\nread -r message\necho '{request}'\nread -r answer\n\
+             printf '%s' \"$answer\" > '{}'\n\
+             echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"usage\":{{}}}}'\n",
+            reply.display()
+        );
+        let mut run = start_fake(dir.path(), &script);
+
+        let id = loop {
+            if let Some(AgentEvent::Question { id, questions }) = run.poll().into_iter().next() {
+                assert_eq!(questions[0].text, "Qual cor?");
+                break id;
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(!reply.exists());
+        run.answer(&id, Some(vec!["Verde".to_string(), "A".to_string()]));
+        while !run
+            .poll()
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Done { .. }))
+        {
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let sent: Value = serde_json::from_str(&fs::read_to_string(&reply).unwrap()).unwrap();
+        assert_eq!(
+            sent["response"]["response"]["updatedInput"]["answers"]["Qual cor?"],
+            "Verde"
+        );
+    }
+
+    /// Grava `script` como o `claude` em `dir` e o inicia no Yolo. Repete o
+    /// início enquanto der "Text file busy": um teste em paralelo pode fazer
+    /// `fork` com o arquivo ainda aberto para escrita, e o `exec` falha.
+    #[cfg(unix)]
+    fn start_fake(dir: &Path, script: &str) -> Run {
+        use std::os::unix::fs::PermissionsExt;
+        let fake = dir.join("claude");
+        fs::write(&fake, script).unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let extensions = Contribution::default();
+        let mut attempts = 0;
+        loop {
+            let started = Run::start(
+                &fake,
+                Request {
+                    prompt: "oi",
+                    mode: PermissionMode::Yolo,
+                    session_id: None,
+                    model: None,
+                    account: None,
+                    effort: None,
+                    subagent_model: None,
+                    extensions: &extensions,
+                    allowed_tools: &[],
+                },
+                None,
+            );
+            match started {
+                Err(err) if err.contains("os error 26") && attempts < 50 => {
+                    attempts += 1;
+                    thread::sleep(Duration::from_millis(10));
+                }
+                started => return started.unwrap(),
+            }
+        }
+    }
+
+    /// Um `claude` de mentira que escreve `lines`, com uma pausa entre as
+    /// linhas e, no fim, espera o stdin fechar. Devolve os eventos da resposta
+    /// até o fim dela.
+    #[cfg(unix)]
+    fn run_fake(lines: &[&str]) -> Vec<AgentEvent> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut script = String::from("#!/bin/sh\nread -r message\n");
+        for line in lines {
+            script.push_str(&format!("echo '{line}'\nsleep 0.05\n"));
+        }
+        script.push_str("cat > /dev/null\n");
+        let mut run = start_fake(dir.path(), &script);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut events = Vec::new();
+        while !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Done { .. } | AgentEvent::Failed(_)))
+        {
+            assert!(std::time::Instant::now() < deadline, "{events:?}");
+            events.extend(run.poll());
+            thread::sleep(Duration::from_millis(5));
+        }
+        events
+    }
+
+    const INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s","model":"m"}"#;
+    const STARTED: &str = r#"{"type":"system","subtype":"task_started","tool_use_id":"t1","description":"Rodar","task_type":"local_agent"}"#;
+    const FINISHED: &str = r#"{"type":"system","subtype":"task_notification","tool_use_id":"t1","status":"completed"}"#;
+    const RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1,"output_tokens":2}}"#;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_first_result_does_not_end_a_turn_with_a_running_subagent() {
+        let events = run_fake(&[INIT, STARTED, RESULT, FINISHED, INIT, RESULT]);
+        let position = |wanted: fn(&AgentEvent) -> bool| events.iter().position(wanted).unwrap();
+        let finished =
+            position(|event| matches!(event, AgentEvent::Subagent(SubagentEvent::Finished { .. })));
+        let done = position(|event| matches!(event, AgentEvent::Done { .. }));
+        assert!(finished < done, "{events:?}");
+        // As duas partes da resposta entram no uso.
+        assert!(matches!(events[done], AgentEvent::Done { tokens: 6, .. }));
+        assert!(events.contains(&AgentEvent::Subagent(SubagentEvent::Waiting)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_continuation_that_never_comes_still_ends_the_turn() {
+        let events = run_fake(&[INIT, STARTED, FINISHED, RESULT]);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done {
+                is_error: false,
+                tokens: 3,
+                ..
+            })
+        ));
+    }
+
+    /// O caso comum do subagente em segundo plano: o `result` chega com ele
+    /// rodando, e ele termina depois. Sem continuação, a resposta fecha igual.
+    #[cfg(unix)]
+    #[test]
+    fn a_continuation_that_never_comes_after_a_late_subagent_still_ends_the_turn() {
+        let events = run_fake(&[INIT, STARTED, RESULT, FINISHED]);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done {
+                is_error: false,
+                tokens: 3,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_turn_without_subagents_ends_on_its_result() {
+        let events = run_fake(&[INIT, RESULT]);
+        assert!(matches!(events.last(), Some(AgentEvent::Done { .. })));
+        assert!(!events.contains(&AgentEvent::Subagent(SubagentEvent::Waiting)));
     }
 
     #[test]

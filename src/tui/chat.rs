@@ -13,6 +13,7 @@ mod inbox;
 mod model;
 pub(super) mod model_menu;
 mod permission;
+mod question;
 mod record;
 mod slash;
 #[cfg(test)]
@@ -32,7 +33,9 @@ use super::history::{Entry, History};
 use super::input::extensions::AgentStatus;
 use super::input::{self, InputBox, InputMode, Outcome};
 use super::widgets::badge;
-use crate::agent::{self, AgentEvent, Catalog, ChatAdapter, PermissionMode, Session, UsageWindow};
+use crate::agent::{
+    self, AgentEvent, Catalog, ChatAdapter, ModelSpend, PermissionMode, Session, UsageWindow,
+};
 use crate::db::history::Conversation;
 use crate::extension::Contribution;
 use crate::platform::clipboard;
@@ -113,6 +116,16 @@ pub struct Chat {
     cache_tokens_used: u64,
     /// O que o turno em andamento já somou nos dois acima (fora e de cache).
     turn_spent: (u64, u64),
+    /// O gasto dos turnos que terminaram, por modelo.
+    spend: Vec<ModelSpend>,
+    /// O gasto do turno em andamento, por modelo.
+    turn_spend: Vec<ModelSpend>,
+    /// O turno em andamento já tem o gasto completo, tirado do acumulado da
+    /// sessão; o parcial não o substitui.
+    turn_spend_final: bool,
+    /// O que a sessão do agente já gastou até o último turno, para tirar do
+    /// acumulado que ela informa.
+    session_spend: Vec<ModelSpend>,
     /// Tamanho do contexto da sessão, depois da primeira chamada ao modelo.
     context: Option<u64>,
     /// Limite de contexto do modelo, quando o agente informa.
@@ -136,6 +149,8 @@ pub struct Chat {
     agent_name: Option<String>,
     /// As mensagens de outros agentes que chegaram ao chat.
     inbox: Vec<crate::orchestrator::message::Message>,
+    /// O que os subagentes fizeram e o App ainda não levou às abas deles.
+    subagents: Vec<crate::agent::SubagentEvent>,
     /// Quantas da caixa o usuário ainda não leu.
     unread: usize,
     /// A aba de uma execução despachada: só mostra, não manda nada.
@@ -187,6 +202,10 @@ impl Default for Chat {
             tokens_used: 0,
             cache_tokens_used: 0,
             turn_spent: (0, 0),
+            spend: Vec::new(),
+            turn_spend: Vec::new(),
+            turn_spend_final: false,
+            session_spend: Vec::new(),
             context: None,
             context_window: None,
             context_settings: ContextSettings::default(),
@@ -197,6 +216,7 @@ impl Default for Chat {
             catalog_loading: None,
             agent_name: None,
             inbox: Vec::new(),
+            subagents: Vec::new(),
             unread: 0,
             read_only: false,
             viewer_provider: None,
@@ -373,12 +393,34 @@ impl Chat {
     /// Há uma conversa com o agente (o MCP mostra a sessão ativa).
     /// Os tokens gastos neste chat (entrada e saída, sem os de cache).
     /// O que o agente está fazendo agora (`None` com o chat parado).
+    /// Está numa resposta.
+    pub fn is_running(&self) -> bool {
+        self.run.is_some()
+    }
+
+    /// O que os subagentes fizeram desde a última vez.
+    pub fn take_subagent_events(&mut self) -> Vec<crate::agent::SubagentEvent> {
+        std::mem::take(&mut self.subagents)
+    }
+
     pub fn activity(&self) -> Option<&str> {
         self.agent_activity.as_deref()
     }
 
     pub fn tokens_used(&self) -> u64 {
         self.tokens_used
+    }
+
+    /// O gasto deste chat por modelo, com o turno em andamento.
+    pub fn spend(&self) -> Vec<ModelSpend> {
+        let mut spend = self.spend.clone();
+        crate::agent::merge_spend(&mut spend, &self.turn_spend);
+        spend
+    }
+
+    /// O gasto do turno em andamento, que ainda não está na sessão da pasta.
+    pub fn turn_spend(&self) -> &[ModelSpend] {
+        &self.turn_spend
     }
 
     pub fn extensions(&self) -> &Contribution {
@@ -458,10 +500,13 @@ impl Chat {
     }
 
     /// Texto colado no terminal: vai para o input, menos com o menu do
-    /// `/model` ou um pedido de permissão abertos.
+    /// `/model` ou um pedido de permissão abertos; com uma pergunta aberta,
+    /// vai para a resposta escrita.
     pub fn handle_paste(&mut self, text: &str) {
         if self.model_menu.is_none() && !self.prompts.is_open() {
             self.input.paste(text);
+        } else if self.model_menu.is_none() {
+            self.prompts.paste(text);
         }
     }
 
@@ -511,6 +556,13 @@ impl Chat {
             ))),
         }
         self.recorder = Some(recorder);
+    }
+
+    /// O consumo dos turnos vai para a sessão da pasta `folder`.
+    pub fn set_usage_folder(&mut self, folder: String) {
+        if let Some(recorder) = &mut self.recorder {
+            recorder.set_folder(folder);
+        }
     }
 
     /// Grava o que falta da conversa, mesmo uma resposta pela metade.

@@ -1,29 +1,38 @@
 //! A conversa com o [`crate::hub`]: o que este terra conta a ele a cada tick e
 //! o que recebe de volta, como as execuções despachadas.
 
-use super::{App, ChatTab, MAIN_CHAT_TITLE};
+use super::{App, ChatTab, MAIN_CHAT_TITLE, SubagentTab};
+use crate::agent::{AgentEvent, SubagentEvent};
 use crate::hub;
 use crate::hub::client::Event;
 use crate::tui::chat::Chat;
+
+/// Quantos caracteres da descrição de um subagente vão no título da aba.
+const SUBAGENT_TITLE: usize = 24;
 
 impl App {
     /// O que este terra está fazendo, para o hub: algum chat rodando, o que
     /// o agente faz e os chats abertos (os além do principal são os sub
     /// agentes).
     pub(super) fn hub_status(&self) -> hub::protocol::Status {
-        let main = (&self.chat_id, MAIN_CHAT_TITLE, &self.chat, None);
-        let chats = std::iter::once(main).chain(
-            self.chats
-                .iter()
-                .map(|tab| (&tab.id, tab.title.as_str(), &tab.chat, tab.run.clone())),
-        );
+        let main = (&self.chat_id, MAIN_CHAT_TITLE, &self.chat, None, None);
+        let chats = std::iter::once(main).chain(self.chats.iter().map(|tab| {
+            (
+                &tab.id,
+                tab.title.as_str(),
+                &tab.chat,
+                tab.run.clone(),
+                tab.subagent.as_ref().map(SubagentTab::state),
+            )
+        }));
         let tabs: Vec<_> = chats
-            .map(|(id, title, chat, run)| hub::protocol::Tab {
+            .map(|(id, title, chat, run, subagent)| hub::protocol::Tab {
                 id: id.clone(),
                 run,
                 title: title.to_string(),
                 name: chat.agent_name().map(str::to_string),
                 task: chat.activity().map(str::to_string),
+                subagent,
             })
             .collect();
         let task = tabs.iter().find_map(|tab| tab.task.clone());
@@ -112,9 +121,126 @@ impl App {
         self.chats.push(ChatTab {
             id: hub::protocol::new_id(),
             run: Some(run.id.clone()),
+            subagent: None,
             title: format!("▶ {}", run.agent),
             chat: Chat::viewer(session, intro, provider),
         });
+    }
+
+    /// Leva às abas o que os subagentes dos chats fizeram: cada um que começa
+    /// abre uma aba só de leitura, em segundo plano. A aba de um subagente
+    /// cujo chat parou (o `Esc`, por exemplo, mata os dois) termina junto.
+    pub(super) fn sync_subagents(&mut self) {
+        let mut events: Vec<_> = self
+            .chat
+            .take_subagent_events()
+            .into_iter()
+            .map(|event| (self.chat_id.clone(), event))
+            .collect();
+        for tab in &mut self.chats {
+            let id = tab.id.clone();
+            events.extend(
+                tab.chat
+                    .take_subagent_events()
+                    .into_iter()
+                    .map(|event| (id.clone(), event)),
+            );
+        }
+        for (parent, event) in events {
+            self.apply_subagent(parent, event);
+        }
+        let stopped: Vec<String> = self
+            .chats
+            .iter()
+            .filter_map(|tab| tab.subagent.as_ref())
+            .filter(|sub| sub.feed.is_some())
+            .map(|sub| sub.parent.clone())
+            .filter(|parent| {
+                !self
+                    .chat_by_id(parent)
+                    .is_some_and(|chat| chat.is_running())
+            })
+            .collect();
+        for tab in &mut self.chats {
+            if let Some(sub) = &mut tab.subagent
+                && stopped.contains(&sub.parent)
+                && let Some(feed) = sub.feed.take()
+            {
+                sub.failed = true;
+                let _ = feed.send(AgentEvent::Failed(
+                    "O chat que lançou este subagente parou antes dele.".to_string(),
+                ));
+            }
+        }
+    }
+
+    fn apply_subagent(&mut self, parent: String, event: SubagentEvent) {
+        match event {
+            SubagentEvent::Started { id, description } => {
+                use crate::agent::adapters::claude;
+                let (tx, session) = crate::agent::feed();
+                let title: String = description.chars().take(SUBAGENT_TITLE).collect();
+                let intro = format!("▶ Subagente: {description}");
+                let provider = (claude::NAME, claude::display_model as fn(&str) -> String);
+                self.chats.push(ChatTab {
+                    id: hub::protocol::new_id(),
+                    run: None,
+                    subagent: Some(SubagentTab {
+                        id,
+                        parent: parent.clone(),
+                        feed: Some(tx),
+                        failed: false,
+                    }),
+                    title: format!("▶ {title}"),
+                    chat: Chat::viewer(session, intro, provider),
+                });
+            }
+            SubagentEvent::Activity { id, event } => {
+                if let Some(feed) = self
+                    .subagent_tab(&parent, &id)
+                    .and_then(|tab| tab.feed.as_ref())
+                {
+                    let _ = feed.send(*event);
+                }
+            }
+            SubagentEvent::Finished { id, error } => {
+                if let Some(tab) = self.subagent_tab(&parent, &id)
+                    && let Some(feed) = tab.feed.take()
+                {
+                    tab.failed = error.is_some();
+                    let _ = feed.send(match error {
+                        Some(error) => AgentEvent::Failed(error),
+                        None => AgentEvent::Done {
+                            is_error: false,
+                            message: None,
+                            tokens: 0,
+                            cache_tokens: 0,
+                            denied: 0,
+                        },
+                    });
+                }
+            }
+            SubagentEvent::Waiting => {}
+        }
+    }
+
+    /// A aba do subagente `id` que o chat `parent` lançou.
+    fn subagent_tab(&mut self, parent: &str, id: &str) -> Option<&mut SubagentTab> {
+        self.chats
+            .iter_mut()
+            .filter_map(|tab| tab.subagent.as_mut())
+            .find(|sub| sub.id == id && sub.parent == parent)
+    }
+
+    /// O chat com o id `id` no hub, só para ler.
+    fn chat_by_id(&self, id: &str) -> Option<&Chat> {
+        if self.chat_id == id {
+            return Some(&self.chat);
+        }
+        self.chats
+            .iter()
+            .find(|tab| tab.id == id)
+            .map(|tab| &tab.chat)
     }
 
     /// O chat com o id `id` no hub: o principal ou um do `Alt+N`.

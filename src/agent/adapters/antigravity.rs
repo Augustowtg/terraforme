@@ -57,7 +57,7 @@ use std::thread;
 
 use self::catalog::{Families, Labels};
 use self::permission::Gate;
-use self::plugin::Overlay;
+pub use self::plugin::Overlay;
 use self::stream::StreamParser;
 use crate::agent::{
     AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive, PermissionMode,

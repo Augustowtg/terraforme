@@ -8,7 +8,7 @@ use crossterm::event::KeyModifiers;
 use ratatui::{Terminal, backend::TestBackend};
 
 use super::*;
-use crate::hub::protocol::{Health, Status, Tab as HubTab};
+use crate::hub::protocol::{Health, Status, SubagentState, Tab as HubTab};
 use crate::orchestrator::run::{RunState, Usage};
 
 struct Tab {
@@ -235,6 +235,7 @@ fn instance(workspace: &str, pid: u64, health: Health, tabs: &[&str]) -> Instanc
         reason: None,
         status: Status {
             chats: tabs.len(),
+            agents: tabs.len().saturating_sub(1),
             tabs: tabs
                 .iter()
                 .map(|title| HubTab {
@@ -260,7 +261,10 @@ fn a_workspace_shows_its_live_instances_only_when_opened() {
         ],
     );
     let screen = tab.screen_with(Some(&hub));
-    assert!(screen.contains("▸ Studio · 2 instâncias"), "{screen}");
+    assert!(
+        screen.contains("▸ Studio · 2 instâncias · 1 sub agente (1 parado)"),
+        "{screen}"
+    );
     assert!(!screen.contains("Studio-4242"), "{screen}");
     // O que saiu não aparece, nem o workspace sem ninguém vivo.
     assert!(!screen.contains("velho"), "{screen}");
@@ -270,12 +274,48 @@ fn a_workspace_shows_its_live_instances_only_when_opened() {
     let screen = tab.screen_with(Some(&hub));
     assert!(screen.contains("▾ Studio · 2 instâncias"), "{screen}");
     assert!(screen.contains("Studio-4242"), "{screen}");
-    assert!(screen.contains("Principal, Chat 2"), "{screen}");
+    assert!(screen.contains("↳ Chat 2"), "{screen}");
     assert!(screen.contains("Studio-4300"), "{screen}");
     assert!(!screen.contains("Studio-5000"), "{screen}");
 
     tab.press(KeyCode::Left);
     assert!(!tab.screen_with(Some(&hub)).contains("Studio-4242"));
+}
+
+#[test]
+fn a_workspace_shows_its_sub_agents_and_their_states() {
+    let mut tab = Tab::new("");
+    let mut studio = instance(
+        "Studio",
+        4242,
+        Health::Alive,
+        &["Principal", "▶ Revisar", "▶ Testar", "▶ Buscar"],
+    );
+    let tabs = &mut studio.status.tabs;
+    tabs[1].task = Some("Usando Bash...".into());
+    tabs[1].subagent = Some(SubagentState::Running);
+    tabs[2].subagent = Some(SubagentState::Done);
+    tabs[3].subagent = Some(SubagentState::Failed);
+    let hub = (true, vec![studio]);
+    let screen = tab.screen_with(Some(&hub));
+    assert!(
+        screen.contains("3 sub agentes (1 rodando, 1 concluído, 1 falhou)"),
+        "{screen}"
+    );
+
+    tab.select(&Action::Workspace("Studio".into()));
+    tab.press(KeyCode::Enter);
+    let screen = tab.screen_with(Some(&hub));
+    let line = |title: &str| {
+        screen
+            .lines()
+            .find(|line| line.contains(title))
+            .unwrap_or_else(|| panic!("sem {title}: {screen}"))
+            .to_string()
+    };
+    assert!(line("↳ ▶ Revisar").contains("Usando Bash..."), "{screen}");
+    assert!(line("↳ ▶ Testar").contains("concluído"), "{screen}");
+    assert!(line("↳ ▶ Buscar").contains("falhou"), "{screen}");
 }
 
 #[test]

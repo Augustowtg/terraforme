@@ -40,6 +40,9 @@ struct Running {
     child: Child,
     /// `None`: sem tempo limite.
     deadline: Option<Instant>,
+    /// No Antigravity, o plugin com o MCP do orquestrador; a pasta some
+    /// junto com a execução.
+    _overlay: Option<antigravity::Overlay>,
 }
 
 #[derive(Default)]
@@ -199,8 +202,22 @@ impl Hub {
             Ok(files) => files,
             Err(err) => return self.fail(run, &format!("{}: {err}", dir.display())),
         };
-        cmd.args(run::args(agent, config))
-            .current_dir(&agent.cwd)
+        // O MCP do orquestrador vai em toda execução: no Claude, pelo
+        // `--mcp-config`; no Antigravity, por um plugin no `--add-dir`.
+        let mcp = run::terra_mcp(&run, &agent.cwd);
+        cmd.args(run::args(agent, config, &mcp));
+        let overlay = if agent.is_antigravity() {
+            match antigravity::Overlay::create(&run::contribution(&mcp), &Default::default()) {
+                Ok(overlay) => overlay,
+                Err(err) => return self.fail(run, &err),
+            }
+        } else {
+            None
+        };
+        if let Some(overlay) = &overlay {
+            cmd.arg("--add-dir").arg(overlay.dir());
+        }
+        cmd.current_dir(&agent.cwd)
             .env(AGENT_ENV, &run.agent)
             .env(HOPS_ENV, run.hops.to_string())
             .env(RUN_ENV, &run.id)
@@ -245,6 +262,7 @@ impl Hub {
                 run,
                 child,
                 deadline,
+                _overlay: overlay,
             },
         );
     }

@@ -110,7 +110,8 @@ pub struct Agent {
     /// Execuções por dia; `None` é sem limite.
     pub daily_budget: Option<u32>,
     /// Sem o `ambiente = "completo"`, a execução sobe enxuta: só as
-    /// ferramentas da lista, sem MCP, skills nem hooks.
+    /// ferramentas da lista e o MCP do orquestrador (`terra mcp`), sem os
+    /// outros MCP, as skills e os hooks.
     pub full_env: bool,
 }
 

@@ -7,6 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use super::{App, Focus, MAIN_CHAT_TITLE, SaveChoice, Tab};
 use crate::hub::client::{Monitor, Reporter};
@@ -14,10 +15,18 @@ use crate::theme;
 use crate::tui::extensions;
 use crate::tui::orchestrator as orchestrator_tab;
 use crate::tui::update;
+use crate::tui::usage::TabSpend;
+
+/// O retângulo de um item de `width` colunas que começa em `x` na linha de
+/// `area`, cortado pela borda direita dela.
+fn clip(x: u16, width: usize, area: Rect) -> Rect {
+    let width = (width as u16).min(area.right().saturating_sub(x));
+    Rect::new(x, area.y, width, area.height.min(1))
+}
 
 const QUIT_LABEL: &str = " Sair ";
 const TAB_GAP: &str = " ";
-const HELP: &str = "Tab trocar aba · Esc ir para Sair";
+const HELP: &str = "Tab ou clique trocar aba · Esc ir para Sair";
 const HELP_QUIT: &str = "Enter sair · Tab/Esc voltar às abas";
 const HELP_PROVIDER: &str = "Enter entrar no terminal · Tab trocar aba · Esc ir para Sair";
 const HELP_CHATS: &str = "Alt+N novo chat · Alt+←/→ trocar chat · Alt+W fechar chat";
@@ -93,12 +102,15 @@ impl App {
         }
 
         let mut spans = Vec::new();
+        let mut rects = Vec::new();
+        let mut x = tabs_area.x;
         let tabs = Tab::ALL
             .into_iter()
             .filter(|tab| tab.visible(self.update_view.available()));
         for (i, tab) in tabs.enumerate() {
             if i > 0 {
                 spans.push(Span::raw(TAB_GAP));
+                x = x.saturating_add(TAB_GAP.width() as u16);
             }
             let style = if tab == self.tab && self.focus == Focus::Tabs {
                 theme::tab_active()
@@ -109,8 +121,11 @@ impl App {
                 n if n > 0 && tab == Tab::Chat => format!(" {} ✉{n} ", tab.title()),
                 _ => format!(" {} ", tab.title()),
             };
+            rects.push((clip(x, title.width(), tabs_area), tab));
+            x = x.saturating_add(title.width() as u16);
             spans.push(Span::styled(title, style));
         }
+        *self.tab_rects.borrow_mut() = rects;
         frame.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
 
         let quit_style = if self.focus == Focus::Tabs {
@@ -123,6 +138,14 @@ impl App {
             Paragraph::new(Span::styled(QUIT_LABEL, quit_style)).alignment(Alignment::Right),
             quit_area,
         );
+        // O rótulo fica à direita da área, que pode ser mais larga que ele.
+        let width = (QUIT_LABEL.width() as u16).min(quit_area.width);
+        self.quit_rect.set(Rect::new(
+            quit_area.right() - width,
+            quit_area.y,
+            width,
+            quit_area.height.min(1),
+        ));
     }
 
     /// O consumo geral, ao lado do "Sair": os tokens de todos os chats deste
@@ -155,21 +178,30 @@ impl App {
                 n => format!("{title} ✉{n}"),
             });
         let mut spans = Vec::new();
+        let mut rects = Vec::new();
+        let mut x = inner.x;
         for (i, title) in titles.enumerate() {
             if i > 0 {
                 spans.push(Span::raw(TAB_GAP));
+                x = x.saturating_add(TAB_GAP.width() as u16);
             }
             let style = if i == self.active_chat && self.focus == Focus::Tabs {
                 theme::tab_active()
             } else {
                 theme::tab_inactive()
             };
-            spans.push(Span::styled(format!(" {title} "), style));
+            let title = format!(" {title} ");
+            rects.push((clip(x, title.width(), inner), i));
+            x = x.saturating_add(title.width() as u16);
+            spans.push(Span::styled(title, style));
         }
+        *self.chat_rects.borrow_mut() = rects;
         frame.render_widget(Paragraph::new(Line::from(spans)), inner);
     }
 
     fn draw_content(&self, frame: &mut Frame, area: Rect) {
+        // A barra de chats só reaparece se for desenhada abaixo.
+        self.chat_rects.borrow_mut().clear();
         if self.tab == Tab::Chat && self.uses_provider() {
             match &self.term {
                 Some(term) => term.draw(frame, area, self.captures_keys()),
@@ -225,7 +257,43 @@ impl App {
             Some(adapter) => format!("{} · {}", adapter.name(), self.chat.account_label()),
             None => String::new(),
         };
-        self.usage.draw(frame, area, self.chat.adapter(), &route);
+        self.usage.draw(
+            frame,
+            area,
+            self.chat.adapter(),
+            &route,
+            &self.tab_spends(),
+            self.active_chat,
+        );
+    }
+
+    /// O que cada chat aberto gastou, para a sessão da aba Consumo.
+    fn tab_spends(&self) -> Vec<TabSpend> {
+        let main = TabSpend {
+            title: MAIN_CHAT_TITLE.to_string(),
+            spend: self.chat.spend(),
+            running: self.chat.turn_spend().to_vec(),
+            note: self.uses_provider().then_some(
+                "A interface original do provedor não passa pelo terra: o consumo dela não conta aqui.",
+            ),
+        };
+        let others = self.chats.iter().map(|tab| TabSpend {
+            title: tab.title.clone(),
+            spend: tab.chat.spend(),
+            running: if tab.run.is_some() {
+                Vec::new()
+            } else {
+                tab.chat.turn_spend().to_vec()
+            },
+            note: if tab.subagent.is_some() {
+                Some("O consumo do subagente entra na aba que o lançou.")
+            } else if tab.run.is_some() {
+                Some("Uma execução despachada não entra na sessão da pasta.")
+            } else {
+                None
+            },
+        });
+        std::iter::once(main).chain(others).collect()
     }
 
     /// A aba Chat na Interface "Original do provedor" sem a interface

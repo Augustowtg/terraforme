@@ -17,6 +17,9 @@ pub use adapter::{
     ModelInfo, ModelOption, ProviderSkill, Request, Session, Usage, UsageWindow, kill_tree, launch,
     own_group,
 };
-pub use event::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
-pub use follow::follow;
+pub use event::{
+    AgentEvent, CHARS_PER_TOKEN, ModelSpend, Question, QuestionOption, ReportedMode, SpendScope,
+    SubagentEvent, merge_spend, spend_since, total_spend,
+};
+pub use follow::{feed, follow};
 pub use mode::PermissionMode;
