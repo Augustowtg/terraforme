@@ -2,11 +2,19 @@
 //! agente e a auto compactação ao fim.
 
 use super::permission::{self, Kind};
+use super::question::Form;
 use super::{Chat, DEFAULT_CONTEXT_WINDOW};
-use crate::agent::{AgentEvent, PermissionMode, ReportedMode, Request};
+use crate::agent::{
+    AgentEvent, PermissionMode, ReportedMode, Request, SpendScope, SubagentEvent, merge_spend,
+    spend_since,
+};
+use crate::db::history::Conversation;
 use crate::tui::history::Entry;
 use crate::tui::input::commands;
 use crate::tui::input::extensions::AgentStatus;
+
+/// A atividade enquanto o agente espera a resposta de uma pergunta.
+const ASKING_ACTIVITY: &str = "Aguardando sua resposta...";
 
 impl Chat {
     /// Envia o texto do input ao agente. Ignora texto vazio e, enquanto o
@@ -19,7 +27,7 @@ impl Chat {
         if self.read_only && !prompt.is_empty() {
             self.input.clear();
             self.history.push(Entry::Info(
-                "Esta aba só mostra uma execução do orquestrador: ela roda sozinha.".into(),
+                "Esta aba só mostra uma execução: ela roda sozinha.".into(),
             ));
             self.history.follow();
             return;
@@ -69,6 +77,7 @@ impl Chat {
 
     /// Manda `prompt` ao agente como uma mensagem do usuário (ex.: a
     /// primeira de um chat aberto pelo orquestrador).
+    #[cfg(test)]
     pub fn submit(&mut self, prompt: &str) {
         if self.run.is_none() && self.start(prompt, Entry::User(prompt.to_string())) {
             self.auto_compact_armed = true;
@@ -123,6 +132,16 @@ impl Chat {
     /// Manda a resposta do usuário a um pedido de permissão e a registra no
     /// histórico.
     pub(super) fn answer(&mut self, request: permission::Request, allow: bool) {
+        if let Kind::Question { id, form } = &request.kind {
+            if let Some(run) = &mut self.run {
+                run.answer(id, allow.then(|| form.answers()));
+            }
+            for line in form.summary(allow) {
+                self.history.push(Entry::Info(line));
+            }
+            self.after_answer();
+            return;
+        }
         match &request.kind {
             Kind::Ask { id } => {
                 if let Some(run) = &mut self.run {
@@ -134,6 +153,7 @@ impl Chat {
                     self.allowed.push(rule.clone());
                 }
             }
+            Kind::Question { .. } => {}
         }
         let verdict = if allow { "Permitido" } else { "Negado" };
         let detail = if request.detail.is_empty() {
@@ -143,10 +163,19 @@ impl Chat {
         };
         self.history
             .push(Entry::Info(format!("{verdict}: {}{detail}.", request.name)));
+        self.after_answer();
+    }
+
+    /// Depois de uma resposta do usuário: a atividade mostra o que vem agora
+    /// e, se for o caso, o agente recebe o que foi liberado.
+    fn after_answer(&mut self) {
         if self.run.is_some() {
             self.agent_activity = Some(match self.prompts.current() {
                 Some(next) if matches!(next.kind, Kind::Ask { .. }) => {
                     format!("Aguardando permissão para {}...", next.name)
+                }
+                Some(next) if matches!(next.kind, Kind::Question { .. }) => {
+                    ASKING_ACTIVITY.to_string()
                 }
                 _ => "Pensando...".to_string(),
             });
@@ -175,7 +204,7 @@ impl Chat {
     /// Interrompe a resposta em andamento (soltar a sessão a encerra).
     pub(super) fn cancel(&mut self) {
         self.run = None;
-        self.turn_spent = (0, 0);
+        self.close_turn_spend();
         self.prompts.clear();
         self.allowed.clear();
         self.auto_compact_armed = false;
@@ -185,7 +214,7 @@ impl Chat {
     }
 
     /// Aplica um evento do agente ao histórico e ao status.
-    pub(super) fn apply(&mut self, event: AgentEvent) {
+    pub(in crate::tui) fn apply(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Init {
                 session_id,
@@ -221,6 +250,17 @@ impl Chat {
                     name,
                     detail,
                     kind: Kind::Ask { id },
+                });
+            }
+            AgentEvent::Question { id, questions } => {
+                self.agent_activity = Some(ASKING_ACTIVITY.to_string());
+                self.prompts.push(permission::Request {
+                    name: "Pergunta".to_string(),
+                    detail: String::new(),
+                    kind: Kind::Question {
+                        id,
+                        form: Form::new(questions),
+                    },
                 });
             }
             AgentEvent::Blocked {
@@ -259,6 +299,26 @@ impl Chat {
                 tokens,
                 cache_tokens,
             } => self.count_turn(tokens, cache_tokens),
+            AgentEvent::Spent { models, scope } => match scope {
+                SpendScope::Session => {
+                    self.turn_spend = spend_since(&models, &self.session_spend);
+                    self.turn_spend_final = true;
+                }
+                SpendScope::Turn if !self.turn_spend_final => self.turn_spend = models,
+                SpendScope::Turn => {}
+            },
+            AgentEvent::Subagent(SubagentEvent::Waiting) => {
+                self.agent_activity = Some("Aguardando os subagentes...".to_string());
+            }
+            AgentEvent::Subagent(event) => {
+                if let SubagentEvent::Started { description, .. } = &event {
+                    self.agent_activity = Some(format!("Subagente: {description}"));
+                    self.history.push(Entry::Info(format!(
+                        "Subagente aberto na barra de chats: {description} (Alt+←/→)."
+                    )));
+                }
+                self.subagents.push(event);
+            }
             AgentEvent::Done {
                 is_error,
                 message,
@@ -341,9 +401,33 @@ impl Chat {
         self.turn_spent = (tokens, cache_tokens);
     }
 
+    /// O turno acabou, mesmo interrompido: o gasto dele vai para o do chat e
+    /// para a sessão da pasta.
+    pub(super) fn close_turn_spend(&mut self) {
+        self.turn_spent = (0, 0);
+        self.turn_spend_final = false;
+        let spend = std::mem::take(&mut self.turn_spend);
+        if spend.is_empty() {
+            return;
+        }
+        merge_spend(&mut self.spend, &spend);
+        merge_spend(&mut self.session_spend, &spend);
+        let Some(recorder) = &mut self.recorder else {
+            return;
+        };
+        let info = Conversation {
+            provider: self.adapter.as_ref().map(|a| a.id()),
+            session_id: self.session_id.as_deref(),
+            model: None,
+        };
+        if let Err(err) = recorder.record_turn(info, &spend) {
+            self.recording_failed(err);
+        }
+    }
+
     fn finish(&mut self, is_error: bool) {
         self.run = None;
-        self.turn_spent = (0, 0);
+        self.close_turn_spend();
         self.prompts.clear_asks();
         self.auto_compact_armed = false;
         self.agent_activity = None;

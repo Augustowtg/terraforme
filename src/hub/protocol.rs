@@ -63,6 +63,33 @@ pub struct Tab {
     /// A execução despachada que a aba mostra (`kind: execucao`); `None`
     /// numa aba manual.
     pub run: Option<String>,
+    /// O estado do subagente que a aba mostra (`kind: subagente`); `None`
+    /// nas outras abas.
+    pub subagent: Option<SubagentState>,
+}
+
+/// Em que pé está o subagente de uma aba.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentState {
+    Running,
+    Done,
+    Failed,
+}
+
+impl SubagentState {
+    fn key(self) -> &'static str {
+        match self {
+            SubagentState::Running => "rodando",
+            SubagentState::Done => "concluido",
+            SubagentState::Failed => "falhou",
+        }
+    }
+
+    fn parse(key: &str) -> Option<Self> {
+        [Self::Running, Self::Done, Self::Failed]
+            .into_iter()
+            .find(|state| state.key() == key)
+    }
 }
 
 impl Tab {
@@ -71,9 +98,14 @@ impl Tab {
             "id": self.id,
             "title": self.title,
             "name": self.name,
-            "kind": if self.run.is_some() { "execucao" } else { "manual" },
+            "kind": match (&self.run, self.subagent) {
+                (Some(_), _) => "execucao",
+                (None, Some(_)) => "subagente",
+                (None, None) => "manual",
+            },
             "run": self.run,
             "task": self.task,
+            "subagent": self.subagent.map(SubagentState::key),
         })
     }
 
@@ -84,6 +116,7 @@ impl Tab {
             name: value["name"].as_str().map(str::to_string),
             run: value["run"].as_str().map(str::to_string),
             task: value["task"].as_str().map(str::to_string),
+            subagent: value["subagent"].as_str().and_then(SubagentState::parse),
         })
     }
 }
@@ -286,16 +319,28 @@ mod tests {
             task: Some("Pensando...".into()),
             chats: 3,
             agents: 2,
-            tabs: vec![Tab {
-                id: "9c1e".into(),
-                run: None,
-                title: "Principal".into(),
-                name: Some("backend".into()),
-                task: Some("Pensando...".into()),
-            }],
+            tabs: vec![
+                Tab {
+                    id: "9c1e".into(),
+                    run: None,
+                    title: "Principal".into(),
+                    name: Some("backend".into()),
+                    task: Some("Pensando...".into()),
+                    subagent: None,
+                },
+                Tab {
+                    id: "7a2b".into(),
+                    run: None,
+                    title: "▶ Revisar".into(),
+                    name: None,
+                    task: None,
+                    subagent: Some(SubagentState::Failed),
+                },
+            ],
         };
         assert_eq!(Status::from_json(&status.to_json()), status);
         assert_eq!(status.to_json()["tabs"][0]["kind"], "manual");
+        assert_eq!(status.to_json()["tabs"][1]["kind"], "subagente");
         let msg = status_message(&status);
         assert_eq!(msg["t"], "status");
         assert_eq!(msg["state"], "running");

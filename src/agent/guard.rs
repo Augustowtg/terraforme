@@ -206,6 +206,10 @@ impl Session for GuardedSession {
         // Um panic ao responder não derruba o terra.
         let _ = catch(|| self.inner.respond(id, allow));
     }
+
+    fn answer(&mut self, id: &str, answers: Option<Vec<String>>) {
+        let _ = catch(|| self.inner.answer(id, answers));
+    }
 }
 
 /// O provedor que não conseguiu nem ser criado: fica Desconectado.

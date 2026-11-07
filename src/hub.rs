@@ -10,8 +10,7 @@
 //! lista uma vez e sai.
 //!
 //! O hub fecha sozinho quando o último terminal fecha (depois de
-//! [`IDLE_EXIT`] sem nenhuma conexão). O documento completo, com o
-//! protocolo, está em `docs/infra/orquestrador.md`.
+//! [`IDLE_EXIT`] sem nenhuma conexão).
 
 pub mod client;
 pub mod daemon;

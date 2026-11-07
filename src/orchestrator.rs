@@ -9,8 +9,7 @@
 //!
 //! Toda mensagem vira uma nota: nos níveis 1 (só o texto) e 2 (texto e
 //! `--ref`), o terra escreve uma mini nota; no nível 3, a nota é a do
-//! `--handoff`. Daí em diante, o caminho é um só. O documento completo está
-//! em `docs/infra/orquestrador.md`.
+//! `--handoff`. Daí em diante, o caminho é um só.
 
 pub mod config;
 pub mod costs;

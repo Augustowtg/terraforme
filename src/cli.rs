@@ -51,6 +51,9 @@ enum Command {
         /// O resumo do que foi feito
         summary: Vec<String>,
     },
+    /// O servidor MCP do orquestrador (stdio), que todo agente despachado
+    /// recebe: as ferramentas `send`, `done`, `handoff_new` e `status`
+    Mcp(McpArgs),
 
     /// O daemon orquestrador: um por usuário, iniciado pelo primeiro terra e
     /// fechado com o último (uso interno)
@@ -72,6 +75,24 @@ struct AgyHookArgs {
     /// Edições de arquivo passam sem perguntar (modo Accept Edits)
     #[arg(long)]
     accept_edits: bool,
+}
+
+#[derive(Args)]
+struct McpArgs {
+    /// O agente que usa o servidor (o remetente do `send`); sem ele, o do
+    /// ambiente (`TERRA_AGENT`)
+    #[arg(long = "agente", value_name = "NOME")]
+    agent: Option<String>,
+    /// Os saltos da mensagem que gerou a execução; sem ele, o `TERRA_HOPS`
+    #[arg(long)]
+    hops: Option<u32>,
+    /// A execução despachada (para o `done`); sem ela, a do `TERRA_RUN`
+    #[arg(long = "execucao", value_name = "ID")]
+    run: Option<String>,
+    /// A pasta contra a qual os caminhos relativos são resolvidos; sem ela,
+    /// o diretório atual
+    #[arg(long = "pasta", value_name = "PASTA")]
+    cwd: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -149,13 +170,29 @@ pub fn run() -> Result<()> {
         Command::Upgrade(args) => crate::upgrade::run(args.repo, &args.args)?,
         Command::Status(args) => status(args.json)?,
         Command::Send(args) => send(args)?,
-        Command::Done { summary } => done(&summary.join(" "))?,
+        Command::Done { summary } => {
+            let Ok(run) = env::var(orchestrator::RUN_ENV) else {
+                anyhow::bail!("o terra done só funciona dentro de uma execução do orquestrador");
+            };
+            done(&run, &summary.join(" "))?;
+            println!("ok");
+        }
+        Command::Mcp(args) => {
+            let (from, hops) = orchestrator::sender();
+            let identity = crate::mcp::Identity {
+                agent: args.agent.unwrap_or(from),
+                hops: args.hops.unwrap_or(hops),
+                run: args.run.or_else(|| env::var(orchestrator::RUN_ENV).ok()),
+                cwd: match args.cwd {
+                    Some(cwd) => cwd,
+                    None => current_dir()?,
+                },
+            };
+            crate::mcp::serve(&identity)?;
+        }
         Command::Handoff(HandoffCommand::New { agent }) => {
             let (from, _) = orchestrator::sender();
-            let home = hub::endpoint::Endpoint::current()?.home;
-            let path = orchestrator::send::new_handoff(&agent, &from, &home)
-                .map_err(anyhow::Error::msg)?;
-            println!("{}", path.display());
+            println!("{}", new_handoff(&agent, &from)?.display());
         }
         Command::Hub => hub::daemon::run()?,
         Command::AgyPermissionHook(args) => {
@@ -210,34 +247,42 @@ fn open_app() -> Result<()> {
 /// O `terra status`: os terminais abertos, por workspace. Sem o
 /// orquestrador, ele inicia (e, sem terminais, fecha logo depois).
 fn status(as_json: bool) -> Result<()> {
+    println!("{}", status_text(as_json)?);
+    Ok(())
+}
+
+/// O texto do `terra status` (também a ferramenta `status` do MCP).
+pub(crate) fn status_text(as_json: bool) -> Result<String> {
     let instances = hub::client::snapshot().context("não foi possível falar com o orquestrador")?;
     if as_json {
-        println!("{:#}", serde_json::json!({ "instances": instances }));
-        return Ok(());
+        return Ok(format!(
+            "{:#}",
+            serde_json::json!({ "instances": instances })
+        ));
     }
     let instances: Vec<_> = instances
         .iter()
         .filter_map(hub::protocol::Instance::from_json)
         .collect();
     if instances.is_empty() {
-        println!("Nenhuma instância ativa.");
-        return Ok(());
+        return Ok("Nenhuma instância ativa.".into());
     }
+    let mut lines = Vec::new();
     for (i, workspace) in hub::view::by_workspace(&instances).iter().enumerate() {
         if i > 0 {
-            println!();
+            lines.push(String::new());
         }
-        println!("{}  ·  {}", workspace.name, workspace.summary());
+        lines.push(format!("{}  ·  {}", workspace.name, workspace.summary()));
         for instance in &workspace.instances {
-            println!("  {}", hub::view::instance_line(instance));
+            lines.push(format!("  {}", hub::view::instance_line(instance)));
             if instance.health != hub::protocol::Health::Gone {
                 for tab in &instance.status.tabs {
-                    println!("    {}", hub::view::tab_line(tab));
+                    lines.push(format!("    {}", hub::view::tab_line(tab)));
                 }
             }
         }
     }
-    Ok(())
+    Ok(lines.join("\n"))
 }
 
 /// O `terra send`: confere, grava a nota e manda pelo hub. Uma linha de
@@ -255,7 +300,8 @@ fn send(args: SendArgs) -> Result<()> {
             handoff: args.handoff,
             tag: args.tag,
         };
-        let line = send_one(&args, &config, &endpoint)?;
+        let (from, hops) = orchestrator::sender();
+        let line = send_one(&args, &from, hops, &current_dir()?, &config, &endpoint)?;
         println!("{line}");
         return Ok(());
     };
@@ -267,6 +313,8 @@ fn send(args: SendArgs) -> Result<()> {
         std::fs::read_to_string(batch).with_context(|| batch.display().to_string())?
     };
     let items = orchestrator::send::batch(&text).map_err(anyhow::Error::msg)?;
+    let (from, hops) = orchestrator::sender();
+    let cwd = current_dir()?;
     let mut failed = 0;
     for (to, text) in items {
         let args = orchestrator::send::Args {
@@ -275,7 +323,7 @@ fn send(args: SendArgs) -> Result<()> {
             tag: args.tag.clone(),
             ..Default::default()
         };
-        match send_one(&args, &config, &endpoint) {
+        match send_one(&args, &from, hops, &cwd, &config, &endpoint) {
             Ok(line) => println!("{line}"),
             Err(err) => {
                 failed += 1;
@@ -289,17 +337,20 @@ fn send(args: SendArgs) -> Result<()> {
     Ok(())
 }
 
-/// Manda uma mensagem e devolve a linha de resposta.
-fn send_one(
+/// Manda uma mensagem de `from` (com `hops` saltos até aqui; os caminhos
+/// relativos são de `cwd`) e devolve a linha de resposta. Também é a
+/// ferramenta `send` do MCP.
+pub(crate) fn send_one(
     args: &orchestrator::send::Args,
+    from: &str,
+    hops: u32,
+    cwd: &Path,
     config: &orchestrator::config::Config,
     endpoint: &hub::endpoint::Endpoint,
 ) -> Result<String> {
     use orchestrator::message::State;
-    let (from, hops) = orchestrator::sender();
-    let message =
-        orchestrator::send::prepare(args, &from, hops, config, &endpoint.home, &current_dir()?)
-            .map_err(|reject| anyhow::anyhow!("recusada: {}", reject.text))?;
+    let message = orchestrator::send::prepare(args, from, hops, config, &endpoint.home, cwd)
+        .map_err(|reject| anyhow::anyhow!("recusada: {}", reject.text))?;
     let reply = hub::client::send_message(endpoint, true, &message.to_json())
         .context("não foi possível falar com o orquestrador")?;
     match reply["state"].as_str().and_then(State::parse) {
@@ -311,15 +362,13 @@ fn send_one(
     }
 }
 
-/// O `terra done`: o resumo da execução do `TERRA_RUN`. A execução termina
-/// quando o `claude` sai; o resumo fica no registro dela.
-fn done(summary: &str) -> Result<()> {
-    let Ok(run) = env::var(orchestrator::RUN_ENV) else {
-        anyhow::bail!("o terra done só funciona dentro de uma execução do orquestrador");
-    };
+/// O `terra done` (e a ferramenta `done` do MCP): o resumo da execução
+/// `run`. A execução termina quando o agente sai; o resumo fica no registro
+/// dela.
+pub(crate) fn done(run: &str, summary: &str) -> Result<()> {
     let endpoint = hub::endpoint::Endpoint::current()?;
     let summary = (!summary.trim().is_empty()).then_some(summary.trim());
-    let reply = hub::client::send_done(&endpoint, &run, summary)
+    let reply = hub::client::send_done(&endpoint, run, summary)
         .context("não foi possível falar com o orquestrador")?;
     if reply["t"] != "ok" {
         anyhow::bail!(
@@ -327,8 +376,14 @@ fn done(summary: &str) -> Result<()> {
             reply["text"].as_str().unwrap_or("sem motivo")
         );
     }
-    println!("ok");
     Ok(())
+}
+
+/// O `terra handoff new` (e a ferramenta `handoff_new` do MCP): a nota em
+/// branco de `from` para `to`.
+pub(crate) fn new_handoff(to: &str, from: &str) -> Result<PathBuf> {
+    let home = hub::endpoint::Endpoint::current()?.home;
+    orchestrator::send::new_handoff(to, from, &home).map_err(anyhow::Error::msg)
 }
 
 fn save_workspace(name: Option<&str>) -> Result<()> {

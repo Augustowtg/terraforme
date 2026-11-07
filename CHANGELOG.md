@@ -4,6 +4,72 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.29] - 2026-11-06
+
+### Adicionado
+
+- **Sessão ligada à pasta** na aba Consumo: o gasto de cada turno dos chats fica no SQLite do workspace, separado pela pasta aberta, e continua de uma execução à outra. Vários terras na mesma pasta somam na mesma sessão.
+- **Simplificado** (o padrão): Input, Output e Cache da aba de chat atual e da pasta, ao vivo durante a resposta.
+- **Detalhado** (`d`, ou o botão; `↑`/`↓` e a roda rolam, `Esc` volta): os tipos de token (com a escrita e a leitura de cache separadas), o custo da aba e da pasta e a análise da pasta (período, turnos e conversas, cache reaproveitado, tokens e custo por turno, turno mais caro, custo por dia, pensamento e buscas na web), mais tabelas por modelo, por aba aberta e pelos últimos 7 dias com uso.
+- O custo é o que o provedor informa, por modelo e a preço de lista. Um provedor que não o informa (Antigravity) mostra "não informado".
+
+### Removido
+
+- O `README.md` e os documentos `consumo-mcp-delegacao.md`, `docs/cli/cli.feature.md`, `docs/features/providers.features.md` e `docs/infra/orquestrador.md`.
+
+## [0.13.28] - 2026-11-06
+
+### Corrigido
+
+- O chat ficava em "Aguardando os subagentes..." para sempre quando um subagente em segundo plano terminava depois do primeiro `result` e o agente principal não continuava: o prazo de 15 s para a continuação só valia se o subagente acabasse antes desse `result`. Agora ele vale nos dois casos.
+
+## [0.13.27] - 2026-11-06
+
+### Adicionado
+
+- Sub agentes nas Sessões da aba Orquestrador: o workspace diz quantos há e em que estado (ex.: `2 sub agentes (1 rodando, 1 concluído)`), e cada instância aberta lista os dela, um por linha (`↳`), com o que fazem agora ou se estão parados, concluídos ou falharam. O hub recebe o estado das subabas de subagentes (`kind: subagente`), que o `terra status` também mostra.
+
+## [0.13.26] - 2026-11-06
+
+### Adicionado
+
+- Subabas de subagentes: quando o Claude do chat lança um subagente (a ferramenta `Agent`), uma aba só de leitura abre em segundo plano na barra de chats, com a descrição dele no título, e mostra as ferramentas, os resultados e o texto dele. Ela fica aberta depois do fim, com o status de concluída ou de falha, e fecha com `Alt+W`. O chat principal avisa no histórico quando uma abre.
+
+### Alterado
+
+- O que um subagente faz não aparece mais no histórico do chat principal, como se fosse do agente principal: vai para a subaba dele. O contexto dele também não muda mais a barra de contexto do chat.
+- Enquanto um subagente roda, o turno do chat continua aberto (o status mostra "Subagente: ..." ou "Aguardando os subagentes...") e uma mensagem nova só pode ser enviada depois do fim dele. O `Esc` interrompe o chat e os subagentes juntos.
+
+### Corrigido
+
+- O terra matava os subagentes em segundo plano do Claude: o `claude` manda um `result` logo depois de lançar o subagente, e o terra tratava esse primeiro `result` como o fim da resposta e encerrava o processo. Agora a resposta só termina quando não há subagente rodando e o agente principal já continuou depois deles, e o uso soma as partes. Se a continuação não vier em 15 s sem nenhuma saída, o terra fecha a resposta. As outras tarefas em segundo plano (como um `Bash`) não seguram o turno.
+
+## [0.13.25] - 2026-11-06
+
+### Adicionado
+
+- Perguntas do agente no chat: quando o Claude usa o `AskUserQuestion`, a caixa acima do input mostra a pergunta com as opções e a descrição de cada uma, e o agente recebe a resposta. `↑`/`↓` escolhem, `Espaço` marca nas perguntas de várias respostas, `Enter` confirma, `←` volta à pergunta anterior e `Esc` não responde. A linha "Outra resposta" aceita um texto escrito ou colado, e o histórico registra cada pergunta com a resposta.
+
+### Corrigido
+
+- O `AskUserQuestion` do Claude não mostrava a pergunta: no modo Yolo ele era aprovado sozinho, sem resposta, e nos outros modos virava um pedido de permissão sem o texto nem as opções. Agora a pergunta espera o usuário em todos os modos.
+
+## [0.13.24] - 2026-11-05
+
+### Adicionado
+
+- **MCP do orquestrador** (`terra mcp`): um servidor MCP por stdio com as ferramentas `send`, `done`, `handoff_new` e `status`, as mesmas operações do `terra send`, `terra done`, `terra handoff new` e `terra status`. Quem usa o servidor (o agente, os saltos, a execução e a pasta dos caminhos relativos) vai nos argumentos (`--agente`, `--hops`, `--execucao`, `--pasta`), com o `TERRA_AGENT`, o `TERRA_HOPS` e o `TERRA_RUN` do ambiente na falta deles.
+- Todo agente despachado (`[agents.<nome>]` do `orchestrator.toml`) recebe o MCP do orquestrador por padrão, mesmo no ambiente mínimo. No Claude, ele vai no `--mcp-config` (o `--strict-mcp-config` continua deixando de fora os outros MCP) com as ferramentas liberadas no `--allowedTools` (`mcp__terra`), sem precisar do `Bash(terra:*)` nas `ferramentas`. No Antigravity, vai num plugin temporário no `--add-dir`, apagado quando a execução termina. O prompt da execução pede o `done` e o `send` do MCP, com o `terra done` e o `terra send` pelo Bash como alternativa.
+
+## [0.13.23] - 2026-11-05
+
+### Adicionado
+
+- Clique do mouse nas abas (Chat, Atualização, Consumo, Extensões,
+  Orquestrador e Configurações), nos chats da barra de chats (o Principal e os
+  sub agentes abertos com `Alt+N`) e no botão "Sair", que abre a confirmação
+  como o `Enter` em cima do Sair.
+
 ## [0.13.22] - 2026-11-04
 
 ### Adicionado

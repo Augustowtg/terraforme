@@ -4,6 +4,7 @@ mod db;
 mod extension;
 mod files;
 mod hub;
+mod mcp;
 mod orchestrator;
 mod platform;
 mod settings;

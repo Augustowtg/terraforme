@@ -6,7 +6,9 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::parse_mode;
-use crate::agent::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
+use crate::agent::{
+    AgentEvent, CHARS_PER_TOKEN, ModelSpend, ReportedMode, SpendScope, SubagentEvent,
+};
 
 /// Tamanho máximo do detalhe de uma ferramenta ou resultado na tela.
 const DETAIL_MAX: usize = 80;
@@ -36,6 +38,8 @@ pub struct StreamParser {
     thinking_tokens: u64,
     /// O último gasto informado com [`AgentEvent::Usage`].
     reported: (u64, u64),
+    /// O último gasto informado com [`AgentEvent::Spent`], sem a estimativa.
+    reported_spend: [u64; 4],
     /// Mensagens cujo texto já chegou em trechos; o texto inteiro que vem
     /// depois nelas é ignorado para não duplicar.
     streamed: HashSet<String>,
@@ -47,6 +51,17 @@ pub struct StreamParser {
     /// As ferramentas chamadas nesta resposta (pelo id do `tool_use`), para
     /// saber a entrada de uma que o modo bloqueou.
     tools: HashMap<String, (String, Value)>,
+    /// Lançou algum subagente nesta resposta.
+    spawned: bool,
+    /// Os subagentes rodando, pelo id da chamada que os lançou.
+    subagents: HashSet<String>,
+    /// Os que terminaram sem o agente principal ter visto: um em segundo
+    /// plano acorda o principal, que continua a resposta.
+    notified: HashSet<String>,
+    /// Os `init` e os `result` do agente principal. Cada continuação tem os
+    /// dois, e o `result` de uma pode chegar antes do da anterior.
+    inits: u32,
+    results: u32,
 }
 
 impl StreamParser {
@@ -55,8 +70,103 @@ impl StreamParser {
             return Vec::new();
         };
         let usage = self.usage(&value);
-        let events = self.events(&value);
-        usage.into_iter().chain(events).collect()
+        let events = match value["parent_tool_use_id"].as_str() {
+            Some(id) => self.subagent_activity(id, &value),
+            None => self.events(&value),
+        };
+        let spend = self.spend();
+        usage.into_iter().chain(spend).chain(events).collect()
+    }
+
+    /// O [`AgentEvent::Spent`] do que o agente principal informou, se mudou.
+    /// Vale até o `result`, que tem o gasto completo; sem ele (a resposta foi
+    /// interrompida), é o que fica.
+    fn spend(&mut self) -> Option<AgentEvent> {
+        let spent = self.spent.values().fold([0; 4], |sum, spent| {
+            std::array::from_fn(|i| sum[i] + spent[i])
+        });
+        if spent == self.reported_spend {
+            return None;
+        }
+        self.reported_spend = spent;
+        Some(AgentEvent::Spent {
+            models: vec![ModelSpend {
+                model: self.model.clone(),
+                input: spent[0],
+                output: spent[1],
+                cache_creation: spent[2],
+                cache_read: spent[3],
+                ..ModelSpend::default()
+            }],
+            scope: SpendScope::Turn,
+        })
+    }
+
+    /// A resposta ainda não acabou, mesmo com um `result`: há subagente
+    /// rodando ou o agente principal ainda vai continuar. Sem subagente, o
+    /// `result` é sempre o fim.
+    pub fn subagents_pending(&self) -> bool {
+        self.spawned
+            && (self.subagents_running() || !self.notified.is_empty() || self.results < self.inits)
+    }
+
+    /// Há subagente rodando, que ainda vai mandar o fim dele.
+    pub fn subagents_running(&self) -> bool {
+        !self.subagents.is_empty()
+    }
+
+    /// O que uma linha de subagente mostra na aba dele: as ferramentas e o
+    /// texto, que chega inteiro. O contexto e o uso não são do chat.
+    fn subagent_activity(&mut self, id: &str, value: &Value) -> Vec<AgentEvent> {
+        let events = match value["type"].as_str() {
+            Some("assistant") => self.assistant(&value["message"]),
+            Some("user") => tool_results(&value["message"]),
+            _ => Vec::new(),
+        };
+        events
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentEvent::ToolUse { .. }
+                        | AgentEvent::ToolResult { .. }
+                        | AgentEvent::Text(_)
+                )
+            })
+            .map(|event| {
+                AgentEvent::Subagent(SubagentEvent::Activity {
+                    id: id.to_string(),
+                    event: Box::new(event),
+                })
+            })
+            .collect()
+    }
+
+    /// Um subagente começou. As outras tarefas em segundo plano (um `Bash`,
+    /// um servidor) ficam de fora: elas não seguram a resposta.
+    fn subagent_started(&mut self, value: &Value) -> Option<AgentEvent> {
+        if value["task_type"] != "local_agent" {
+            return None;
+        }
+        let id = value["tool_use_id"].as_str()?.to_string();
+        self.spawned = true;
+        self.subagents.insert(id.clone());
+        Some(AgentEvent::Subagent(SubagentEvent::Started {
+            id,
+            description: text(&value["description"]),
+        }))
+    }
+
+    /// Um subagente terminou (`completed`, `failed`, `stopped`...).
+    fn subagent_finished(&mut self, value: &Value) -> Option<AgentEvent> {
+        let id = value["tool_use_id"].as_str()?.to_string();
+        if !self.subagents.remove(&id) {
+            return None;
+        }
+        self.notified.insert(id.clone());
+        let status = text(&value["status"]);
+        let error = (status != "completed").then(|| format!("O subagente terminou: {status}."));
+        Some(AgentEvent::Subagent(SubagentEvent::Finished { id, error }))
     }
 
     /// O gasto da resposta até aqui, quando esta linha o muda. Só o agente
@@ -134,6 +244,8 @@ impl StreamParser {
         match value["type"].as_str() {
             Some("system") if value["subtype"] == "init" => {
                 self.model = text(&value["model"]);
+                self.inits += 1;
+                self.notified.clear();
                 vec![AgentEvent::Init {
                     session_id: text(&value["session_id"]),
                     model: self.model.clone(),
@@ -150,9 +262,24 @@ impl StreamParser {
             Some("system") if value["subtype"] == "permission_denied" => {
                 self.blocked(value).into_iter().collect()
             }
+            Some("system") if value["subtype"] == "task_started" => {
+                self.subagent_started(value).into_iter().collect()
+            }
+            Some("system") if value["subtype"] == "task_notification" => {
+                self.subagent_finished(value).into_iter().collect()
+            }
             Some("stream_event") => self.stream_event(&value["event"]),
             Some("assistant") => self.assistant(&value["message"]),
-            Some("user") => tool_results(&value["message"]),
+            Some("user") => {
+                // O subagente em primeiro plano devolve o resultado aqui e
+                // não acorda o principal, que já está esperando.
+                for block in blocks(&value["message"]["content"]) {
+                    if let Some(id) = block["tool_use_id"].as_str() {
+                        self.notified.remove(id);
+                    }
+                }
+                tool_results(&value["message"])
+            }
             Some("result") => self.result(value),
             _ => Vec::new(),
         }
@@ -223,7 +350,8 @@ impl StreamParser {
 
     /// Fim da resposta: o contexto da última chamada, com o limite do
     /// modelo, e o [`AgentEvent::Done`].
-    fn result(&self, value: &Value) -> Vec<AgentEvent> {
+    fn result(&mut self, value: &Value) -> Vec<AgentEvent> {
+        self.results += 1;
         let usage = &value["usage"];
         // A última chamada ao modelo é o contexto que fica; sem as chamadas,
         // o uso da resposta.
@@ -237,8 +365,42 @@ impl StreamParser {
                 tokens,
                 window: context_window(&value["modelUsage"], &self.model),
             });
-        context.into_iter().chain([result(value)]).collect()
+        let spent = model_spend(&value["modelUsage"]);
+        let spent = (!spent.is_empty()).then_some(AgentEvent::Spent {
+            models: spent,
+            scope: SpendScope::Session,
+        });
+        spent
+            .into_iter()
+            .chain(context)
+            .chain([result(value)])
+            .collect()
     }
+}
+
+/// O gasto por modelo do `modelUsage` do `result`. Diferente do `usage`, ele
+/// tem os subagentes e o custo, e acumula a sessão inteira: as partes de uma
+/// resposta e o que veio antes de um `--resume`.
+fn model_spend(models: &Value) -> Vec<ModelSpend> {
+    let count = |usage: &Value, key: &str| usage[key].as_u64().unwrap_or(0);
+    models
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(model, usage)| ModelSpend {
+            model: model.clone(),
+            input: count(usage, "inputTokens"),
+            output: count(usage, "outputTokens"),
+            cache_creation: count(usage, "cacheCreationInputTokens"),
+            cache_read: count(usage, "cacheReadInputTokens"),
+            thinking: count(usage, "thinkingTokens"),
+            web_searches: count(usage, "webSearchRequests"),
+            cost_micros: usage["costUSD"]
+                .as_f64()
+                .map(|usd| (usd * 1_000_000.0).round() as u64),
+        })
+        .filter(|spend| spend.input + spend.output + spend.cache() > 0)
+        .collect()
 }
 
 /// Tamanho do contexto numa chamada: entrada (com o cache) e saída. Com o
@@ -390,6 +552,153 @@ mod tests {
         lines.iter().flat_map(|l| parser.parse(l)).collect()
     }
 
+    /// As linhas de um subagente em segundo plano, como o `claude` 2.1.311
+    /// manda: o primeiro `result` vem com ele rodando.
+    const BACKGROUND: [&str; 9] = [
+        r#"{"type":"system","subtype":"init","session_id":"s","model":"m","permissionMode":"default"}"#,
+        r#"{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"description":"Rodar"}}]}}"#,
+        r#"{"type":"system","subtype":"task_started","task_id":"a","tool_use_id":"t1","description":"Rodar","task_type":"local_agent"}"#,
+        r#"{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Async agent launched"}]}}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1,"output_tokens":2}}"#,
+        r#"{"type":"assistant","parent_tool_use_id":"t1","message":{"id":"s1","usage":{"input_tokens":999},"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"echo oi"}},{"type":"text","text":"oi"}]}}"#,
+        r#"{"type":"system","subtype":"task_notification","task_id":"a","tool_use_id":"t1","status":"completed","summary":"oi"}"#,
+        r#"{"type":"system","subtype":"init","session_id":"s","model":"m","permissionMode":"default"}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":3,"output_tokens":4}}"#,
+    ];
+
+    #[test]
+    fn a_background_subagent_holds_the_turn_until_the_continuation_ends() {
+        let mut parser = StreamParser::default();
+        let pending: Vec<bool> = BACKGROUND
+            .iter()
+            .map(|line| {
+                parser.parse(line);
+                parser.subagents_pending()
+            })
+            .collect();
+        assert_eq!(
+            pending,
+            [false, false, true, true, true, true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn the_first_result_may_come_after_the_continuation_started() {
+        let mut parser = StreamParser::default();
+        for line in [
+            BACKGROUND[0],
+            BACKGROUND[2],
+            BACKGROUND[6],
+            BACKGROUND[7],
+            BACKGROUND[8],
+        ] {
+            parser.parse(line);
+        }
+        assert!(parser.subagents_pending(), "falta o segundo result");
+        parser.parse(BACKGROUND[8]);
+        assert!(!parser.subagents_pending());
+    }
+
+    #[test]
+    fn a_foreground_subagent_needs_no_continuation() {
+        let mut parser = StreamParser::default();
+        for line in [
+            BACKGROUND[0],
+            BACKGROUND[2],
+            BACKGROUND[6],
+            r#"{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"oi"}]}}"#,
+            BACKGROUND[8],
+        ] {
+            parser.parse(line);
+        }
+        assert!(!parser.subagents_pending());
+    }
+
+    #[test]
+    fn other_background_tasks_do_not_hold_the_turn() {
+        let mut parser = StreamParser::default();
+        let events = [
+            BACKGROUND[0],
+            r#"{"type":"system","subtype":"task_started","task_id":"b","tool_use_id":"b1","description":"servidor","task_type":"local_bash"}"#,
+            BACKGROUND[8],
+            r#"{"type":"system","subtype":"task_notification","task_id":"b","tool_use_id":"b1","status":"stopped"}"#,
+        ]
+        .iter()
+        .flat_map(|line| {
+            let events = parser.parse(line);
+            assert!(!parser.subagents_pending());
+            events
+        })
+        .collect::<Vec<_>>();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Subagent(_)))
+        );
+    }
+
+    #[test]
+    fn subagent_lines_go_to_its_tab_and_not_to_the_main_chat() {
+        let events = parse_all(&BACKGROUND);
+        let subagent: Vec<&SubagentEvent> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Subagent(event) => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            subagent[0],
+            &SubagentEvent::Started {
+                id: "t1".into(),
+                description: "Rodar".into()
+            }
+        );
+        assert!(matches!(
+            subagent[1],
+            SubagentEvent::Activity { id, event }
+                if id == "t1" && matches!(**event, AgentEvent::ToolUse { .. })
+        ));
+        assert!(matches!(
+            subagent[2],
+            SubagentEvent::Activity { event, .. } if **event == AgentEvent::Text("oi".into())
+        ));
+        assert_eq!(
+            subagent[3],
+            &SubagentEvent::Finished {
+                id: "t1".into(),
+                error: None
+            }
+        );
+        // No chat principal, só a chamada do `Agent`, sem o `Bash` nem o
+        // contexto do subagente.
+        let tools: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::ToolUse { .. }))
+            .collect();
+        assert_eq!(tools.len(), 1);
+        assert!(!events.contains(&AgentEvent::Context {
+            tokens: 999,
+            window: None
+        }));
+    }
+
+    #[test]
+    fn a_subagent_that_stops_reports_why() {
+        let mut parser = StreamParser::default();
+        parser.parse(BACKGROUND[2]);
+        let events = parser.parse(
+            r#"{"type":"system","subtype":"task_notification","tool_use_id":"t1","status":"failed"}"#,
+        );
+        assert_eq!(
+            events,
+            [AgentEvent::Subagent(SubagentEvent::Finished {
+                id: "t1".into(),
+                error: Some("O subagente terminou: failed.".into())
+            })]
+        );
+    }
+
     #[test]
     fn parses_streamed_text_without_duplicating() {
         let events = parse_all(&[
@@ -533,6 +842,47 @@ mod tests {
         );
     }
 
+    /// O `result` de verdade de uma resposta com subagente em outro modelo.
+    #[test]
+    fn the_result_reports_the_spend_of_every_model_with_its_cost() {
+        let mut parser = StreamParser::default();
+        let events = parser.parse(
+            r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":4,"output_tokens":4},"modelUsage":{"claude-haiku-5-5":{"inputTokens":8,"outputTokens":321,"cacheReadInputTokens":53397,"cacheCreationInputTokens":14019,"thinkingTokens":9,"webSearchRequests":1,"costUSD":0.00349907,"contextWindow":1000000},"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":4,"cacheReadInputTokens":0,"cacheCreationInputTokens":15158,"costUSD":0.037939}}}"#,
+        );
+        let AgentEvent::Spent { models, scope } = &events[0] else {
+            panic!("{events:?}");
+        };
+        assert_eq!(*scope, SpendScope::Session);
+        assert_eq!(
+            models[0],
+            ModelSpend {
+                model: "claude-haiku-5-5".into(),
+                input: 8,
+                output: 321,
+                cache_creation: 14019,
+                cache_read: 53397,
+                thinking: 9,
+                web_searches: 1,
+                cost_micros: Some(3499),
+            }
+        );
+        assert_eq!(models[1].cost_micros, Some(37939));
+    }
+
+    #[test]
+    fn the_spend_of_an_answer_is_reported_only_when_it_changes() {
+        let mut parser = StreamParser::default();
+        let line = r#"{"type":"assistant","message":{"id":"m1","content":[],"usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":900,"output_tokens":4}}}"#;
+        let spent = |events: Vec<AgentEvent>| {
+            events
+                .into_iter()
+                .filter(|e| matches!(e, AgentEvent::Spent { .. }))
+                .count()
+        };
+        assert_eq!(spent(parser.parse(line)), 1);
+        assert_eq!(spent(parser.parse(line)), 0, "a mesma mensagem de novo");
+    }
+
     #[test]
     fn parses_context_of_the_last_call_and_the_model_window() {
         let events = parse_all(&[
@@ -548,20 +898,20 @@ mod tests {
             }
         );
         assert_eq!(
-            events[2],
+            events[3],
             AgentEvent::Context {
                 tokens: 1006,
                 window: None
             }
         );
         assert_eq!(
-            events[3],
+            events[4],
             AgentEvent::Context {
                 tokens: 1183,
                 window: Some(1_000_000)
             }
         );
-        assert!(matches!(events[4], AgentEvent::Done { .. }));
+        assert!(matches!(events[5], AgentEvent::Done { .. }));
     }
 
     #[test]

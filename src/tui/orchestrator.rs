@@ -6,8 +6,10 @@
 //!   Despachos               ● ativos (p pausa todos)
 //!
 //!  Sessões
-//!   ▾ Studio · 2 instâncias · 1 sub agente
-//!       ● Studio-4242              Principal, api               rodando
+//!   ▾ Studio · 2 instâncias · 2 sub agentes (1 rodando, 1 concluído)
+//!       ● Studio-4242              Principal                    rodando
+//!         ↳ ▶ Revisar o PR                                      Usando Bash...
+//!         ↳ ▶ Rodar os testes                                   concluído
 //!       ● Studio-4300              Principal                    parado
 //!   ▸ terraforme-cli · 1 instância
 //!
@@ -46,6 +48,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
 
 pub use self::rows::Hub as HubView;
+pub use self::rows::usd;
 use self::rows::{Action, GlobalKey};
 use crate::hub::protocol::Instance;
 use crate::orchestrator::config::{Config, INFINITE, RunMode};

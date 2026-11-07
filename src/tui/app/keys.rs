@@ -1,7 +1,8 @@
 //! Teclado, colagem e mouse da tela principal: quem recebe cada tecla, conforme
 //! o foco e a aba ativa.
 
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
 
 use super::{App, Focus, SaveChoice, Tab};
 use crate::tui::config;
@@ -162,9 +163,46 @@ impl App {
         true
     }
 
+    /// O clique esquerdo nas abas, na barra de chats e no "Sair" (com as
+    /// caixas de confirmação fechadas). Retorna `true` se o clique foi usado.
+    fn click_bars(&mut self, mouse: MouseEvent) -> bool {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left)
+            || matches!(self.focus, Focus::Confirm(_) | Focus::SaveAsk(_))
+        {
+            return false;
+        }
+        let at = Position::new(mouse.column, mouse.row);
+        let tab = (self.tab_rects.borrow().iter())
+            .find(|(rect, _)| rect.contains(at))
+            .map(|&(_, tab)| tab);
+        if let Some(tab) = tab {
+            self.tab = tab;
+            self.focus = Focus::Tabs;
+            self.term_focus = false;
+            return true;
+        }
+        let chat = (self.chat_rects.borrow().iter())
+            .find(|(rect, _)| rect.contains(at))
+            .map(|&(_, i)| i);
+        if let (Some(i), Tab::Chat) = (chat, self.tab) {
+            self.active_chat = i;
+            self.focus = Focus::Tabs;
+            return true;
+        }
+        if self.quit_rect.get().contains(at) {
+            self.focus = Focus::Confirm(true);
+            self.term_focus = false;
+            return true;
+        }
+        false
+    }
+
     /// Mouse: no input da aba Chat (posicionar o cursor e selecionar) e nos
     /// botões do gráfico da aba Consumo.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.click_bars(mouse) {
+            return;
+        }
         if self.focus != Focus::Tabs {
             return;
         }

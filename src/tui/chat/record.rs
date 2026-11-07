@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::db::history::{ChatHistory, Conversation, Message};
+use crate::agent::ModelSpend;
+use crate::db::history::{ChatHistory, Conversation, Message, TurnOwner};
 use crate::tui::history::Entry;
 
 pub(super) struct Recorder {
@@ -17,6 +18,8 @@ pub(super) struct Recorder {
     conversation: Option<i64>,
     /// Quantas entradas do histórico da tela já foram vistas.
     written: usize,
+    /// A pasta da sessão, para onde vai o consumo dos turnos.
+    folder: Option<String>,
 }
 
 impl Recorder {
@@ -26,7 +29,30 @@ impl Recorder {
             store: None,
             conversation: None,
             written: 0,
+            folder: None,
         }
+    }
+
+    pub(super) fn set_folder(&mut self, folder: String) {
+        self.folder = Some(folder);
+    }
+
+    /// Grava o gasto de um turno na sessão da pasta.
+    pub(super) fn record_turn(
+        &mut self,
+        info: Conversation<'_>,
+        spend: &[ModelSpend],
+    ) -> Result<()> {
+        let Some(folder) = self.folder.clone() else {
+            return Ok(());
+        };
+        let owner = TurnOwner {
+            folder: &folder,
+            turn: &crate::hub::protocol::new_id(),
+            provider: info.provider,
+            session_id: info.session_id,
+        };
+        self.store()?.record_turn(owner, spend)
     }
 
     /// Grava as entradas novas de `entries`. Antes da primeira mensagem do

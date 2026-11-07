@@ -1,8 +1,9 @@
 //! Pedidos de permissão do agente: a caixa acima do input com a ferramenta e
 //! os botões Permitir e Negar. Os pedidos ficam numa fila e aparecem um de
 //! cada vez. Há dois tipos: o agente esperando a resposta (ela vai para a
-//! sessão) e uma ferramenta que o modo já bloqueou (permitir libera ela numa
-//! mensagem nova).
+//! sessão), uma ferramenta que o modo já bloqueou (permitir libera ela numa
+//! mensagem nova) e as perguntas do agente, com as opções em vez dos botões
+//! (ver [`Form`]).
 
 use std::collections::VecDeque;
 
@@ -13,10 +14,13 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
 
+use super::question::{Form, Outcome};
 use crate::theme::{self, Variant};
 
 const ALLOW_LABEL: &str = " Permitir ";
 const DENY_LABEL: &str = " Negar ";
+/// As colunas das bordas e do respiro da caixa.
+const BOX_MARGIN: u16 = 4;
 
 /// Um pedido do agente esperando a resposta do usuário.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +37,8 @@ pub enum Kind {
     /// O modo bloqueou a ferramenta sem perguntar, pelo motivo `reason`; o
     /// agente seguiu sem ela. `allow` libera ela numa mensagem nova.
     Blocked { reason: String, allow: String },
+    /// O agente espera as respostas das perguntas: o id do pedido na sessão.
+    Question { id: String, form: Form },
 }
 
 /// A fila de pedidos e o botão escolhido no da frente.
@@ -58,6 +64,23 @@ impl Prompts {
         !self.queue.is_empty()
     }
 
+    /// O pedido da frente é uma pergunta do agente.
+    pub fn asks_question(&self) -> bool {
+        self.current()
+            .is_some_and(|request| matches!(request.kind, Kind::Question { .. }))
+    }
+
+    /// Texto colado com uma pergunta aberta: vai para a resposta escrita.
+    pub fn paste(&mut self, text: &str) {
+        if let Some(Request {
+            kind: Kind::Question { form, .. },
+            ..
+        }) = self.queue.front_mut()
+        {
+            form.paste(text);
+        }
+    }
+
     /// Esquece os pedidos (a resposta foi interrompida).
     pub fn clear(&mut self) {
         self.queue.clear();
@@ -72,8 +95,21 @@ impl Prompts {
 
     /// Trata uma tecla com um pedido aberto: `←`/`→` trocam o botão, `Enter`
     /// confirma, `s`/`y` permitem e `n`/`Esc` negam. Retorna o pedido
-    /// respondido e se foi permitido; as outras teclas não fazem nada.
+    /// respondido e se foi permitido; as outras teclas não fazem nada. Numa
+    /// pergunta, as teclas vão para o [`Form`], e permitido é respondida.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<(Request, bool)> {
+        if let Some(Request {
+            kind: Kind::Question { form, .. },
+            ..
+        }) = self.queue.front_mut()
+        {
+            let answered = match form.handle_key(key) {
+                Outcome::Pending => return None,
+                Outcome::Answered => true,
+                Outcome::Refused => false,
+            };
+            return self.queue.pop_front().map(|request| (request, answered));
+        }
         let allow = match key.code {
             KeyCode::Left | KeyCode::Right => {
                 self.allow = !self.allow;
@@ -94,9 +130,21 @@ impl Prompts {
         let Some(request) = self.current() else {
             return;
         };
-        let (title, verb) = match request.kind {
+        let (title, verb) = match &request.kind {
             Kind::Ask { .. } => ("Permissão", "O agente quer usar "),
             Kind::Blocked { .. } => ("Bloqueado pelo modo Agente", "O agente tentou usar "),
+            Kind::Question { form, .. } => {
+                let inner = input.width.saturating_sub(BOX_MARGIN);
+                let (mut lines, focus) = form.lines(inner);
+                let waiting = self.queue.len() - 1;
+                if waiting > 0 {
+                    lines.push(Line::styled(
+                        format!("mais {waiting} pedido(s) na fila"),
+                        theme::muted(),
+                    ));
+                }
+                return draw_box(frame, input, lines, focus);
+            }
         };
         let mut lines = vec![
             Line::styled(
@@ -137,33 +185,41 @@ impl Prompts {
             Span::styled(DENY_LABEL, theme::confirm_no(!self.allow)),
         ]));
 
-        let height = (lines.len() as u16 + 2).min(input.y);
-        if height < 3 {
-            return;
-        }
-        let area = Rect {
-            y: input.y - height,
-            height,
-            ..input
-        };
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(theme::variant(Variant::Warning))
-            .padding(Padding::horizontal(1))
-            .style(theme::screen());
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .block(block),
-            area,
-        );
+        draw_box(frame, input, lines, 0);
     }
+}
+
+/// Desenha a caixa logo acima do input, rolada para mostrar a linha `focus`
+/// se ela não couber.
+fn draw_box(frame: &mut Frame, input: Rect, lines: Vec<Line<'static>>, focus: u16) {
+    let height = (lines.len() as u16 + 2).min(input.y);
+    if height < 3 {
+        return;
+    }
+    let area = Rect {
+        y: input.y - height,
+        height,
+        ..input
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::variant(Variant::Warning))
+        .padding(Padding::horizontal(1))
+        .style(theme::screen());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((focus.saturating_sub(height - 3), 0))
+            .block(block),
+        area,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{Question, QuestionOption};
     use crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -212,6 +268,44 @@ mod tests {
         );
         assert!(!prompts.is_open());
         assert_eq!(prompts.handle_key(key(KeyCode::Enter)), None);
+    }
+
+    #[test]
+    fn question_keys_go_to_the_form_and_finishing_forgets_it() {
+        let question = Question {
+            header: "Cor".to_string(),
+            text: "Qual cor?".to_string(),
+            multi_select: false,
+            options: vec![QuestionOption {
+                label: "Azul".to_string(),
+                description: String::new(),
+            }],
+        };
+        let ask = |id: &str| Request {
+            name: "Pergunta".to_string(),
+            detail: String::new(),
+            kind: Kind::Question {
+                id: id.to_string(),
+                form: Form::new(vec![question.clone()]),
+            },
+        };
+        let mut prompts = Prompts::default();
+        prompts.push(ask("q1"));
+        prompts.push(ask("q2"));
+        prompts.push(ask("q3"));
+        assert!(prompts.asks_question());
+
+        // `s` e `n` não valem como permitir e negar.
+        assert_eq!(prompts.handle_key(key(KeyCode::Char('n'))), None);
+        assert_eq!(prompts.handle_key(key(KeyCode::Char('s'))), None);
+        let (_, answered) = prompts.handle_key(key(KeyCode::Enter)).unwrap();
+        assert!(answered);
+        let (_, answered) = prompts.handle_key(key(KeyCode::Esc)).unwrap();
+        assert!(!answered);
+
+        prompts.clear_asks();
+        assert!(!prompts.is_open());
+        assert!(!prompts.asks_question());
     }
 
     #[test]

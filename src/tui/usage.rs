@@ -15,6 +15,9 @@
 //! da altura da seção dos limites. Os botões **Sem cache** (o padrão, verde)
 //! e **Com cache** (vermelho) escolhem se o cache entra; clique ou `c`.
 //!
+//! No topo, a **Sessão** desta pasta ([`session`]): o que a aba de chat atual e
+//! a pasta gastaram, no modo simplificado ou detalhado (`d`).
+//!
 //! O consumo é carregado ao abrir a aba e atualizado a cada [`STALE`]
 //! enquanto ela está aberta; `r` atualiza na hora.
 
@@ -33,15 +36,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Bar, BarChart, BarGroup, Block, Padding, Paragraph};
 
 mod context;
+mod session;
 
 use super::chat::compact_count;
 use crate::agent::{ChatAdapter, DailyTokens, Usage, UsageWindow};
 use crate::theme::{self, Variant};
 use context::SkillCost;
+use session::SessionView;
+pub use session::TabSpend;
 
-pub const HELP: &str =
-    "clique num dia: horas · c com/sem cache · r atualizar · Tab trocar aba · Esc ir para Sair";
+pub const HELP: &str = "d sessão detalhada · clique num dia: horas · c com/sem cache · r atualizar · Tab trocar aba · Esc ir para Sair";
 const HELP_DAY: &str = "Esc voltar aos dias · c com/sem cache · r atualizar · Tab trocar aba";
+const HELP_DETAIL: &str =
+    "↑/↓ rolar · d ou Esc voltar ao simplificado · r atualizar · Tab trocar aba";
 /// Depois disso, o consumo mostrado é recarregado.
 const STALE: Duration = Duration::from_secs(60);
 /// Largura máxima da barra de progresso.
@@ -93,9 +100,21 @@ pub struct UsageView {
     skill_page: usize,
     /// Onde os botões `‹` e `›` das skills ficaram no último desenho.
     pager: Cell<[Rect; 2]>,
+    /// A sessão desta pasta.
+    session: SessionView,
 }
 
 impl UsageView {
+    /// O consumo da sessão fica no SQLite `file`, separado por `folder`.
+    pub fn set_session(&mut self, file: std::path::PathBuf, folder: String) {
+        self.session.set_source(file, folder);
+    }
+
+    /// Relê o consumo da sessão, que outro terra na pasta também muda.
+    pub fn refresh_session(&mut self) {
+        self.session.reload_if_stale();
+    }
+
     /// `r` atualiza, `c` alterna o gráfico entre sem e com cache e `Esc`,
     /// com um dia aberto, volta aos dias. Retorna `true` se a tecla foi usada.
     pub fn handle_key(
@@ -104,6 +123,9 @@ impl UsageView {
         adapter: Option<&dyn ChatAdapter>,
         account: Option<&str>,
     ) -> bool {
+        if self.session.handle_key(key) {
+            return true;
+        }
         match key.code {
             KeyCode::Char('r') => self.refresh(adapter, account),
             KeyCode::Char('c') => self.with_cache = !self.with_cache,
@@ -157,6 +179,7 @@ impl UsageView {
         }
         self.fetched = Some((Instant::now(), account.map(str::to_string)));
         self.error = None;
+        self.session.reload();
         self.loading = adapter
             .filter(|a| a.is_available())
             .and_then(|a| a.load_usage(account));
@@ -223,14 +246,21 @@ impl UsageView {
         }
     }
 
-    /// `route` é o provedor e a conta (ex.: `Claude · Default · eu@gmail.com`).
+    /// `route` é o provedor e a conta (ex.: `Claude · Default · eu@gmail.com`);
+    /// `tabs` são os chats abertos, e `current` o da aba Chat.
     pub fn draw(
         &self,
         frame: &mut Frame,
         area: Rect,
         adapter: Option<&dyn ChatAdapter>,
         route: &str,
+        tabs: &[TabSpend],
+        current: usize,
     ) {
+        if self.session.detailed() {
+            self.session.draw_detail(frame, area, tabs, current);
+            return;
+        }
         let tz = TimeZone::system();
         let now = Timestamp::now();
         let today = now.to_zoned(tz.clone()).date();
@@ -243,7 +273,8 @@ impl UsageView {
         } else {
             (area, None)
         };
-        let lines = self.lines(adapter, route, bars_area.width, &tz, now.as_second());
+        let mut lines = self.session.simple_lines(tabs, current);
+        lines.extend(self.lines(adapter, route, bars_area.width, &tz, now.as_second()));
         // O gráfico tem a altura da seção dos limites (o padding de cima e as
         // linhas), com um mínimo para as barras caberem.
         let height = (lines.len() as u16 + 1).max(CHART_MIN_HEIGHT);
@@ -268,6 +299,8 @@ impl UsageView {
             Paragraph::new(lines.clone()).block(Block::new().padding(padding)),
             bars_area,
         );
+        self.session
+            .place_buttons(Block::new().padding(padding).inner(bars_area));
         // O Contexto vem embaixo do consumo do provedor (e do gráfico, em telas estreitas).
         let below = match (side_by_side, chart_area) {
             (false, Some(chart)) => chart.y + chart.height,
@@ -496,6 +529,9 @@ impl UsageView {
     /// Clique: nos botões de cache, no `‹ Dias` ou numa barra de dia (abre
     /// as horas dele).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.session.handle_mouse(mouse) {
+            return;
+        }
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
             return;
         }
@@ -518,7 +554,9 @@ impl UsageView {
 
     /// A ajuda do rodapé: com um dia aberto, `Esc` volta aos dias.
     pub fn help(&self) -> &'static str {
-        if self.selected_day.is_some() {
+        if self.session.detailed() {
+            HELP_DETAIL
+        } else if self.selected_day.is_some() {
             HELP_DAY
         } else {
             HELP

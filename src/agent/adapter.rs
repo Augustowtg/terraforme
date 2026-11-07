@@ -313,6 +313,10 @@ pub trait Session {
     /// Responde a um [`AgentEvent::PermissionRequest`]: `allow` aprova o uso
     /// da ferramenta, senão ele é negado.
     fn respond(&mut self, _id: &str, _allow: bool) {}
+
+    /// Responde a um [`AgentEvent::Question`]: uma resposta por pergunta, na
+    /// ordem delas, ou `None` se o usuário não quis responder.
+    fn answer(&mut self, _id: &str, _answers: Option<Vec<String>>) {}
 }
 
 /// O processo de `bin` (o provedor `harness` no lançador, ex.: `claude`),

@@ -28,6 +28,13 @@ impl Session for Follow {
     fn respond(&mut self, _id: &str, _allow: bool) {}
 }
 
+/// Uma [`Session`] só de leitura alimentada por quem tem o `Sender`: a aba de
+/// um subagente recebe assim o que o chat que o lançou vê.
+pub fn feed() -> (mpsc::Sender<AgentEvent>, Box<dyn Session>) {
+    let (tx, events) = mpsc::channel();
+    (tx, Box::new(Follow { events }))
+}
+
 /// Segue `path` até a linha do fim (a que contém `end`) ou até a sessão ser
 /// fechada, transformando cada linha em eventos com `parse`. Os pedidos de
 /// permissão não aparecem: a execução nega sozinha o que não está liberado,
@@ -59,7 +66,9 @@ pub fn follow(
                     for event in parse(line.trim_end()) {
                         if matches!(
                             event,
-                            AgentEvent::PermissionRequest { .. } | AgentEvent::Blocked { .. }
+                            AgentEvent::PermissionRequest { .. }
+                                | AgentEvent::Question { .. }
+                                | AgentEvent::Blocked { .. }
                         ) {
                             continue;
                         }

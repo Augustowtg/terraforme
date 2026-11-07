@@ -12,7 +12,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::{Terminal, backend::TestBackend};
 
-use super::draw::{HELP_MODEL, HELP_NORMAL, HELP_PERMISSION};
+use super::draw::{HELP_MODEL, HELP_NORMAL, HELP_PERMISSION, HELP_QUESTION};
 use super::*;
 use crate::agent::{Interactive, ReportedMode, Request};
 use crate::theme::{self, Variant};
@@ -41,6 +41,14 @@ impl Session for FakeSession {
 
     fn respond(&mut self, id: &str, allow: bool) {
         self.1.borrow_mut().push((id.to_string(), allow));
+    }
+
+    fn answer(&mut self, id: &str, answers: Option<Vec<String>>) {
+        let answered = answers.is_some();
+        let answers = answers.unwrap_or_default().join("|");
+        self.1
+            .borrow_mut()
+            .push((format!("{id}:{answers}"), answered));
     }
 }
 
@@ -749,6 +757,75 @@ fn permission_requests_ask_the_user_and_answer_the_session() {
         [
             Entry::Info("Negado: Bash (rm -rf build).".into()),
             Entry::Info("Permitido: Bash (ls).".into()),
+        ]
+    );
+    assert_eq!(chat.agent_activity.as_deref(), Some("Pensando..."));
+    assert!(!chat.prompts.is_open());
+}
+
+#[test]
+fn questions_show_the_options_and_answer_the_session() {
+    let question = |id: &str| AgentEvent::Question {
+        id: id.into(),
+        questions: vec![crate::agent::Question {
+            header: "Cor".into(),
+            text: "Qual cor?".into(),
+            multi_select: false,
+            options: vec![
+                crate::agent::QuestionOption {
+                    label: "Azul".into(),
+                    description: "Como o céu".into(),
+                },
+                crate::agent::QuestionOption {
+                    label: "Verde".into(),
+                    description: String::new(),
+                },
+            ],
+        }],
+    };
+    let reply = vec![init(PermissionMode::Yolo), question("q1"), question("q2")];
+    let (mut chat, _, responses) = fake_chat_responses(true, reply, &AgentSettings::default());
+    chat.submit("escolhe");
+    chat.tick();
+    assert_eq!(
+        chat.agent_activity.as_deref(),
+        Some("Aguardando sua resposta...")
+    );
+    assert_eq!(chat.help(), HELP_QUESTION);
+
+    let mut terminal = Terminal::new(TestBackend::new(60, HEIGHT + 12)).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let panel = Rect {
+                y: area.height - HEIGHT,
+                height: HEIGHT,
+                ..area
+            };
+            chat.draw(frame, panel);
+        })
+        .unwrap();
+    let screen = format!("{:?}", terminal.backend().buffer());
+    for text in ["Qual cor?", "Azul", "Como o céu", "Verde", "Outra resposta"] {
+        assert!(screen.contains(text), "faltou {text}");
+    }
+
+    press(&mut chat, KeyCode::Down);
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(
+        chat.agent_activity.as_deref(),
+        Some("Aguardando sua resposta...")
+    );
+    press(&mut chat, KeyCode::Esc);
+    assert_eq!(
+        *responses.borrow(),
+        [("q1:Verde".to_string(), true), ("q2:".to_string(), false)]
+    );
+    assert_eq!(
+        chat.history.entries()[1..],
+        [
+            Entry::Info("Pergunta: Qual cor? Resposta: Verde".into()),
+            Entry::Info("Pergunta sem resposta: Qual cor?".into()),
         ]
     );
     assert_eq!(chat.agent_activity.as_deref(), Some("Pensando..."));
@@ -1717,4 +1794,108 @@ fn an_interrupted_turn_keeps_what_it_spent() {
         cache_tokens: 0,
     });
     assert_eq!(chat.tokens_used, 14);
+}
+
+fn haiku(output: u64, cost_micros: u64) -> crate::agent::ModelSpend {
+    crate::agent::ModelSpend {
+        model: "haiku".into(),
+        output,
+        cost_micros: Some(cost_micros),
+        ..Default::default()
+    }
+}
+
+fn session_spent(models: Vec<crate::agent::ModelSpend>) -> AgentEvent {
+    AgentEvent::Spent {
+        models,
+        scope: crate::agent::SpendScope::Session,
+    }
+}
+
+fn folder_usage(file: &std::path::Path, folder: &str) -> crate::db::history::FolderUsage {
+    crate::db::history::ChatHistory::open(file)
+        .unwrap()
+        .folder_usage(folder)
+        .unwrap()
+}
+
+/// O `modelUsage` acumula a sessão, mesmo com o `--resume` de cada mensagem: o
+/// turno só conta o que veio depois do anterior.
+#[test]
+fn the_accumulated_spend_of_the_session_counts_once_in_the_tab_and_the_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("x.sql");
+    let (mut chat, _) = fake_chat(true, vec![init(PermissionMode::Agente)]);
+    chat.set_history_file(file.clone());
+    chat.set_usage_folder("/pasta".into());
+    chat.tick();
+
+    chat.submit("um");
+    chat.apply(session_spent(vec![haiku(321, 3_500)]));
+    assert_eq!(chat.spend()[0].output, 321, "ao vivo, antes do fim");
+    assert_eq!(folder_usage(&file, "/pasta").turns, 0);
+    chat.apply(done(1));
+
+    chat.submit("dois");
+    chat.apply(session_spent(vec![haiku(334, 3_867)]));
+    assert_eq!(chat.turn_spend()[0].output, 13);
+    chat.apply(done(1));
+
+    assert_eq!(chat.spend(), [haiku(334, 3_867)]);
+    let usage = folder_usage(&file, "/pasta");
+    assert_eq!(usage.turns, 2);
+    assert_eq!(usage.models, [haiku(334, 3_867)]);
+    assert_eq!(folder_usage(&file, "/outra").turns, 0);
+}
+
+#[test]
+fn a_new_conversation_does_not_discount_the_spend_of_the_previous_one() {
+    let (mut chat, _) = fake_chat(true, vec![init(PermissionMode::Agente)]);
+    chat.tick();
+    chat.submit("um");
+    chat.apply(session_spent(vec![haiku(100, 1_000)]));
+    chat.apply(done(1));
+
+    chat.clear_conversation();
+    chat.submit("dois");
+    chat.apply(session_spent(vec![haiku(30, 300)]));
+    chat.apply(done(1));
+    assert_eq!(chat.spend(), [haiku(130, 1_300)]);
+}
+
+#[test]
+fn an_interrupted_turn_keeps_what_it_spent_without_counting_it_twice() {
+    let (mut chat, _) = fake_chat(true, vec![init(PermissionMode::Agente)]);
+    chat.tick();
+    chat.submit("um");
+    let partial = crate::agent::ModelSpend {
+        model: "haiku".into(),
+        output: 40,
+        ..Default::default()
+    };
+    chat.apply(AgentEvent::Spent {
+        models: vec![partial.clone()],
+        scope: crate::agent::SpendScope::Turn,
+    });
+    chat.cancel();
+    assert_eq!(chat.spend(), [partial]);
+
+    // O acumulado da próxima já tem os 40.
+    chat.submit("dois");
+    chat.apply(session_spent(vec![haiku(50, 500)]));
+    chat.apply(done(1));
+    assert_eq!(chat.spend()[0].output, 50);
+}
+
+#[test]
+fn the_partial_spend_does_not_replace_the_complete_one_of_the_turn() {
+    let (mut chat, _) = fake_chat(true, vec![init(PermissionMode::Agente)]);
+    chat.tick();
+    chat.submit("um");
+    chat.apply(session_spent(vec![haiku(100, 1_000)]));
+    chat.apply(AgentEvent::Spent {
+        models: vec![haiku(2, 0)],
+        scope: crate::agent::SpendScope::Turn,
+    });
+    assert_eq!(chat.turn_spend()[0].output, 100);
 }

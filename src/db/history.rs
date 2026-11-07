@@ -13,12 +13,16 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
 use super::now_millis;
+use crate::agent::{ModelSpend, merge_spend};
 
 /// Quanto uma escrita espera por outra conexão antes de desistir.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Quantas mensagens enviadas o workspace guarda para o ↑ do input.
 const SENT_LIMIT: i64 = 10;
+
+/// Quantos dias [`FolderUsage::days`] traz.
+const DAYS_KEPT: i64 = 7;
 
 /// Uma mensagem da conversa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +41,47 @@ pub struct Conversation<'a> {
     pub provider: Option<&'a str>,
     pub session_id: Option<&'a str>,
     pub model: Option<&'a str>,
+}
+
+/// De quem é um turno gravado com [`ChatHistory::record_turn`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnOwner<'a> {
+    /// A pasta da sessão. Um workspace pode mudar de pasta, e pastas com o
+    /// mesmo nome dividem o arquivo: é ela que separa o consumo.
+    pub folder: &'a str,
+    /// O id do turno, único entre as linhas (uma por modelo).
+    pub turn: &'a str,
+    pub provider: Option<&'a str>,
+    pub session_id: Option<&'a str>,
+}
+
+/// O consumo de um dia, em [`FolderUsage::days`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DayUsage {
+    /// Na hora local, como `2026-11-06`.
+    pub day: String,
+    pub turns: u64,
+    /// Entrada e saída.
+    pub tokens: u64,
+    pub cache: u64,
+    pub cost_micros: Option<u64>,
+}
+
+/// O consumo da sessão de uma pasta: tudo o que os chats do terra gastaram nela.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FolderUsage {
+    /// Em milissegundos, o primeiro e o último turno.
+    pub first_at: Option<i64>,
+    pub last_at: Option<i64>,
+    pub turns: u64,
+    pub conversations: u64,
+    /// Os turnos de um provedor que não informa o custo.
+    pub turns_without_cost: u64,
+    pub priciest_turn_micros: Option<u64>,
+    /// Do modelo que mais custou (e, sem custo, mais gastou) ao que menos.
+    pub models: Vec<ModelSpend>,
+    /// Os últimos [`DAYS_KEPT`] dias com consumo, o mais novo primeiro.
+    pub days: Vec<DayUsage>,
 }
 
 /// Traz o histórico da antiga `sql/history.sqlite`, ao lado de `file`, para
@@ -65,6 +110,15 @@ pub fn move_old_file(file: &Path) -> Result<()> {
 
 pub struct ChatHistory {
     conn: Connection,
+}
+
+/// Uma contagem do banco, que o SQLite guarda com sinal.
+fn count(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
+    Ok(row.get::<_, i64>(column)? as u64)
+}
+
+fn optional_count(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<Option<u64>> {
+    Ok(row.get::<_, Option<i64>>(column)?.map(|n| n as u64))
 }
 
 impl ChatHistory {
@@ -109,7 +163,25 @@ impl ChatHistory {
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 content    TEXT    NOT NULL,
                 created_at INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS usage_turns (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder         TEXT    NOT NULL,
+                turn           TEXT    NOT NULL,
+                provider       TEXT,
+                session_id     TEXT,
+                model          TEXT    NOT NULL,
+                input          INTEGER NOT NULL,
+                output         INTEGER NOT NULL,
+                cache_creation INTEGER NOT NULL,
+                cache_read     INTEGER NOT NULL,
+                thinking       INTEGER NOT NULL,
+                web_searches   INTEGER NOT NULL,
+                cost_micros    INTEGER,
+                created_at     INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS usage_turns_by_folder
+                ON usage_turns (folder, created_at);",
         )
         .context("não foi possível criar as tabelas do histórico")?;
         Ok(Self { conn })
@@ -186,6 +258,105 @@ impl ChatHistory {
         Ok(())
     }
 
+    /// Grava o gasto de um turno, uma linha por modelo.
+    pub fn record_turn(&mut self, owner: TurnOwner<'_>, spend: &[ModelSpend]) -> Result<()> {
+        let now = now_millis();
+        let tx = self.conn.transaction()?;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO usage_turns (folder, turn, provider, session_id, model, input,
+                    output, cache_creation, cache_read, thinking, web_searches, cost_micros,
+                    created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )?;
+            for item in spend {
+                insert.execute(params![
+                    owner.folder,
+                    owner.turn,
+                    owner.provider,
+                    owner.session_id,
+                    item.model,
+                    item.input as i64,
+                    item.output as i64,
+                    item.cache_creation as i64,
+                    item.cache_read as i64,
+                    item.thinking as i64,
+                    item.web_searches as i64,
+                    item.cost_micros.map(|cost| cost as i64),
+                    now
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// O consumo da sessão da pasta `folder`.
+    pub fn folder_usage(&self, folder: &str) -> Result<FolderUsage> {
+        let mut usage = self.conn.query_row(
+            "SELECT MIN(created_at), MAX(created_at), COUNT(DISTINCT turn),
+                    COUNT(DISTINCT session_id),
+                    COUNT(DISTINCT CASE WHEN cost_micros IS NULL THEN turn END)
+             FROM usage_turns WHERE folder = ?1",
+            [folder],
+            |row| {
+                Ok(FolderUsage {
+                    first_at: row.get(0)?,
+                    last_at: row.get(1)?,
+                    turns: count(row, 2)?,
+                    conversations: count(row, 3)?,
+                    turns_without_cost: count(row, 4)?,
+                    ..FolderUsage::default()
+                })
+            },
+        )?;
+        usage.priciest_turn_micros = self.conn.query_row(
+            "SELECT MAX(cost) FROM
+             (SELECT SUM(cost_micros) AS cost FROM usage_turns WHERE folder = ?1 GROUP BY turn)",
+            [folder],
+            |row| optional_count(row, 0),
+        )?;
+        let mut models = self.conn.prepare_cached(
+            "SELECT model, SUM(input), SUM(output), SUM(cache_creation), SUM(cache_read),
+                    SUM(thinking), SUM(web_searches), SUM(cost_micros)
+             FROM usage_turns WHERE folder = ?1 GROUP BY model
+             ORDER BY COALESCE(SUM(cost_micros), 0) DESC,
+                      SUM(input) + SUM(output) + SUM(cache_creation) + SUM(cache_read) DESC",
+        )?;
+        let rows = models.query_map([folder], |row| {
+            Ok(ModelSpend {
+                model: row.get(0)?,
+                input: count(row, 1)?,
+                output: count(row, 2)?,
+                cache_creation: count(row, 3)?,
+                cache_read: count(row, 4)?,
+                thinking: count(row, 5)?,
+                web_searches: count(row, 6)?,
+                cost_micros: optional_count(row, 7)?,
+            })
+        })?;
+        for row in rows {
+            merge_spend(&mut usage.models, &[row?]);
+        }
+        let mut days = self.conn.prepare_cached(
+            "SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS day,
+                    COUNT(DISTINCT turn), SUM(input) + SUM(output),
+                    SUM(cache_creation) + SUM(cache_read), SUM(cost_micros)
+             FROM usage_turns WHERE folder = ?1 GROUP BY day ORDER BY day DESC LIMIT ?2",
+        )?;
+        let rows = days.query_map(params![folder, DAYS_KEPT], |row| {
+            Ok(DayUsage {
+                day: row.get(0)?,
+                turns: count(row, 1)?,
+                tokens: count(row, 2)?,
+                cache: count(row, 3)?,
+                cost_micros: optional_count(row, 4)?,
+            })
+        })?;
+        usage.days = rows.collect::<rusqlite::Result<_>>()?;
+        Ok(usage)
+    }
+
     /// As mensagens enviadas guardadas, a mais antiga primeiro.
     pub fn sent(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
@@ -208,6 +379,71 @@ mod tests {
             tool: None,
             content,
         }
+    }
+
+    fn spend(model: &str, input: u64, cost: Option<u64>) -> ModelSpend {
+        ModelSpend {
+            model: model.to_string(),
+            input,
+            output: 2,
+            cache_creation: 3,
+            cache_read: 4,
+            thinking: 1,
+            web_searches: 1,
+            cost_micros: cost,
+        }
+    }
+
+    fn owner<'a>(folder: &'a str, turn: &'a str, session: &'a str) -> TurnOwner<'a> {
+        TurnOwner {
+            folder,
+            turn,
+            provider: Some("claude"),
+            session_id: Some(session),
+        }
+    }
+
+    #[test]
+    fn the_usage_of_a_folder_adds_its_turns_and_leaves_the_others_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = ChatHistory::open(&dir.path().join("x.sql")).unwrap();
+        history
+            .record_turn(
+                owner("/a", "t1", "s1"),
+                &[spend("opus", 10, Some(500)), spend("haiku", 1, Some(100))],
+            )
+            .unwrap();
+        history
+            .record_turn(owner("/a", "t2", "s1"), &[spend("opus", 5, Some(200))])
+            .unwrap();
+        history
+            .record_turn(owner("/a", "t3", "s2"), &[spend("gemini", 7, None)])
+            .unwrap();
+        history
+            .record_turn(owner("/b", "t4", "s3"), &[spend("opus", 99, Some(9_000))])
+            .unwrap();
+
+        let usage = history.folder_usage("/a").unwrap();
+        assert_eq!(usage.turns, 3);
+        assert_eq!(usage.conversations, 2);
+        assert_eq!(usage.turns_without_cost, 1);
+        assert_eq!(usage.priciest_turn_micros, Some(600));
+        assert!(usage.first_at.is_some() && usage.last_at.is_some());
+        let names: Vec<&str> = usage.models.iter().map(|m| m.model.as_str()).collect();
+        assert_eq!(names, ["opus", "haiku", "gemini"]);
+        assert_eq!(usage.models[0].input, 15);
+        assert_eq!(usage.models[0].cost_micros, Some(700));
+        assert_eq!(usage.models[2].cost_micros, None);
+        assert_eq!(usage.days.len(), 1);
+        assert_eq!(usage.days[0].turns, 3);
+        assert_eq!(usage.days[0].tokens, 23 + 8);
+        assert_eq!(usage.days[0].cost_micros, Some(800));
+
+        assert_eq!(
+            history.folder_usage("/nada").unwrap(),
+            FolderUsage::default(),
+            "uma pasta sem turnos não tem consumo"
+        );
     }
 
     #[test]

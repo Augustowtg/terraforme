@@ -586,6 +586,86 @@ fn a_dispatched_run_opens_a_read_only_tab_that_follows_its_output() {
     }
 }
 
+/// Um chat principal respondendo, com os eventos vindos do `Sender`.
+fn app_with_running_chat() -> (App, std::sync::mpsc::Sender<crate::agent::AgentEvent>) {
+    let (tx, session) = crate::agent::feed();
+    let app = App {
+        chat_id: "principal".into(),
+        chat: Chat::viewer(
+            session,
+            "chat".into(),
+            ("Claude", crate::agent::adapters::claude::display_model),
+        ),
+        ..Default::default()
+    };
+    (app, tx)
+}
+
+fn subagent(event: crate::agent::SubagentEvent) -> crate::agent::AgentEvent {
+    crate::agent::AgentEvent::Subagent(event)
+}
+
+/// Dá dois passos: um para o App ler o chat, outro para a aba ler o App.
+fn settle(app: &mut App) {
+    app.tick();
+    app.tick();
+}
+
+#[test]
+fn a_subagent_opens_a_tab_in_the_background_and_finishes_there() {
+    use crate::agent::{AgentEvent, SubagentEvent};
+    let (mut app, tx) = app_with_running_chat();
+    tx.send(subagent(SubagentEvent::Started {
+        id: "t1".into(),
+        description: "Rodar os testes de integração do hub".into(),
+    }))
+    .unwrap();
+    settle(&mut app);
+    assert_eq!(app.chats.len(), 1);
+    assert_eq!(app.chats[0].title, "▶ Rodar os testes de integ");
+    assert_eq!(app.active_chat, 0, "abre em segundo plano");
+    assert!(app.chats[0].chat.is_running());
+
+    tx.send(subagent(SubagentEvent::Activity {
+        id: "t1".into(),
+        event: Box::new(AgentEvent::ToolUse {
+            name: "Bash".into(),
+            detail: "cargo test".into(),
+        }),
+    }))
+    .unwrap();
+    settle(&mut app);
+    assert_eq!(app.chats[0].chat.activity(), Some("Usando Bash..."));
+
+    tx.send(subagent(SubagentEvent::Finished {
+        id: "t1".into(),
+        error: None,
+    }))
+    .unwrap();
+    settle(&mut app);
+    assert!(!app.chats[0].chat.is_running());
+    assert_eq!(app.chats.len(), 1, "a aba fica para consulta");
+    assert!(app.chat.is_running(), "o principal ainda não acabou");
+}
+
+#[test]
+fn the_subagent_tab_ends_when_its_chat_stops() {
+    use crate::agent::SubagentEvent;
+    let (mut app, tx) = app_with_running_chat();
+    tx.send(subagent(SubagentEvent::Started {
+        id: "t1".into(),
+        description: "Rodar".into(),
+    }))
+    .unwrap();
+    settle(&mut app);
+    assert!(app.chats[0].chat.is_running());
+    tx.send(crate::agent::AgentEvent::Failed("parou".into()))
+        .unwrap();
+    settle(&mut app);
+    settle(&mut app);
+    assert!(!app.chats[0].chat.is_running());
+}
+
 #[test]
 fn confirm_box_shows_question_and_buttons() {
     use ratatui::{Terminal, backend::TestBackend};
@@ -604,4 +684,113 @@ fn confirm_box_shows_question_and_buttons() {
     assert!(screen.contains(CONFIRM_TEXT));
     assert!(screen.contains("Sim"));
     assert!(screen.contains("Não"));
+}
+
+#[test]
+fn mouse_clicks_switch_tabs_chats_and_open_quit() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let click = |app: &mut App, rect: Rect| {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+    };
+    let mut app = App::default();
+    app.new_chat();
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+
+    // O Principal, na barra de chats, vira o chat ativo.
+    let main = app.chat_rects.borrow()[0].0;
+    assert_eq!(app.active_chat, 1);
+    click(&mut app, main);
+    assert_eq!(app.active_chat, 0);
+
+    // Cada aba desenhada leva à sua aba.
+    let tabs = app.tab_rects.borrow().clone();
+    assert!(tabs.len() >= 5);
+    for (rect, tab) in tabs {
+        click(&mut app, rect);
+        assert_eq!(app.tab, tab);
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+    }
+
+    // O Sair abre a confirmação, que bloqueia novos cliques nas abas.
+    let quit = app.quit_rect.get();
+    click(&mut app, quit);
+    assert_eq!(app.focus, Focus::Confirm(true));
+    let tab = app.tab;
+    let other = app.tab_rects.borrow()[0].0;
+    click(&mut app, other);
+    assert_eq!(app.tab, tab);
+}
+
+fn screen(app: &App) -> String {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 45)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    buffer.content().iter().map(|cell| cell.symbol()).collect()
+}
+
+fn click(app: &mut App, text: &str) {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 45)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let cells: Vec<&str> = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    let needle: Vec<String> = text.chars().map(String::from).collect();
+    let at = cells
+        .windows(needle.len())
+        .position(|window| window.iter().zip(&needle).all(|(a, b)| a == b))
+        .unwrap();
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: (at % 130) as u16,
+        row: (at / 130) as u16,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+#[test]
+fn consumo_shows_the_session_of_the_current_tab_simple_or_detailed() {
+    let mut app = App {
+        tab: Tab::Consumo,
+        ..App::default()
+    };
+    app.new_chat();
+    app.chats[0].chat.apply(crate::agent::AgentEvent::Spent {
+        models: vec![crate::agent::ModelSpend {
+            model: "haiku".into(),
+            input: 77,
+            output: 88,
+            cache_read: 99,
+            cost_micros: Some(1_234_500),
+            ..Default::default()
+        }],
+        scope: crate::agent::SpendScope::Turn,
+    });
+
+    let simple = screen(&app);
+    assert!(simple.contains("Aba Chat 2"), "a aba que está na aba Chat");
+    assert!(simple.contains("77") && simple.contains("88") && simple.contains("99"));
+    assert!(!simple.contains("Análise da pasta"));
+
+    press(&mut app, KeyCode::Char('d'));
+    let detail = screen(&app);
+    assert!(detail.contains("Análise da pasta"));
+    assert!(detail.contains("Leitura de cache"));
+    assert!(detail.contains("US$ 1,2345"));
+    assert!(!detail.contains("Consumo por dia"), "a página ocupa a aba");
+
+    click(&mut app, "Simplificado");
+    assert!(!screen(&app).contains("Análise da pasta"));
+    click(&mut app, "Detalhado");
+    assert!(screen(&app).contains("Análise da pasta"));
+
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Tabs, "o Esc só volta ao simplificado");
+    assert!(!screen(&app).contains("Análise da pasta"));
 }
