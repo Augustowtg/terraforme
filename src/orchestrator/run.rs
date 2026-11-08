@@ -463,6 +463,7 @@ fn agy_outcome(output: &str) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::config::portable;
 
     fn run(id: &str, agent: &str, state: RunState, created: u64) -> Run {
         Run {
@@ -519,11 +520,11 @@ mod tests {
 
     #[test]
     fn the_command_has_the_model_the_tools_and_the_turn_limit() {
-        let config = Config::parse(
+        let config = Config::parse(&portable(
             "[agents.api]\ncwd = \"/p\"\nmodelo = \"forte\"\n\
              ferramentas = [\"Read\", \"Bash(npm test:*)\"]\nmax_turnos = 30\n\
              [modelos]\nforte = \"opus\"\n",
-        )
+        ))
         .unwrap();
         let args = args(config.agent("api").unwrap(), &config);
         let has = |pair: [&str; 2]| args.windows(2).any(|w| w == pair);
@@ -542,11 +543,11 @@ mod tests {
 
     #[test]
     fn the_minimal_environment_loads_only_the_listed_tools() {
-        let config = Config::parse(
+        let config = Config::parse(&portable(
             "[agents.api]\ncwd = \"/p\"\n\
              ferramentas = [\"Read\", \"Bash(npm test:*)\", \"Bash(terra:*)\"]\n\
              [agents.web]\ncwd = \"/w\"\nambiente = \"completo\"\n",
-        )
+        ))
         .unwrap();
         let api = args(config.agent("api").unwrap(), &config);
         let has = |args: &[String], pair: [&str; 2]| args.windows(2).any(|w| w == pair);
@@ -599,10 +600,10 @@ mod tests {
 
     #[test]
     fn the_antigravity_runs_agy_in_auto_mode_with_the_model() {
-        let config = Config::parse(
+        let config = Config::parse(&portable(
             "[agents.web]\ncwd = \"/w\"\nprovedor = \"antigravity\"\n\
              modelo = \"gemini-3.8-flash\"\nferramentas = [\"Read\"]\nmax_turnos = 3\n",
-        )
+        ))
         .unwrap();
         let web = config.agent("web").unwrap();
         let args = args(web, &config);
