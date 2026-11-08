@@ -144,30 +144,45 @@ setup_shells() {
 
 # As extensões do agente (aba Extensões). O terra passa os hooks e o MCP
 # delas ao agente; o RTK só precisa do binário, e o ai-memory, do servidor
-# que o `ai-memory setup` instala como serviço do usuário.
+# que o `ai-memory setup` instala como serviço do usuário. Os instaladores
+# delas põem os binários em ~/.local/bin, que entra no PATH deste script para
+# os passos seguintes os acharem mesmo fora do PATH do shell.
+export PATH="$BIN_DIR:$PATH"
+
+need_curl() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "erro: 'curl' não encontrado; é preciso para baixar o $1." >&2
+    return 1
+  fi
+}
+
+# O RTK pelo instalador oficial, que baixa o binário da release (não precisa
+# do Rust); com o cargo, compila só se o instalador falhar.
 install_rtk() {
   if command -v rtk >/dev/null 2>&1; then
     ui_note "RTK já instalado: $(rtk --version)"
     return
   fi
-  if ! command -v cargo >/dev/null 2>&1; then
-    ui_note "${C_YELLOW}aviso: o RTK não foi instalado: ele é compilado com o cargo. Instale o Rust em https://rustup.rs e rode o instalador de novo.${C_RESET}"
-    return
+  need_curl RTK
+  if curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | RTK_INSTALL_DIR="$BIN_DIR" sh; then
+    ui_note "RTK instalado em $BIN_DIR/rtk"
+  elif command -v cargo >/dev/null 2>&1; then
+    cargo install --locked --git https://github.com/rtk-ai/rtk rtk
+    ui_note "RTK instalado em ~/.cargo/bin/rtk"
+  else
+    echo "erro: o instalador do RTK falhou, e sem o cargo não dá para compilar." >&2
+    return 1
   fi
-  cargo install --locked --git https://github.com/rtk-ai/rtk rtk
-  ui_note "RTK instalado em ~/.cargo/bin/rtk"
+  command -v rtk >/dev/null 2>&1
 }
 
 install_ai_memory() {
   local bin
   bin="$(command -v ai-memory || true)"
   if [ -z "$bin" ]; then
-    if ! command -v curl >/dev/null 2>&1; then
-      echo "erro: 'curl' não encontrado; é preciso para baixar o ai-memory." >&2
-      return 1
-    fi
+    need_curl ai-memory
     curl -fsSL https://github.com/akitaonrails/ai-memory/releases/latest/download/install.sh | sh
-    bin="$HOME/.local/bin/ai-memory"
+    bin="$(command -v ai-memory || echo "$BIN_DIR/ai-memory")"
     ui_note "ai-memory instalado em $bin"
   else
     ui_note "ai-memory já instalado: $("$bin" --version)"
@@ -176,20 +191,24 @@ install_ai_memory() {
   ui_note "ai-memory configurado: servidor como serviço do usuário e agentes ligados"
 }
 
+# O Graphify é um pacote Python (graphifyy): vai com o uv ou o pipx. Sem
+# nenhum dos dois, instala o uv pelo instalador oficial (em ~/.local/bin,
+# sem mexer nos arquivos do shell).
 install_graphify() {
   if command -v graphify >/dev/null 2>&1; then
     ui_note "Graphify já instalado: $(graphify --version)"
-  elif command -v uv >/dev/null 2>&1; then
-    uv tool install graphifyy
-  elif command -v pipx >/dev/null 2>&1; then
-    pipx install graphifyy
   else
-    ui_note "${C_YELLOW}aviso: o Graphify não foi instalado: ele precisa do uv ou do pipx. Instale o uv em https://docs.astral.sh/uv e rode o instalador de novo.${C_RESET}"
-    return
-  fi
-  if ! command -v graphify >/dev/null 2>&1; then
-    ui_note "${C_YELLOW}aviso: o graphify foi instalado, mas não está no PATH. Abra um novo terminal e rode 'graphify install'.${C_RESET}"
-    return
+    if ! command -v uv >/dev/null 2>&1 && ! command -v pipx >/dev/null 2>&1; then
+      need_curl uv
+      curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh
+      ui_note "uv instalado em $BIN_DIR/uv (para o Graphify)"
+    fi
+    if command -v uv >/dev/null 2>&1; then
+      uv tool install graphifyy
+    else
+      pipx install graphifyy
+    fi
+    ui_note "Graphify instalado em $(command -v graphify || echo "$BIN_DIR/graphify")"
   fi
   graphify install
   ui_note "Graphify configurado: a skill /graphify nos agentes"
@@ -305,13 +324,13 @@ elif ui_ask "Instalar as extensões (RTK, ai-memory e Graphify)?"; then
     "ai-memory - memória de longo prazo entre sessões e agentes" \
     "Graphify - grafo de conhecimento do projeto, que o agente consulta antes de ler os arquivos"
   if [ "${UI_SELECTED[0]}" -eq 1 ]; then
-    ui_add_step "Instalar o RTK" "cargo install --git https://github.com/rtk-ai/rtk rtk"
+    ui_add_step "Instalar o RTK" "binário da release pelo install.sh do rtk-ai/rtk"
   fi
   if [ "${UI_SELECTED[1]}" -eq 1 ]; then
     ui_add_step "Instalar e configurar o ai-memory" "install.sh do GitHub e ai-memory setup"
   fi
   if [ "${UI_SELECTED[2]}" -eq 1 ]; then
-    ui_add_step "Instalar e configurar o Graphify" "uv tool install graphifyy e graphify install"
+    ui_add_step "Instalar e configurar o Graphify" "uv tool install graphifyy (instala o uv se faltar) e graphify install"
   fi
   if [ "${UI_SELECTED[0]}" -eq 1 ]; then ui_step install_rtk; fi
   if [ "${UI_SELECTED[1]}" -eq 1 ]; then ui_step install_ai_memory; fi
