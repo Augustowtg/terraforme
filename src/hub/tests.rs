@@ -73,6 +73,15 @@ fn dump_log(endpoint: &Endpoint) {
     }
 }
 
+/// Mostra o `hub.log` se o teste falhar antes de ela sair.
+struct LogOnPanic(Endpoint);
+
+impl Drop for LogOnPanic {
+    fn drop(&mut self) {
+        dump_log(&self.0);
+    }
+}
+
 /// Espera `ok` valer, por até `secs`.
 fn wait<T>(secs: u64, what: &str, mut ok: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(secs);
@@ -182,9 +191,10 @@ fn ten_windows_opening_in_the_same_second_share_a_single_hub() {
 fn a_client_that_does_not_read_is_disconnected_without_holding_the_others() {
     let dir = tempfile::tempdir().unwrap();
     let endpoint = Endpoint::in_dir(dir.path());
+    let _log = LogOnPanic(endpoint.clone());
     let server = {
         let endpoint = endpoint.clone();
-        thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
+        thread::spawn(move || daemon::serve(&endpoint, daemon::TEST_IDLE).unwrap())
     };
     let connect = || {
         wait(5, "o hub subir", || {
@@ -257,7 +267,7 @@ mod messages {
             endpoint.claude = Some(dir.path().join("sem-claude"));
             let server = {
                 let endpoint = endpoint.clone();
-                thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
+                thread::spawn(move || daemon::serve(&endpoint, daemon::TEST_IDLE).unwrap())
             };
             Self {
                 dir,
@@ -484,7 +494,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
             endpoint.claude = Some(fake);
             let server = {
                 let endpoint = endpoint.clone();
-                thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
+                thread::spawn(move || daemon::serve(&endpoint, daemon::TEST_IDLE).unwrap())
             };
             wait(5, "o hub subir", || {
                 Stream::connect(endpoint.name().unwrap()).ok().map(|_| ())
