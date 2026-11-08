@@ -209,9 +209,10 @@ fn a_client_that_does_not_read_is_disconnected_without_holding_the_others() {
         last.then_some(())
     });
     // O lento foi desconectado: depois do que ficou no buffer, vem o fim.
-    // O pipe do Windows não tem tempo limite: lá a leitura só espera o fim.
-    #[cfg(unix)]
-    slow.set_recv_timeout(Some(Duration::from_secs(5))).unwrap();
+    // O tempo limite pode falhar: o pipe do Windows não tem, e o macOS o
+    // recusa (EINVAL) no socket que o hub já fechou. Nos dois casos, a
+    // leitura chega ao fim sem ele.
+    let _ = slow.set_recv_timeout(Some(Duration::from_secs(5)));
     let mut rest = Vec::new();
     BufReader::new(slow.clone())
         .read_to_end(&mut rest)
