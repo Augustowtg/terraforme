@@ -9,7 +9,7 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 ### Corrigido
 
 - No macOS, o hub não recusa mais as conexões. A conexão aceita herdava o modo não bloqueante do socket do hub, a primeira leitura falhava com `WouldBlock` e o hub fechava a conexão: as janelas não apareciam no monitor, as mensagens entre agentes não eram entregues e os despachos não rodavam. Agora o hub volta cada conexão aceita ao modo bloqueante.
-- Os testes passam no Windows: os `orchestrator.toml` dos testes usam um `cwd` com o drive (`C:/...`), já que lá um caminho sem ele não é absoluto, e o teste do cliente lento não pede tempo limite de leitura ao pipe, que não tem.
+- Os testes passam no Windows: os `orchestrator.toml` dos testes usam um `cwd` com o drive (`C:/...`), já que lá um caminho sem ele não é absoluto, e o teste do cliente lento segue sem o tempo limite de leitura quando ele falha (o pipe do Windows não tem, e o macOS o recusa no socket que o hub já fechou).
 
 ## [0.13.23] - 2026-11-07
 
