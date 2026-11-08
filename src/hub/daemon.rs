@@ -83,6 +83,13 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
     loop {
         match listener.accept() {
             Ok(stream) => {
+                // No macOS (e nos BSDs), a conexão aceita herda o
+                // `O_NONBLOCK` do listener; o hub lê bloqueando.
+                #[cfg(unix)]
+                if let Err(err) = stream.set_nonblocking(false) {
+                    hub.log.line(&format!("conexão sem modo bloqueante: {err}"));
+                    continue;
+                }
                 hub.clients.fetch_add(1, Ordering::SeqCst);
                 *hub.idle_since.lock().unwrap() = None;
                 let hub = Arc::clone(&hub);

@@ -423,6 +423,17 @@ fn texts(item: &Item, at: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
+/// O `toml` dos testes com os `cwd = "/..."` absolutos também no Windows,
+/// onde um caminho sem o drive não é absoluto (lá vira `C:/...`).
+#[cfg(test)]
+pub(crate) fn portable(toml: &str) -> String {
+    if cfg!(windows) {
+        toml.replace("cwd = \"/", "cwd = \"C:/")
+    } else {
+        toml.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,10 +468,10 @@ modelo = "leve"
 
     #[test]
     fn the_example_of_the_spec_parses() {
-        let config = Config::parse(EXAMPLE).unwrap();
+        let config = Config::parse(&portable(EXAMPLE)).unwrap();
         assert_eq!(config.global, Global::default());
         let backend = config.agent("backend").unwrap();
-        assert_eq!(backend.cwd, PathBuf::from("/proj/api"));
+        assert!(backend.cwd.is_absolute() && backend.cwd.ends_with("proj/api"));
         assert_eq!(backend.tools.len(), 4);
         assert_eq!(backend.max_turns, Some(30));
         assert_eq!(backend.daily_budget, Some(40));
@@ -474,8 +485,10 @@ modelo = "leve"
 
     #[test]
     fn the_provider_is_claude_or_antigravity() {
-        let config =
-            Config::parse("[agents.web]\ncwd = \"/w\"\nprovedor = \"antigravity\"\n").unwrap();
+        let config = Config::parse(&portable(
+            "[agents.web]\ncwd = \"/w\"\nprovedor = \"antigravity\"\n",
+        ))
+        .unwrap();
         let web = config.agent("web").unwrap();
         assert_eq!(web.provider(), "antigravity");
         assert!(web.is_antigravity());

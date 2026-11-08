@@ -209,6 +209,8 @@ fn a_client_that_does_not_read_is_disconnected_without_holding_the_others() {
         last.then_some(())
     });
     // O lento foi desconectado: depois do que ficou no buffer, vem o fim.
+    // O pipe do Windows não tem tempo limite: lá a leitura só espera o fim.
+    #[cfg(unix)]
     slow.set_recv_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut rest = Vec::new();
     BufReader::new(slow.clone())
@@ -239,6 +241,7 @@ mod messages {
     impl Hub {
         fn start(config: &str) -> Self {
             let dir = tempfile::tempdir().unwrap();
+            let config = crate::orchestrator::config::portable(config);
             fs::write(dir.path().join("orchestrator.toml"), config).unwrap();
             let mut endpoint = Endpoint::in_dir(dir.path());
             // Nenhum teste roda o claude de verdade.
