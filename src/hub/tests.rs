@@ -65,6 +65,14 @@ fn kill_9(pid: u64) {
         .unwrap();
 }
 
+/// O `hub.log` na saída do teste que falhou (a pasta some com ele).
+fn dump_log(endpoint: &Endpoint) {
+    if thread::panicking() {
+        let log = fs::read_to_string(&endpoint.log).unwrap_or_default();
+        eprintln!("--- hub.log ---\n{log}--- fim do hub.log ---");
+    }
+}
+
 /// Espera `ok` valer, por até `secs`.
 fn wait<T>(secs: u64, what: &str, mut ok: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(secs);
@@ -317,6 +325,7 @@ mod messages {
 
     impl Drop for Hub {
         fn drop(&mut self) {
+            dump_log(&self.endpoint);
             if let Some(server) = self.server.take() {
                 let _ = server.join();
             }
@@ -526,6 +535,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
 
     impl Drop for Hub {
         fn drop(&mut self) {
+            dump_log(&self.endpoint);
             self.window.take();
             if let Some(server) = self.server.take() {
                 let _ = server.join();
