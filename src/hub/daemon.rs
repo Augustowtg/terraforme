@@ -262,9 +262,11 @@ impl Outbox {
     fn open(conn: Conn, log: Arc<Log>) -> Self {
         let (tx, rx) = mpsc::sync_channel::<Value>(OUTBOX);
         let mut out = conn.clone();
+        let failed = Arc::clone(&log);
         thread::spawn(move || {
             while let Ok(msg) = rx.recv() {
-                if send(&mut out, &msg).is_err() {
+                if let Err(err) = send(&mut out, &msg) {
+                    failed.line(&format!("envio falhou: {err}"));
                     out.close();
                     break;
                 }
@@ -355,6 +357,18 @@ impl Hub {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// A próxima mensagem da conexão; `None` no fim dela ou num erro de
+    /// leitura, que vai para o log.
+    fn read(&self, input: &mut BufReader<Conn>) -> Option<Value> {
+        match recv(input) {
+            Ok(msg) => msg,
+            Err(err) => {
+                self.log.line(&format!("leitura falhou: {err}"));
+                None
+            }
+        }
+    }
+
     fn handle(&self, stream: Stream) {
         let conn = self.next_conn.fetch_add(1, Ordering::SeqCst);
         let stream = Conn::new(stream);
@@ -428,7 +442,7 @@ impl Hub {
             output.push(msg);
         }
         let mut reason = None;
-        while let Ok(Some(msg)) = recv(&mut input) {
+        while let Some(msg) = self.read(&mut input) {
             match msg["t"].as_str() {
                 Some("heartbeat") => self.signal(&id, None),
                 Some("status") => self.signal(&id, Some(&msg)),
@@ -503,10 +517,10 @@ impl Hub {
             return;
         }
         loop {
-            match recv(&mut input) {
-                Ok(Some(msg)) if msg["t"] == "subscribe" => break,
-                Ok(Some(_)) => {}
-                _ => return,
+            match self.read(&mut input) {
+                Some(msg) if msg["t"] == "subscribe" => break,
+                Some(_) => {}
+                None => return,
             }
         }
         {
@@ -519,7 +533,7 @@ impl Hub {
             state.monitors.push((conn, output));
         }
         // Depois do `subscribe`, o monitor só manda o `bye`, ao fechar.
-        while let Ok(Some(msg)) = recv(&mut input) {
+        while let Some(msg) = self.read(&mut input) {
             if msg["t"] == "bye" {
                 break;
             }
