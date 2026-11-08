@@ -4,6 +4,14 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.23] - 2026-11-07
+
+### Corrigido
+
+- O menu **Quais extensões instalar?** do instalador não se repete mais pela tela a cada tecla. Uma opção mais larga que o terminal (como a do Graphify, num terminal de 80 colunas) quebrava em duas linhas e o menu subia menos do que tinha descido; agora a quebra automática de linha fica desligada enquanto o menu está aberto, e a linha é cortada na borda.
+- O instalador do Linux instala todas as extensões escolhidas, mesmo sem o Rust, o uv ou o pipx. O **RTK** vem pelo instalador oficial do rtk-ai, que baixa o binário da release para `~/.local/bin` (o `cargo` só entra se ele falhar). Para o **Graphify**, sem o uv nem o pipx, o instalador instala o uv pelo instalador oficial em `~/.local/bin`, sem mexer nos arquivos do shell, e segue com `uv tool install graphifyy` e `graphify install`.
+- O instalador procura as extensões também em `~/.local/bin`, mesmo fora do `PATH` do shell, e uma extensão que não pôde ser instalada aparece como falha do passo, com o log, em vez de um aviso no fim.
+
 ## [0.13.22] - 2026-11-04
 
 ### Adicionado

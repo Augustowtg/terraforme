@@ -58,7 +58,7 @@ ui_init() {
 
 ui_on_exit() {
   local rc=$?
-  printf '\033[?25h'
+  printf '\033[?25h\033[?7h'
   if [ "$rc" -ne 0 ] && [ "$UI_CURRENT" -lt "${#UI_STEPS[@]}" ]; then
     UI_FAILED=1
     ui_render
@@ -270,7 +270,10 @@ ui_select() {
   echo "  ${C_BOLD}${question}${C_RESET}"
   echo "  ${C_DIM}↑/↓ para escolher, Espaço para marcar, Enter para confirmar${C_RESET}"
   echo
-  printf '\033[?25l'
+  # Sem a quebra automática de linha: uma opção mais larga que o terminal
+  # ocuparia duas linhas, o \033[nA de cada tecla subiria menos que o menu
+  # desceu e ele se repetiria pela tela. Assim a linha é cortada na borda.
+  printf '\033[?25l\033[?7l'
   while true; do
     ui_select_lines "$current"
     IFS= read -rsn1 key || key=""
@@ -286,7 +289,7 @@ ui_select() {
     esac
     printf '\033[%dA' "$n"
   done
-  printf '\033[?25h'
+  printf '\033[?25h\033[?7h'
 }
 
 # Acrescenta um passo (e o resumo dele) no fim da lista, para os passos que
