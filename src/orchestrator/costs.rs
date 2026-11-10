@@ -85,6 +85,7 @@ pub fn average_by_level(runs: &[Run]) -> [Option<f64>; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::config::portable;
     use crate::orchestrator::run::{Usage, today};
     use std::path::PathBuf;
 
@@ -116,9 +117,9 @@ mod tests {
 
     #[test]
     fn the_day_of_each_agent_and_its_budget_alerts() {
-        let config = Config::parse(
+        let config = Config::parse(&portable(
             "[agents.api]\ncwd = \"/a\"\norcamento_diario = 5\n[agents.web]\ncwd = \"/w\"\n",
-        )
+        ))
         .unwrap();
         let mut runs: Vec<Run> = (0..4)
             .map(|_| run("api", 1, RunState::Done, Some(0.5)))

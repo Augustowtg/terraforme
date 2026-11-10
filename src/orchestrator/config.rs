@@ -10,6 +10,7 @@
 //! pausado = false
 //! tempo_limite_min = 30          # depois disso, a execução é encerrada (timeout); "infinito" não encerra
 //! aba_em_primeiro_plano = false  # a aba de uma execução vai para a frente ao abrir
+//! perguntar_permissoes = true    # fora das ferramentas, a janela pergunta; false nega sem perguntar
 //!
 //! [agents.backend]
 //! cwd = "/proj/api"
@@ -19,6 +20,7 @@
 //! max_turnos = 30
 //! orcamento_diario = 40          # execuções por dia
 //! ambiente = "minimo"            # "minimo" (padrão) ou "completo"
+//! perguntar_permissoes = false   # vale só para este agente (padrão: o do [global])
 //!
 //! [modelos]
 //! forte = "opus"
@@ -77,6 +79,10 @@ pub struct Global {
     pub timeout_min: Option<u32>,
     /// A aba de uma execução vai para a frente ao abrir (no modo `aba`).
     pub focus_runs: bool,
+    /// Uma ferramenta fora das `ferramentas` vira um pedido de permissão
+    /// no chat principal de uma janela; sem isso (`false`), é negada sem
+    /// perguntar, para as execuções sem ninguém olhando.
+    pub ask_permissions: bool,
 }
 
 impl Default for Global {
@@ -89,6 +95,7 @@ impl Default for Global {
             paused: false,
             timeout_min: Some(30),
             focus_runs: false,
+            ask_permissions: true,
         }
     }
 }
@@ -112,6 +119,8 @@ pub struct Agent {
     /// Sem o `ambiente = "completo"`, a execução sobe enxuta: só as
     /// ferramentas da lista, sem MCP, skills nem hooks.
     pub full_env: bool,
+    /// O `perguntar_permissoes` do agente; `None` segue o do `[global]`.
+    pub ask_permissions: Option<bool>,
 }
 
 impl Agent {
@@ -236,6 +245,13 @@ impl Config {
         self.agents.iter().find(|agent| agent.name == name)
     }
 
+    /// As execuções do `agent` perguntam as permissões fora das
+    /// ferramentas: o `perguntar_permissoes` dele ou, sem ele, o do
+    /// `[global]`.
+    pub fn asks_permissions(&self, agent: &Agent) -> bool {
+        agent.ask_permissions.unwrap_or(self.global.ask_permissions)
+    }
+
     /// O id do modelo: o do apelido de `[modelos]` ou, sem apelido, o
     /// próprio nome.
     pub fn model_id<'a>(&'a self, model: &'a str) -> &'a str {
@@ -292,6 +308,7 @@ fn global(table: &dyn TableLike) -> Result<Global, String> {
                 }
             }
             "aba_em_primeiro_plano" => global.focus_runs = flag(item, &at)?,
+            "perguntar_permissoes" => global.ask_permissions = flag(item, &at)?,
             _ => return Err(format!("chave desconhecida: {at}")),
         }
     }
@@ -313,6 +330,7 @@ fn agent(name: &str, table: &dyn TableLike, at: &str) -> Result<Agent, String> {
         max_turns: None,
         daily_budget: None,
         full_env: false,
+        ask_permissions: None,
     };
     for (key, item) in table.iter() {
         let at = format!("{at}.{key}");
@@ -332,6 +350,7 @@ fn agent(name: &str, table: &dyn TableLike, at: &str) -> Result<Agent, String> {
             "ferramentas" => agent.tools = texts(item, &at)?,
             "max_turnos" => agent.max_turns = Some(positive(item, &at)?),
             "orcamento_diario" => agent.daily_budget = Some(positive(item, &at)?),
+            "perguntar_permissoes" => agent.ask_permissions = Some(flag(item, &at)?),
             "ambiente" => {
                 agent.full_env = match text_of(item, &at)?.as_str() {
                     "minimo" => false,
@@ -423,6 +442,17 @@ fn texts(item: &Item, at: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
+/// O `toml` dos testes com os `cwd = "/..."` absolutos também no Windows,
+/// onde um caminho sem o drive não é absoluto (lá vira `C:/...`).
+#[cfg(test)]
+pub(crate) fn portable(toml: &str) -> String {
+    if cfg!(windows) {
+        toml.replace("cwd = \"/", "cwd = \"C:/")
+    } else {
+        toml.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,10 +487,10 @@ modelo = "leve"
 
     #[test]
     fn the_example_of_the_spec_parses() {
-        let config = Config::parse(EXAMPLE).unwrap();
+        let config = Config::parse(&portable(EXAMPLE)).unwrap();
         assert_eq!(config.global, Global::default());
         let backend = config.agent("backend").unwrap();
-        assert_eq!(backend.cwd, PathBuf::from("/proj/api"));
+        assert!(backend.cwd.is_absolute() && backend.cwd.ends_with("proj/api"));
         assert_eq!(backend.tools.len(), 4);
         assert_eq!(backend.max_turns, Some(30));
         assert_eq!(backend.daily_budget, Some(40));
@@ -474,11 +504,39 @@ modelo = "leve"
 
     #[test]
     fn the_provider_is_claude_or_antigravity() {
-        let config =
-            Config::parse("[agents.web]\ncwd = \"/w\"\nprovedor = \"antigravity\"\n").unwrap();
+        let config = Config::parse(&portable(
+            "[agents.web]\ncwd = \"/w\"\nprovedor = \"antigravity\"\n",
+        ))
+        .unwrap();
         let web = config.agent("web").unwrap();
         assert_eq!(web.provider(), "antigravity");
         assert!(web.is_antigravity());
+    }
+
+    #[test]
+    fn asking_permissions_is_the_default_and_the_agent_can_override_it() {
+        let config = Config::parse(&portable(
+            "[agents.api]\ncwd = \"/a\"\n\
+             [agents.noite]\ncwd = \"/n\"\nperguntar_permissoes = false\n",
+        ))
+        .unwrap();
+        assert!(config.global.ask_permissions);
+        assert!(config.asks_permissions(config.agent("api").unwrap()));
+        assert!(!config.asks_permissions(config.agent("noite").unwrap()));
+
+        let config = Config::parse(&portable(
+            "[global]\nperguntar_permissoes = false\n\
+             [agents.api]\ncwd = \"/a\"\n\
+             [agents.web]\ncwd = \"/w\"\nperguntar_permissoes = true\n",
+        ))
+        .unwrap();
+        assert!(!config.asks_permissions(config.agent("api").unwrap()));
+        assert!(config.asks_permissions(config.agent("web").unwrap()));
+        assert!(
+            Config::parse("[global]\nperguntar_permissoes = \"sim\"\n")
+                .unwrap_err()
+                .contains("global.perguntar_permissoes")
+        );
     }
 
     #[test]

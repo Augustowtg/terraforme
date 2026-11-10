@@ -108,6 +108,18 @@ pub fn config_dir(home: &Path, id: &str) -> Option<PathBuf> {
     (is_account_name(id) && path.is_dir()).then_some(path)
 }
 
+/// Cria a pasta de uma conta nova em `home`: a primeira
+/// `.claude-conta-N` livre. Uma pasta dessas sem credenciais (de um
+/// `/new-login` que não terminou) não é conta e é usada de novo.
+pub fn create_new(home: &Path) -> std::io::Result<PathBuf> {
+    let path = (1..)
+        .map(|n| home.join(format!("{PREFIX}-conta-{n}")))
+        .find(|path| !path.join(CREDENTIALS).exists())
+        .expect("sempre há um número livre");
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
 fn is_account_name(name: &str) -> bool {
     let rest = name.strip_prefix(PREFIX);
     let valid = |rest: &str| {
@@ -187,6 +199,21 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn new_account_folder_skips_accounts_and_reuses_unfinished_ones() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let first = create_new(home).unwrap();
+        assert_eq!(first, home.join(".claude-conta-1"));
+        assert!(first.is_dir());
+        // Sem credenciais (login não terminou), a mesma pasta serve.
+        assert_eq!(create_new(home).unwrap(), first);
+        // Com credenciais, é uma conta: a próxima é outra.
+        fs::write(first.join(CREDENTIALS), "{}").unwrap();
+        assert_eq!(create_new(home).unwrap(), home.join(".claude-conta-2"));
+        assert!(is_account_name(".claude-conta-2"));
     }
 
     #[test]

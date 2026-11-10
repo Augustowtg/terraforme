@@ -24,7 +24,7 @@ use std::io::BufReader;
 use serde_json::{Value, json};
 
 use super::{Hub, Outbox, PROTO, State};
-use crate::hub::protocol::{Health, recv};
+use crate::hub::protocol::Health;
 use crate::hub::{APP_VERSION, Conn};
 use crate::orchestrator::config::{self, Config};
 use crate::orchestrator::message::{self, Message, Reject, State as MessageState};
@@ -117,7 +117,7 @@ impl Hub {
         if !output.push(json!({"t": "welcome", "proto": PROTO, "hub": APP_VERSION})) {
             return;
         }
-        let Ok(Some(msg)) = recv(&mut input) else {
+        let Some(msg) = self.read(&mut input) else {
             return;
         };
         if msg["t"] == "done" {

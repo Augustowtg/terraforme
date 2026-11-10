@@ -231,7 +231,14 @@ impl History {
         Some((anchor.min(head), anchor.max(head)))
     }
 
-    fn selected_text(&self) -> Option<String> {
+    /// Desfaz a seleção (ex.: quando outra começa no input).
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+        self.selecting = false;
+    }
+
+    /// O trecho selecionado; `None` sem seleção.
+    pub fn selected_text(&self) -> Option<String> {
         let (start, end) = self.ordered_selection()?;
         let rows = self.rows.borrow();
         let mut out = String::new();

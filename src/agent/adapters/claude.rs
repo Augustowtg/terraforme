@@ -139,6 +139,18 @@ impl ChatAdapter for ClaudeAdapter {
         Some(cmd)
     }
 
+    /// `claude auth login` numa pasta de conta nova (`~/.claude-conta-N`),
+    /// sem e-mail: a página de login pede a conta. Com as credenciais, a
+    /// pasta vira uma conta da Config.
+    fn new_login(&self) -> Option<Command> {
+        let bin = self.bin.as_ref()?;
+        let dir = accounts::create_new(self.home.as_deref()?).ok()?;
+        let mut cmd = command(bin);
+        cmd.args(["auth", "login"]);
+        cmd.env("CLAUDE_CONFIG_DIR", dir);
+        Some(cmd)
+    }
+
     /// Os avisos de login do `claude`: "Failed to authenticate", "OAuth token
     /// revoked" e "Please log in again".
     fn login_error_words(&self) -> &[&str] {
@@ -411,7 +423,7 @@ fn server_config(server: &crate::extension::McpServer) -> Value {
 }
 
 /// A mensagem do usuário no formato do `--input-format stream-json`.
-fn user_message(prompt: &str) -> String {
+pub(crate) fn user_message(prompt: &str) -> String {
     serde_json::json!({
         "type": "user",
         "message": { "role": "user", "content": prompt },
@@ -421,7 +433,7 @@ fn user_message(prompt: &str) -> String {
 
 /// Um pedido de permissão (`can_use_tool`) do agente: o id do pedido, a
 /// ferramenta e a entrada dela. `None` se a linha não é um.
-fn tool_request(line: &str) -> Option<(String, String, Value)> {
+pub(crate) fn tool_request(line: &str) -> Option<(String, String, Value)> {
     let value: Value = serde_json::from_str(line).ok()?;
     let request = &value["request"];
     if value["type"] != "control_request" || request["subtype"] != "can_use_tool" {
@@ -436,7 +448,7 @@ fn tool_request(line: &str) -> Option<(String, String, Value)> {
 
 /// A resposta a um pedido de permissão: aprovado com a entrada como veio, ou
 /// negado.
-fn permission_response(request_id: &str, allow: bool, input: &Value) -> String {
+pub(crate) fn permission_response(request_id: &str, allow: bool, input: &Value) -> String {
     let decision = if allow {
         serde_json::json!({ "behavior": "allow", "updatedInput": input })
     } else {
@@ -449,10 +461,16 @@ fn permission_response(request_id: &str, allow: bool, input: &Value) -> String {
     .to_string()
 }
 
+/// O detalhe de um pedido de permissão (o comando, o arquivo...), como o
+/// [`AgentEvent::PermissionRequest`] do agente principal mostra.
+pub(crate) fn permission_detail(input: &Value) -> String {
+    tool_detail(input)
+}
+
 /// Resposta de erro a um pedido de controle do agente (`control_request`) que
 /// o terra não suporta, ou `None` se a linha não é um. Os pedidos de
 /// permissão vêm antes, por [`tool_request`].
-fn unsupported_response(line: &str) -> Option<String> {
+pub(crate) fn unsupported_response(line: &str) -> Option<String> {
     let value: Value = serde_json::from_str(line).ok()?;
     if value["type"] != "control_request" {
         return None;
@@ -518,7 +536,8 @@ struct Run {
     pending: Arc<Mutex<HashMap<String, Value>>>,
 }
 
-type Stdin = Arc<Mutex<Option<ChildStdin>>>;
+/// O stdin do `claude`, dividido entre quem lê a saída e quem responde.
+pub(crate) type Stdin = Arc<Mutex<Option<ChildStdin>>>;
 
 impl Run {
     /// Inicia o `claude` com a mensagem, na conta da pasta `config_dir`. No
@@ -681,7 +700,7 @@ fn command(claude: &Path) -> Command {
 }
 
 /// Escreve uma linha JSON no stdin do `claude`. Se ele já fechou, desiste.
-fn send_line(stdin: &Stdin, line: &str) {
+pub(crate) fn send_line(stdin: &Stdin, line: &str) {
     let mut stdin = stdin.lock().unwrap();
     if let Some(pipe) = stdin.as_mut()
         && writeln!(pipe, "{line}")

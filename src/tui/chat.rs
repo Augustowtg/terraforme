@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::Receiver;
 
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use self::model_menu::ModelMenu;
 use self::permission::Prompts;
@@ -72,6 +72,8 @@ pub struct Chat {
     model_menu: Option<ModelMenu>,
     /// Comando do `/login`, para a tela principal rodar fora da tela.
     pending_login: Option<Command>,
+    /// O login pendente (ou em curso) é o de uma conta nova (`/new-login`).
+    new_login: bool,
     /// A interface original do provedor com um comando que só existe nela
     /// (ex.: `/hooks`), para a tela principal rodar fora da tela.
     pending_original: Option<(Command, String)>,
@@ -89,6 +91,9 @@ pub struct Chat {
     run: Option<Box<dyn Session>>,
     /// Pedidos de permissão do agente esperando o usuário.
     prompts: Prompts,
+    /// As respostas aos pedidos das execuções despachadas (a execução, o id
+    /// do pedido e se foi permitido), para a tela principal mandar ao hub.
+    remote_answers: Vec<(String, String, bool)>,
     /// Ferramentas bloqueadas pelo modo que o usuário permitiu: vão
     /// liberadas na próxima mensagem (ver [`Chat::resume_allowed`]).
     allowed: Vec<String>,
@@ -165,6 +170,7 @@ impl Default for Chat {
             subagent_model: None,
             model_menu: None,
             pending_login: None,
+            new_login: false,
             pending_original: None,
             open_usage: false,
             default_choice: None,
@@ -173,6 +179,7 @@ impl Default for Chat {
             session_id: None,
             run: None,
             prompts: Prompts::default(),
+            remote_answers: Vec::new(),
             allowed: Vec::new(),
             requested_mode: None,
             agent_mode: None,
@@ -405,6 +412,10 @@ impl Chat {
     /// Trata uma tecla. Retorna `true` se ela foi consumida pelo painel; as
     /// outras (Tab, Esc no modo NORMAL...) ficam para a tela principal.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if is_copy_key(&key) {
+            self.copy_selection();
+            return true;
+        }
         // O menu do `/model`, aberto, fica com todas as teclas.
         if let Some(menu) = &mut self.model_menu {
             let outcome = menu.handle_key(key, self.catalog.as_ref());
@@ -473,6 +484,7 @@ impl Chat {
             MouseEventKind::ScrollUp => self.history.scroll_up(WHEEL_LINES),
             MouseEventKind::ScrollDown => self.history.scroll_down(WHEEL_LINES),
             MouseEventKind::Down(MouseButton::Left) if self.history.contains(column, row) => {
+                self.input.clear_selection();
                 if let Some(text) = self.history.mouse_down(column, row) {
                     self.copy(&text);
                 }
@@ -486,7 +498,35 @@ impl Chat {
                 }
             }
             _ => {
-                self.input.handle_mouse(mouse);
+                let pressed = matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
+                let released = matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left));
+                if self.input.handle_mouse(mouse) {
+                    // Uma seleção de cada vez: começar uma no input desfaz a do
+                    // histórico; soltar o botão copia o trecho, como no histórico.
+                    if pressed {
+                        self.history.clear_selection();
+                    }
+                    if released && let Some(text) = self.input.selected_text() {
+                        self.copy(&text);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ctrl+Shift+C: copia o trecho selecionado no histórico ou no input.
+    fn copy_selection(&mut self) {
+        match self
+            .history
+            .selected_text()
+            .or_else(|| self.input.selected_text())
+        {
+            Some(text) => self.copy(&text),
+            None => {
+                self.notice = Some((
+                    "Selecione um trecho com o mouse para copiar".to_string(),
+                    NOTICE_TICKS,
+                ))
             }
         }
     }
@@ -560,6 +600,39 @@ impl Chat {
         self.history.push(Entry::Error(message));
     }
 
+    /// O agente `agent` da execução despachada `run` pede para usar a
+    /// ferramenta `name`: o pedido entra na fila com os do agente deste
+    /// chat, e a resposta sai em [`Chat::take_remote_answers`]. Um pedido
+    /// que já está na fila (o hub manda de novo numa reconexão) não repete.
+    pub fn remote_request(
+        &mut self,
+        run: String,
+        id: String,
+        agent: String,
+        name: String,
+        detail: String,
+    ) {
+        if self.prompts.has_remote(&run, &id) {
+            return;
+        }
+        self.prompts.push(permission::Request {
+            name,
+            detail,
+            kind: permission::Kind::Remote { run, id, agent },
+        });
+    }
+
+    /// A execução `run` terminou: os pedidos dela sem resposta saem.
+    pub fn run_finished(&mut self, run: &str) {
+        self.prompts.clear_run(run);
+    }
+
+    /// As respostas aos pedidos das execuções desde a última vez, para o
+    /// hub.
+    pub fn take_remote_answers(&mut self) -> Vec<(String, String, bool)> {
+        std::mem::take(&mut self.remote_answers)
+    }
+
     pub fn tick(&mut self) {
         self.poll_catalog();
         let events = self
@@ -603,4 +676,14 @@ pub(crate) fn compact_count(n: u64) -> String {
     let text = format!("{value:.1}");
     let text = text.strip_suffix(".0").unwrap_or(&text);
     format!("{text}{suffix}")
+}
+
+/// Ctrl+Shift+C, o copiar dos terminais. Só chega aqui nos terminais que o
+/// repassam (kitty, WezTerm, Windows Terminal...); no GNOME Terminal e no
+/// Ptyxis ele é do próprio terminal.
+fn is_copy_key(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c' | 'C'))
+        && key
+            .modifiers
+            .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
 }

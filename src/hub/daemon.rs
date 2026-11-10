@@ -42,6 +42,10 @@ use crate::orchestrator::config::Config;
 const SWEEP: Duration = Duration::from_secs(1);
 /// A espera entre um `accept` vazio e o próximo.
 const POLL: Duration = Duration::from_millis(50);
+/// O tempo sem conexões dos hubs dos testes: folgado para a máquina lenta
+/// (o runner do macOS) não fechar o hub entre duas conexões do teste.
+#[cfg(test)]
+pub(crate) const TEST_IDLE: Duration = Duration::from_secs(2);
 
 mod dispatch;
 mod mail;
@@ -79,19 +83,13 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
     });
     // As execuções que ficaram na fila quando o hub anterior saiu.
     hub.recover();
+    // O tempo sem conexões conta a partir de agora, com o hub pronto.
+    *hub.idle_since.lock().unwrap() = Some(Instant::now());
     let mut last_sweep = Instant::now();
     loop {
         match listener.accept() {
             Ok(stream) => {
-                hub.clients.fetch_add(1, Ordering::SeqCst);
-                *hub.idle_since.lock().unwrap() = None;
-                let hub = Arc::clone(&hub);
-                thread::spawn(move || {
-                    hub.handle(stream);
-                    if hub.clients.fetch_sub(1, Ordering::SeqCst) == 1 {
-                        *hub.idle_since.lock().unwrap() = Some(Instant::now());
-                    }
-                });
+                client(&hub, stream);
                 continue;
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => thread::sleep(POLL),
@@ -116,12 +114,38 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
         let idle = hub.idle_since.lock().unwrap().map(|t| t.elapsed());
         // Com execução rodando, o hub espera mesmo sem janelas.
         if idle.is_some_and(|idle| idle >= idle_exit) && !hub.busy() {
+            // Um terra que acabou de conectar espera na fila do listener:
+            // sair agora o deixaria com a conexão fechada sem resposta.
+            if let Ok(stream) = listener.accept() {
+                client(&hub, stream);
+                continue;
+            }
             hub.log.line("nenhum terminal aberto; saindo");
             break;
         }
     }
     remove_lock(endpoint);
     Ok(())
+}
+
+/// Atende a conexão aceita numa thread própria.
+fn client(hub: &Arc<Hub>, stream: Stream) {
+    // No macOS (e nos BSDs), a conexão aceita herda o `O_NONBLOCK` do
+    // listener; o hub lê bloqueando.
+    #[cfg(unix)]
+    if let Err(err) = stream.set_nonblocking(false) {
+        hub.log.line(&format!("conexão sem modo bloqueante: {err}"));
+        return;
+    }
+    hub.clients.fetch_add(1, Ordering::SeqCst);
+    *hub.idle_since.lock().unwrap() = None;
+    let hub = Arc::clone(hub);
+    thread::spawn(move || {
+        hub.handle(stream);
+        if hub.clients.fetch_sub(1, Ordering::SeqCst) == 1 {
+            *hub.idle_since.lock().unwrap() = Some(Instant::now());
+        }
+    });
 }
 
 /// O listener do hub (com a trava do `hub.guard`, que vive com ele), ou
@@ -255,9 +279,11 @@ impl Outbox {
     fn open(conn: Conn, log: Arc<Log>) -> Self {
         let (tx, rx) = mpsc::sync_channel::<Value>(OUTBOX);
         let mut out = conn.clone();
+        let failed = Arc::clone(&log);
         thread::spawn(move || {
             while let Ok(msg) = rx.recv() {
-                if send(&mut out, &msg).is_err() {
+                if let Err(err) = send(&mut out, &msg) {
+                    failed.line(&format!("envio falhou: {err}"));
                     out.close();
                     break;
                 }
@@ -348,6 +374,18 @@ impl Hub {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// A próxima mensagem da conexão; `None` no fim dela ou num erro de
+    /// leitura, que vai para o log.
+    fn read(&self, input: &mut BufReader<Conn>) -> Option<Value> {
+        match recv(input) {
+            Ok(msg) => msg,
+            Err(err) => {
+                self.log.line(&format!("leitura falhou: {err}"));
+                None
+            }
+        }
+    }
+
     fn handle(&self, stream: Stream) {
         let conn = self.next_conn.fetch_add(1, Ordering::SeqCst);
         let stream = Conn::new(stream);
@@ -421,11 +459,18 @@ impl Hub {
             output.push(msg);
         }
         let mut reason = None;
-        while let Ok(Some(msg)) = recv(&mut input) {
+        while let Some(msg) = self.read(&mut input) {
             match msg["t"].as_str() {
                 Some("heartbeat") => self.signal(&id, None),
                 Some("status") => self.signal(&id, Some(&msg)),
                 Some("ack") => self.ack(msg["id"].as_str().unwrap_or_default()),
+                // A resposta do usuário a um pedido de permissão de uma
+                // execução (ver dispatch).
+                Some("permission_answer") => self.permission_answer(
+                    msg["run"].as_str().unwrap_or_default(),
+                    msg["request_id"].as_str().unwrap_or_default(),
+                    msg["allow"] == true,
+                ),
                 // Depois do `bye`, a instância não manda mais nada; a
                 // conexão fecha no `gone` (a janela ainda a lê numa thread).
                 Some("bye") => {
@@ -496,10 +541,10 @@ impl Hub {
             return;
         }
         loop {
-            match recv(&mut input) {
-                Ok(Some(msg)) if msg["t"] == "subscribe" => break,
-                Ok(Some(_)) => {}
-                _ => return,
+            match self.read(&mut input) {
+                Some(msg) if msg["t"] == "subscribe" => break,
+                Some(_) => {}
+                None => return,
             }
         }
         {
@@ -512,7 +557,7 @@ impl Hub {
             state.monitors.push((conn, output));
         }
         // Depois do `subscribe`, o monitor só manda o `bye`, ao fechar.
-        while let Ok(Some(msg)) = recv(&mut input) {
+        while let Some(msg) = self.read(&mut input) {
             if msg["t"] == "bye" {
                 break;
             }
@@ -575,7 +620,7 @@ mod tests {
         let endpoint = Endpoint::in_dir(dir.path());
         let server = {
             let endpoint = endpoint.clone();
-            thread::spawn(move || serve(&endpoint, Duration::from_millis(300)).unwrap())
+            thread::spawn(move || serve(&endpoint, TEST_IDLE).unwrap())
         };
         // O monitor espera o hub subir (sem iniciar outro).
         let monitor = client::Monitor::start_with(endpoint.clone(), false);
