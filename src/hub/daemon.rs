@@ -464,6 +464,13 @@ impl Hub {
                 Some("heartbeat") => self.signal(&id, None),
                 Some("status") => self.signal(&id, Some(&msg)),
                 Some("ack") => self.ack(msg["id"].as_str().unwrap_or_default()),
+                // A resposta do usuário a um pedido de permissão de uma
+                // execução (ver dispatch).
+                Some("permission_answer") => self.permission_answer(
+                    msg["run"].as_str().unwrap_or_default(),
+                    msg["request_id"].as_str().unwrap_or_default(),
+                    msg["allow"] == true,
+                ),
                 // Depois do `bye`, a instância não manda mais nada; a
                 // conexão fecha no `gone` (a janela ainda a lê numa thread).
                 Some("bye") => {

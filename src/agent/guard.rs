@@ -164,6 +164,10 @@ impl ChatAdapter for Guarded {
         catch(|| self.inner.login(account)).ok().flatten()
     }
 
+    fn new_login(&self) -> Option<Command> {
+        catch(|| self.inner.new_login()).ok().flatten()
+    }
+
     fn interactive(&self, cwd: &Path, options: Interactive<'_>) -> Option<Command> {
         catch(|| self.inner.interactive(cwd, options))
             .ok()

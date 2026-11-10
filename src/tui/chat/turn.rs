@@ -134,6 +134,10 @@ impl Chat {
                     self.allowed.push(rule.clone());
                 }
             }
+            // O chat não fala com o hub: a tela principal leva a resposta.
+            Kind::Remote { run, id, .. } => {
+                self.remote_answers.push((run.clone(), id.clone(), allow));
+            }
         }
         let verdict = if allow { "Permitido" } else { "Negado" };
         let detail = if request.detail.is_empty() {
@@ -159,7 +163,7 @@ impl Chat {
     /// fazer o que o modo bloqueou e o usuário permitiu, com essas
     /// ferramentas liberadas.
     fn resume_allowed(&mut self) {
-        if self.run.is_some() || self.prompts.is_open() || self.allowed.is_empty() {
+        if self.run.is_some() || self.prompts.has_local() || self.allowed.is_empty() {
             return;
         }
         let prompt = format!(
@@ -372,7 +376,7 @@ impl Chat {
     /// nunca com uma permissão pendente, que ainda precisa da sessão.
     fn auto_compact(&mut self) {
         let full = self.context.is_some_and(|t| t >= self.compact_tokens());
-        let pending = self.prompts.is_open() || !self.allowed.is_empty();
+        let pending = self.prompts.has_local() || !self.allowed.is_empty();
         if self.context_settings.auto_compact && full && !pending {
             self.end_session();
             self.history.push(Entry::Info(format!(

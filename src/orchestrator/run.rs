@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::config::{Agent, Config, PROVIDERS};
-use crate::agent::adapters::antigravity;
+use crate::agent::adapters::{antigravity, claude};
 
 /// Onde as execuções ficam, na pasta do terra.
 pub const DIR: &str = "runs";
@@ -264,36 +264,64 @@ pub fn args(agent: &Agent, config: &Config) -> Vec<String> {
     claude_args(agent, config)
 }
 
-/// O que vai na entrada do agente: o prompt, como texto para o `claude` e
-/// como uma mensagem em stream-json para o `agy`.
-pub fn input(agent: &Agent, prompt: &str) -> String {
+/// A execução do `agent` pergunta as permissões fora das ferramentas (o
+/// `perguntar_permissoes`): o `claude` fica com o stdin aberto e manda os
+/// pedidos pela saída (`--permission-prompt-tool stdio`). O `-p` do `agy`
+/// não pergunta.
+pub fn asks(agent: &Agent, config: &Config) -> bool {
+    !agent.is_antigravity() && config.asks_permissions(agent)
+}
+
+/// O que vai na entrada do agente: o prompt, como texto para o `claude` que
+/// não pergunta e como uma mensagem em stream-json para o que pergunta e
+/// para o `agy`.
+pub fn input(agent: &Agent, config: &Config, prompt: &str) -> String {
     if agent.is_antigravity() {
         antigravity::run_input(prompt)
+    } else if asks(agent, config) {
+        claude::user_message(prompt) + "\n"
     } else {
         prompt.to_string()
     }
 }
 
 /// Os argumentos do `claude` de uma execução do `agent`: não interativo,
-/// com a saída em stream-json (para o uso de tokens), o modelo, só as
-/// ferramentas da configuração (o resto é negado sem perguntar) e o limite
-/// de turnos. O prompt vai pela entrada. No ambiente mínimo (o padrão),
+/// com a saída em stream-json (para o uso de tokens), o modelo, as
+/// ferramentas da configuração liberadas e o limite de turnos. O prompt vai
+/// pela entrada.
+///
+/// Com o `perguntar_permissoes` (o padrão), o resto vira um pedido de
+/// permissão pela saída (`--permission-prompt-tool stdio`), que o hub leva ao
+/// chat principal de uma janela; a entrada é em stream-json, para a
+/// resposta voltar por ela. Sem ele, o resto é negado sem perguntar
+/// (`dontAsk`), para as execuções sem ninguém olhando.
+///
+/// No ambiente mínimo (o padrão),
 /// só as ferramentas da lista são carregadas (`--tools`) e ficam de fora os
 /// servidores MCP, as skills e os hooks do usuário: eles custavam cerca de
 /// 20 mil tokens no começo de cada execução.
 fn claude_args(agent: &Agent, config: &Config) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        "dontAsk",
-        "--permission-prompts",
-        "none",
-    ]
-    .map(str::to_string)
-    .to_vec();
+    let mut args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose"]
+        .map(str::to_string)
+        .to_vec();
+    let permissions: &[&str] = if config.asks_permissions(agent) {
+        &[
+            "--permission-mode",
+            "default",
+            "--input-format",
+            "stream-json",
+            "--permission-prompt-tool",
+            "stdio",
+        ]
+    } else {
+        &[
+            "--permission-mode",
+            "dontAsk",
+            "--permission-prompts",
+            "none",
+        ]
+    };
+    args.extend(permissions.iter().map(|a| a.to_string()));
     if let Some(model) = &agent.model {
         args.extend(["--model".into(), config.model_id(model).to_string()]);
     }
@@ -526,10 +554,21 @@ mod tests {
              [modelos]\nforte = \"opus\"\n",
         ))
         .unwrap();
-        let args = args(config.agent("api").unwrap(), &config);
+        let api = config.agent("api").unwrap();
+        let args = args(api, &config);
         let has = |pair: [&str; 2]| args.windows(2).any(|w| w == pair);
-        assert!(has(["--permission-mode", "dontAsk"]));
-        assert!(has(["--permission-prompts", "none"]));
+        // O padrão pergunta: os pedidos vêm pela saída e a resposta, pela
+        // entrada em stream-json.
+        assert!(has(["--permission-mode", "default"]));
+        assert!(has(["--input-format", "stream-json"]));
+        assert!(has(["--permission-prompt-tool", "stdio"]));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "dontAsk" || a == "--permission-prompts")
+        );
+        let input: Value = serde_json::from_str(&input(api, &config, "faça X")).unwrap();
+        assert_eq!(input["message"]["content"], "faça X");
         assert!(has(["--model", "opus"]));
         assert!(has(["--max-turns", "30"]));
         assert!(args.windows(3).any(|w| w
@@ -539,6 +578,23 @@ mod tests {
                 "Bash(npm test:*)".into()
             ]));
         assert!(!args.iter().any(|a| a.contains("dangerously")));
+    }
+
+    #[test]
+    fn without_asking_the_rest_is_denied_without_a_prompt() {
+        let config = Config::parse(&portable(
+            "[global]\nperguntar_permissoes = false\n\
+             [agents.api]\ncwd = \"/p\"\nferramentas = [\"Read\"]\n",
+        ))
+        .unwrap();
+        let api = config.agent("api").unwrap();
+        let args = args(api, &config);
+        let has = |pair: [&str; 2]| args.windows(2).any(|w| w == pair);
+        assert!(has(["--permission-mode", "dontAsk"]));
+        assert!(has(["--permission-prompts", "none"]));
+        assert!(!args.iter().any(|a| a == "--input-format" || a == "stdio"));
+        assert!(!asks(api, &config));
+        assert_eq!(input(api, &config, "faça X"), "faça X");
     }
 
     #[test]
@@ -617,7 +673,8 @@ mod tests {
                 .iter()
                 .any(|a| a == "--allowedTools" || a == "--max-turns")
         );
-        let input = input(web, "faça X");
+        assert!(!asks(web, &config));
+        let input = input(web, &config, "faça X");
         assert!(input.ends_with('\n') && input.contains(r#""content":"faça X""#));
     }
 

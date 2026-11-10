@@ -95,6 +95,10 @@ impl ChatAdapter for FakeAdapter {
         Some(Command::new("fake-login"))
     }
 
+    fn new_login(&self) -> Option<Command> {
+        Some(Command::new("fake-new-login"))
+    }
+
     fn login_error_words(&self) -> &[&str] {
         &["authenticate", "oauth", "log in again", "not logged into"]
     }
@@ -454,6 +458,37 @@ fn interactive_only_commands_open_the_original_in_the_session() {
 }
 
 #[test]
+fn new_login_adds_an_account_without_touching_the_chosen_one() {
+    let (mut chat, _) = fake_chat(true, Vec::new());
+    chat.tick();
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "/new-login");
+    press(&mut chat, KeyCode::Enter);
+    let (login, account) = chat.take_login().expect("/new-login pede o login");
+    assert_eq!(login.get_program(), "fake-new-login");
+    assert_eq!(account, "nova");
+
+    chat.finish_login(Err("cancelado".into()));
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Error(
+            "A conta nova não foi adicionada: cancelado".into()
+        ))
+    );
+
+    // Depois, o /login volta a ser o da conta escolhida.
+    chat.run_command("login");
+    let (login, account) = chat.take_login().expect("/login pede o login");
+    assert_eq!(login.get_program(), "fake-login");
+    assert_eq!(account, "Default");
+    chat.finish_login(Ok(()));
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info("Login feito na conta Default.".into()))
+    );
+}
+
+#[test]
 fn login_is_a_terra_command_that_runs_the_provider_login() {
     let (mut chat, _) = fake_chat(true, Vec::new());
     chat.tick();
@@ -756,6 +791,76 @@ fn permission_requests_ask_the_user_and_answer_the_session() {
 }
 
 #[test]
+fn permission_requests_of_runs_outlive_the_turn_and_answer_the_hub() {
+    let reply = vec![
+        init(PermissionMode::Agente),
+        AgentEvent::PermissionRequest {
+            id: "r1".into(),
+            name: "Bash".into(),
+            detail: "ls".into(),
+        },
+    ];
+    let (mut chat, _, responses) = fake_chat_responses(true, reply, &AgentSettings::default());
+    chat.submit("oi");
+    chat.tick();
+    let remote = |chat: &mut Chat, run: &str, id: &str| {
+        chat.remote_request(
+            run.into(),
+            id.into(),
+            "api".into(),
+            "Edit".into(),
+            "/p/x.rs".into(),
+        );
+    };
+    remote(&mut chat, "run1", "a");
+    // O hub manda de novo numa reconexão: não repete.
+    remote(&mut chat, "run1", "a");
+    remote(&mut chat, "run2", "b");
+
+    // O fim (ou a interrupção) da resposta do chat não leva os pedidos das
+    // execuções, que não dependem dela.
+    chat.apply(done(1));
+    chat.cancel();
+    assert!(chat.prompts.has_remote("run1", "a"));
+    assert!(!chat.prompts.has_local());
+    assert_eq!(chat.help(), HELP_PERMISSION);
+    let mut terminal = Terminal::new(TestBackend::new(60, HEIGHT + 10)).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let panel = Rect {
+                y: area.height - HEIGHT,
+                height: HEIGHT,
+                ..area
+            };
+            chat.draw(frame, panel);
+        })
+        .unwrap();
+    let screen = format!("{:?}", terminal.backend().buffer());
+    assert!(screen.contains("Permissão · ▶ api"));
+    assert!(screen.contains("/p/x.rs"));
+
+    // A resposta vai para a caixa de saída (a tela principal manda ao hub),
+    // não para a sessão do chat.
+    press(&mut chat, KeyCode::Char('s'));
+    assert_eq!(
+        chat.take_remote_answers(),
+        [("run1".to_string(), "a".to_string(), true)]
+    );
+    assert!(chat.take_remote_answers().is_empty());
+    assert!(responses.borrow().is_empty());
+    assert_eq!(
+        chat.history.entries().last(),
+        Some(&Entry::Info("Permitido: Edit (/p/x.rs).".into()))
+    );
+
+    // A execução terminou: o pedido dela sai sem resposta.
+    chat.run_finished("run2");
+    assert!(!chat.prompts.is_open());
+    assert!(chat.take_remote_answers().is_empty());
+}
+
+#[test]
 fn blocked_tools_allowed_by_the_user_go_in_a_new_message() {
     let blocked = |command: &str| AgentEvent::Blocked {
         name: "Bash".into(),
@@ -861,6 +966,71 @@ fn selecting_history_copies_and_shows_notice() {
         chat.tick();
     }
     assert_eq!(chat.help(), HELP_NORMAL);
+}
+
+fn ctrl_shift(c: char) -> KeyEvent {
+    KeyEvent::new(
+        KeyCode::Char(c),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )
+}
+
+#[test]
+fn ctrl_shift_c_copies_the_history_selection() {
+    let mut chat = Chat::default();
+    chat.history
+        .push(Entry::Assistant("resposta do agente".into()));
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+    terminal
+        .draw(|frame| chat.draw_history(frame, frame.area()))
+        .unwrap();
+    mouse(&mut chat, MouseEventKind::Down(MouseButton::Left), 4, 1);
+    mouse(&mut chat, MouseEventKind::Drag(MouseButton::Left), 11, 1);
+    mouse(&mut chat, MouseEventKind::Up(MouseButton::Left), 11, 1);
+    for _ in 0..NOTICE_TICKS {
+        chat.tick();
+    }
+    assert_eq!(chat.help(), HELP_NORMAL);
+    // A seleção continua lá: o Ctrl+Shift+C (maiúsculo ou não) copia de novo.
+    assert!(chat.handle_key(ctrl_shift('C')));
+    assert_eq!(chat.help(), "Copiado (8 caracteres)");
+    assert!(chat.handle_key(ctrl_shift('c')));
+    assert_eq!(chat.help(), "Copiado (8 caracteres)");
+}
+
+#[test]
+fn ctrl_shift_c_without_selection_explains_how_to_copy() {
+    let mut chat = Chat::default();
+    assert!(chat.handle_key(ctrl_shift('c')));
+    assert_eq!(chat.help(), "Selecione um trecho com o mouse para copiar");
+}
+
+#[test]
+fn selecting_the_input_copies_and_ctrl_shift_c_copies_it_again() {
+    let (mut chat, _) = fake_chat(false, Vec::new());
+    press(&mut chat, KeyCode::Char('i'));
+    type_text(&mut chat, "ola mundo");
+    let terminal = render(&chat);
+    let buffer = terminal.backend().buffer();
+    let (x, y) = (0..HEIGHT)
+        .find_map(|y| {
+            let row: String = (0..60).map(|x| buffer[(x, y)].symbol()).collect();
+            row.find("ola mundo")
+                .map(|byte| (row[..byte].chars().count() as u16, y))
+        })
+        .expect("o texto do input na tela");
+    mouse(&mut chat, MouseEventKind::Down(MouseButton::Left), x, y);
+    mouse(&mut chat, MouseEventKind::Drag(MouseButton::Left), x + 3, y);
+    mouse(&mut chat, MouseEventKind::Up(MouseButton::Left), x + 3, y);
+    assert_eq!(chat.input.selected_text().as_deref(), Some("ola"));
+    assert_eq!(chat.help(), "Copiado (3 caracteres)");
+    for _ in 0..NOTICE_TICKS {
+        chat.tick();
+    }
+    assert!(chat.handle_key(ctrl_shift('c')));
+    assert_eq!(chat.help(), "Copiado (3 caracteres)");
+    // O texto do input fica como estava.
+    assert_eq!(chat.input.text(), "ola mundo");
 }
 
 #[test]

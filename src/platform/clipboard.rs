@@ -1,16 +1,45 @@
 //! Copia texto para a área de transferência do sistema e lê dela.
 //!
-//! No Linux usa `wl-copy` (Wayland), `xclip` ou `xsel`. Sem nenhum deles (e no
-//! Windows), manda a sequência OSC 52, que o próprio terminal transforma em
-//! cópia (Windows Terminal, kitty, WezTerm, iTerm2...).
+//! No Linux usa `wl-copy` (Wayland), `xclip` ou `xsel`. Sem nenhum deles, e
+//! no macOS e no Windows, usa a área de transferência do sistema direto (o
+//! `arboard`; no Linux, pelo X11, que no Wayland é o XWayland). Se nem isso
+//! der, manda a sequência OSC 52, que o próprio terminal transforma em cópia
+//! (Windows Terminal, kitty, WezTerm, iTerm2...); o GNOME Terminal e o
+//! Ptyxis a ignoram.
 //!
 //! Para colar ([`paste`]): `wl-paste`, `xclip` ou `xsel` no Linux, `pbpaste`
-//! no macOS e o `Get-Clipboard` do PowerShell no Windows.
+//! no macOS e o `Get-Clipboard` do PowerShell no Windows; sem eles, o
+//! `arboard`.
 
 use std::env;
 use std::io::{Write, stdout};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
+
+/// A área de transferência do `arboard`, aberta na primeira vez e mantida
+/// até o terra sair: no X11 o texto copiado só fica disponível enquanto
+/// quem copiou está vivo para entregá-lo.
+fn system() -> &'static Mutex<Option<arboard::Clipboard>> {
+    static CLIPBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
+    CLIPBOARD.get_or_init(|| Mutex::new(arboard::Clipboard::new().ok()))
+}
+
+fn system_copy(text: &str) -> bool {
+    let mut clipboard = system().lock().unwrap_or_else(|e| e.into_inner());
+    clipboard
+        .as_mut()
+        .is_some_and(|c| c.set_text(text.to_string()).is_ok())
+}
+
+fn system_paste() -> Option<String> {
+    let mut clipboard = system().lock().unwrap_or_else(|e| e.into_inner());
+    clipboard
+        .as_mut()?
+        .get_text()
+        .ok()
+        .filter(|text| !text.is_empty())
+}
 
 /// Copia `text`. Retorna `false` se não houve como tentar.
 pub fn copy(text: &str) -> bool {
@@ -23,7 +52,7 @@ pub fn copy(text: &str) -> bool {
     {
         return true;
     }
-    osc52(text)
+    system_copy(text) || osc52(text)
 }
 
 fn native_tool() -> Option<(&'static str, &'static [&'static str])> {
@@ -49,7 +78,12 @@ pub fn paste() -> Option<String> {
     if cfg!(test) {
         return None;
     }
-    let (bin, args) = paste_tool()?;
+    paste_tool()
+        .and_then(|(bin, args)| tool_paste(bin, args))
+        .or_else(system_paste)
+}
+
+fn tool_paste(bin: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(bin)
         .args(args)
         .stdin(Stdio::null())

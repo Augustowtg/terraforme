@@ -7,7 +7,12 @@
 //! - O orçamento do dia (`orcamento_diario`, em execuções) recusa a
 //!   mensagem quando acaba, e avisa a 80%.
 //! - Uma execução que passa do `tempo_limite_min` é encerrada (`timeout`),
-//!   a não ser com `tempo_limite_min = "infinito"`.
+//!   a não ser com `tempo_limite_min = "infinito"`. O tempo esperando uma
+//!   resposta de permissão não conta.
+//! - Com o `perguntar_permissoes` (o padrão), uma ferramenta fora das
+//!   `ferramentas` vira um pedido de permissão no chat principal de uma
+//!   janela: a da pasta do agente ou, sem ela, a mais nova. A resposta
+//!   (`permission_answer`) volta ao `claude` pela entrada dele.
 //! - Uma execução de nível 1 ou 2 que falha pede ao remetente, num nível 1,
 //!   o handoff completo (`escalonar_falhas`); a nota dele volta no nível 3.
 //!
@@ -16,13 +21,16 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
-use std::io::Write;
-use std::process::{Child, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdout, Stdio};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
-use super::Hub;
+use super::{Hub, State};
 use crate::agent::adapters::{antigravity, claude};
 use crate::agent::{kill_tree, own_group};
 use crate::hub::protocol::{Health, new_id, now};
@@ -33,6 +41,9 @@ use crate::orchestrator::{AGENT_ENV, HOPS_ENV, RUN_ENV, USER, note};
 
 /// O remetente das mensagens do próprio terra (o escalonamento).
 const TERRA: &str = "terra";
+/// Quanto o fim de uma execução espera o leitor da saída gravar o resto
+/// dela (um processo que o agente deixou rodando pode segurar a saída).
+const DRAIN_WAIT: Duration = Duration::from_secs(2);
 
 /// Uma execução rodando.
 struct Running {
@@ -40,6 +51,51 @@ struct Running {
     child: Child,
     /// `None`: sem tempo limite.
     deadline: Option<Instant>,
+    /// Os pedidos de permissão, na execução que pergunta.
+    asks: Option<Asks>,
+    /// Quando o processo saiu, enquanto o leitor grava o resto da saída.
+    exited: Option<Instant>,
+}
+
+/// Os pedidos de permissão de uma execução que pergunta: o leitor da saída
+/// os manda para o laço do hub, que os leva a uma janela e guarda a entrada
+/// de cada um até a resposta.
+struct Asks {
+    /// A pasta do agente, para achar a janela.
+    cwd: String,
+    stdin: claude::Stdin,
+    requests: Receiver<Ask>,
+    reader: JoinHandle<()>,
+    /// Os pedidos esperando a resposta, pelo id.
+    pending: BTreeMap<String, Pending>,
+    /// Desde quando há pedido esperando: o tempo limite para.
+    waiting_since: Option<Instant>,
+}
+
+/// Um pedido de permissão (`can_use_tool`) lido da saída.
+struct Ask {
+    id: String,
+    name: String,
+    input: Value,
+}
+
+/// Um pedido esperando a resposta de uma janela, na fila do laço que os
+/// leva às janelas (ver [`Hub::route_permissions`]).
+struct Waiting {
+    run: String,
+    id: String,
+    cwd: String,
+    window: Option<(String, u64)>,
+    message: Value,
+}
+
+struct Pending {
+    input: Value,
+    /// A mensagem para a janela.
+    message: Value,
+    /// A janela que recebeu o pedido: o id da instância e a conexão. `None`
+    /// até haver uma; outra recebe se ela fecha.
+    window: Option<(String, u64)>,
 }
 
 #[derive(Default)]
@@ -188,6 +244,7 @@ impl Hub {
         let Some(mut cmd) = command else {
             return self.fail(run, &format!("o {bin} não está no PATH"));
         };
+        let asks = run::asks(agent, config);
         let dir = run.dir(&self.home);
         let files = fs::create_dir_all(&dir).and_then(|()| {
             Ok((
@@ -205,8 +262,16 @@ impl Hub {
             .env(HOPS_ENV, run.hops.to_string())
             .env(RUN_ENV, &run.id)
             .stdin(Stdio::piped())
-            .stdout(stdout)
             .stderr(stderr);
+        // Quem pergunta tem a saída lida pelo hub (que grava no
+        // `output.jsonl`); os outros escrevem direto no arquivo.
+        let mut output = None;
+        if asks {
+            cmd.stdout(Stdio::piped());
+            output = Some(stdout);
+        } else {
+            cmd.stdout(stdout);
+        }
         // Num grupo próprio, para o timeout levar junto o que ele abrir.
         own_group(&mut cmd);
         let mut child = match cmd.spawn() {
@@ -219,11 +284,35 @@ impl Hub {
                 );
             }
         };
-        if let Some(mut stdin) = child.stdin.take() {
-            let note = fs::read_to_string(&run.note).ok();
-            let prompt = run::prompt(&run.agent, &run.note, note.as_deref());
-            let _ = stdin.write_all(run::input(agent, &prompt).as_bytes());
-        }
+        let note = fs::read_to_string(&run.note).ok();
+        let prompt = run::prompt(&run.agent, &run.note, note.as_deref());
+        let input = run::input(agent, config, &prompt);
+        let asks = match (output, child.stdout.take()) {
+            // O stdin fica aberto, para as respostas; fecha no `result`.
+            (Some(file), Some(stdout)) => {
+                let stdin: claude::Stdin = Arc::new(Mutex::new(child.stdin.take()));
+                claude::send_line(&stdin, input.trim_end());
+                let (tx, requests) = mpsc::channel();
+                let reader = {
+                    let stdin = Arc::clone(&stdin);
+                    thread::spawn(move || read_output(stdout, file, &stdin, &tx))
+                };
+                Some(Asks {
+                    cwd: agent.cwd.to_string_lossy().into_owned(),
+                    stdin,
+                    requests,
+                    reader,
+                    pending: BTreeMap::new(),
+                    waiting_since: None,
+                })
+            }
+            _ => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(input.as_bytes());
+                }
+                None
+            }
+        };
         run.state = RunState::Running;
         run.started = Some(now());
         run.model = agent
@@ -245,6 +334,8 @@ impl Hub {
                 run,
                 child,
                 deadline,
+                asks,
+                exited: None,
             },
         );
     }
@@ -253,16 +344,7 @@ impl Hub {
     /// aberta na pasta do agente ou, sem ela, na janela mais nova.
     fn show_run(&self, run: &Run, cwd: &str) {
         let state = self.state();
-        let alive = state
-            .instances
-            .iter()
-            .filter(|(_, entry)| entry.health != Health::Gone)
-            .map(|(_, entry)| entry);
-        let window = alive
-            .clone()
-            .find(|entry| entry.info["cwd"] == cwd)
-            .or_else(|| alive.max_by_key(|entry| entry.info["started"].as_u64()));
-        if let Some(window) = window {
+        if let Some((_, window)) = window(&state, cwd) {
             let output = run.dir(&self.home).join(run::OUTPUT);
             window
                 .outbox
@@ -270,10 +352,145 @@ impl Hub {
         }
     }
 
+    /// Os pedidos de permissão novos das execuções e os que ficaram sem
+    /// janela (nenhuma aberta, ou a que recebeu fechou) vão para uma
+    /// janela: a da aba da execução, mesmo no modo `segundo_plano`.
+    fn route_permissions(&self) {
+        // Sem segurar as duas travas juntas: o `gone` segura a do estado.
+        let waiting: Vec<Waiting> = {
+            let mut dispatcher = self.dispatcher();
+            let mut waiting = Vec::new();
+            for running in dispatcher.running.values_mut() {
+                let Some(asks) = running.asks.as_mut() else {
+                    continue;
+                };
+                for ask in asks.requests.try_iter() {
+                    let detail = claude::permission_detail(&ask.input);
+                    self.log.line(&format!(
+                        "execução {} de {} pede permissão para {}{}",
+                        short(&running.run.id),
+                        running.run.agent,
+                        ask.name,
+                        if detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({detail})")
+                        }
+                    ));
+                    let message = json!({
+                        "t": "permission_request",
+                        "run": running.run.id,
+                        "agent": running.run.agent,
+                        "request_id": ask.id,
+                        "tool": ask.name,
+                        "detail": detail,
+                    });
+                    asks.pending.insert(
+                        ask.id,
+                        Pending {
+                            input: ask.input,
+                            message,
+                            window: None,
+                        },
+                    );
+                    asks.waiting_since.get_or_insert_with(Instant::now);
+                }
+                for (id, pending) in &asks.pending {
+                    waiting.push(Waiting {
+                        run: running.run.id.clone(),
+                        id: id.clone(),
+                        cwd: asks.cwd.clone(),
+                        window: pending.window.clone(),
+                        message: pending.message.clone(),
+                    });
+                }
+            }
+            waiting
+        };
+        if waiting.is_empty() {
+            return;
+        }
+        let mut sent = Vec::new();
+        {
+            let state = self.state();
+            for Waiting {
+                run,
+                id,
+                cwd,
+                window: current,
+                message,
+            } in waiting
+            {
+                let open = current.as_ref().is_some_and(|(window, conn)| {
+                    state.instances.iter().any(|(i, entry)| {
+                        i == window && entry.conn == *conn && entry.health != Health::Gone
+                    })
+                });
+                if open {
+                    continue;
+                }
+                if let Some((window, entry)) = window(&state, &cwd)
+                    && entry.outbox.push(message)
+                {
+                    sent.push((run, id, (window.to_string(), entry.conn)));
+                }
+            }
+        }
+        let mut dispatcher = self.dispatcher();
+        for (run, id, window) in sent {
+            let pending = dispatcher
+                .running
+                .values_mut()
+                .filter(|running| running.run.id == run)
+                .find_map(|running| running.asks.as_mut()?.pending.get_mut(&id));
+            if let Some(pending) = pending {
+                pending.window = Some(window);
+            }
+        }
+    }
+
+    /// A resposta de uma janela ao pedido `request_id` da execução `run`:
+    /// vai ao `claude` pela entrada. Respondido o último pedido, o tempo
+    /// limite volta a contar, sem o tempo de espera.
+    pub(super) fn permission_answer(&self, run: &str, request_id: &str, allow: bool) {
+        let mut dispatcher = self.dispatcher();
+        let Some(running) = dispatcher
+            .running
+            .values_mut()
+            .find(|running| running.run.id == run)
+        else {
+            return;
+        };
+        let Some(asks) = running.asks.as_mut() else {
+            return;
+        };
+        let Some(pending) = asks.pending.remove(request_id) else {
+            return;
+        };
+        claude::send_line(
+            &asks.stdin,
+            &claude::permission_response(request_id, allow, &pending.input),
+        );
+        if asks.pending.is_empty()
+            && let Some(since) = asks.waiting_since.take()
+            && let Some(deadline) = running.deadline.as_mut()
+        {
+            *deadline += since.elapsed();
+        }
+        self.log.line(&format!(
+            "execução {} de {}: {} {}",
+            short(run),
+            running.run.agent,
+            if allow { "permitido" } else { "negado" },
+            pending.message["tool"].as_str().unwrap_or_default(),
+        ));
+    }
+
     /// Vê as execuções que terminaram (ou passaram do tempo), registra e
     /// começa as próximas.
     pub(super) fn poll_runs(&self) {
-        let finished: Vec<(Run, bool)> = {
+        self.route_permissions();
+        let finished: Vec<(Run, bool, bool)> = {
             let mut dispatcher = self.dispatcher();
             let mut finished = Vec::new();
             let agents: Vec<String> = dispatcher.running.keys().cloned().collect();
@@ -281,22 +498,47 @@ impl Hub {
                 let Some(running) = dispatcher.running.get_mut(&agent) else {
                     continue;
                 };
+                // Esperando a resposta de uma permissão, o tempo não conta.
+                let waiting = running
+                    .asks
+                    .as_ref()
+                    .is_some_and(|asks| !asks.pending.is_empty());
                 let timed_out = match running.child.try_wait() {
                     Ok(Some(_)) | Err(_) => false,
-                    Ok(None) if running.deadline.is_some_and(|d| Instant::now() >= d) => {
+                    Ok(None)
+                        if !waiting && running.deadline.is_some_and(|d| Instant::now() >= d) =>
+                    {
                         kill_tree(&mut running.child);
                         true
                     }
                     Ok(None) => continue,
                 };
+                // O leitor ainda grava o fim da saída, que o resultado lê.
+                let exited = *running.exited.get_or_insert_with(Instant::now);
+                let reading = running
+                    .asks
+                    .as_ref()
+                    .is_some_and(|asks| !asks.reader.is_finished());
+                if !timed_out && reading && exited.elapsed() < DRAIN_WAIT {
+                    continue;
+                }
                 if let Some(running) = dispatcher.running.remove(&agent) {
-                    finished.push((running.run, timed_out));
+                    finished.push((running.run, timed_out, running.asks.is_some()));
                 }
             }
             finished
         };
         let any = !finished.is_empty();
-        for (run, timed_out) in finished {
+        for (run, timed_out, asked) in finished {
+            if asked {
+                // As janelas tiram os pedidos que ficaram sem resposta.
+                let msg = json!({"t": "run_finished", "run": run.id});
+                for (_, entry) in &self.state().instances {
+                    if entry.health != Health::Gone {
+                        entry.outbox.push(msg.clone());
+                    }
+                }
+            }
             self.finish(run, timed_out);
         }
         if any {
@@ -476,4 +718,40 @@ impl Hub {
 
 fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
+}
+
+/// A janela de uma execução do agente na pasta `cwd`: a aberta nela ou, sem
+/// ela, a mais nova.
+fn window<'a>(state: &'a State, cwd: &str) -> Option<(&'a str, &'a super::Entry)> {
+    let alive = state
+        .instances
+        .iter()
+        .filter(|(_, entry)| entry.health != Health::Gone)
+        .map(|(id, entry)| (id.as_str(), entry));
+    alive
+        .clone()
+        .find(|(_, entry)| entry.info["cwd"] == cwd)
+        .or_else(|| alive.max_by_key(|(_, entry)| entry.info["started"].as_u64()))
+}
+
+/// O leitor da saída de uma execução que pergunta: grava cada linha no
+/// `output.jsonl` (que a aba da execução acompanha), manda os pedidos de
+/// permissão ao laço do hub, recusa os outros pedidos de controle e fecha a
+/// entrada no `result`, o que encerra o `claude`.
+fn read_output(stdout: ChildStdout, mut file: File, stdin: &claude::Stdin, requests: &Sender<Ask>) {
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if let Some((id, name, input)) = claude::tool_request(&line) {
+            let _ = requests.send(Ask { id, name, input });
+            continue;
+        }
+        if let Some(response) = claude::unsupported_response(&line) {
+            claude::send_line(stdin, &response);
+            continue;
+        }
+        let _ = writeln!(file, "{line}");
+        let result = serde_json::from_str::<Value>(&line).is_ok_and(|v| v["type"] == "result");
+        if result {
+            *stdin.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
 }

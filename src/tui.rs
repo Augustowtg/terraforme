@@ -269,6 +269,28 @@ fn with_terminal<T>(f: impl FnOnce(&mut DefaultTerminal) -> Result<T>) -> Result
 }
 
 /// Em raw mode o Ctrl+C não gera SIGINT; tratamos como saída em todas as telas.
+/// O Ctrl+Shift+C, nos terminais que o repassam, é o copiar, não a saída.
 fn is_ctrl_c(key: &KeyEvent) -> bool {
-    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+    key.code == KeyCode::Char('c')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::SHIFT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_shift_c_is_copy_not_quit() {
+        let key = |c, modifiers| KeyEvent::new(KeyCode::Char(c), modifiers);
+        assert!(is_ctrl_c(&key('c', KeyModifiers::CONTROL)));
+        assert!(!is_ctrl_c(&key(
+            'c',
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(!is_ctrl_c(&key(
+            'C',
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+    }
 }

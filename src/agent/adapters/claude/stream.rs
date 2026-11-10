@@ -206,18 +206,38 @@ impl StreamParser {
     }
 
     /// Uma ferramenta que o classificador do modo `auto` bloqueou sem
-    /// perguntar. As negadas por uma regra do usuário (`deny`) ficam
-    /// negadas: não viram pedido.
+    /// perguntar, ou que um subagente em segundo plano (`asyncAgent`, o
+    /// `Task` com `run_in_background`) não pôde perguntar. As negadas por uma
+    /// regra do usuário (`deny`) ficam negadas: não viram pedido.
+    ///
+    /// A chamada de um subagente não passa pelo `assistant` do agente
+    /// principal: sem ela em `tools`, vale o `tool_name` do aviso, sem o
+    /// detalhe.
     fn blocked(&self, value: &Value) -> Option<AgentEvent> {
-        if value["decision_reason_type"] != "classifier" {
+        if !matches!(
+            value["decision_reason_type"].as_str(),
+            Some("classifier" | "asyncAgent")
+        ) {
             return None;
         }
-        let (name, input) = self.tools.get(value["tool_use_id"].as_str()?)?;
+        let known = value["tool_use_id"]
+            .as_str()
+            .and_then(|id| self.tools.get(id));
+        let (name, input) = match known {
+            Some((name, input)) => (name.clone(), input.clone()),
+            None => (
+                value["tool_name"]
+                    .as_str()
+                    .filter(|n| !n.is_empty())?
+                    .to_string(),
+                Value::Null,
+            ),
+        };
         Some(AgentEvent::Blocked {
-            name: name.clone(),
-            detail: tool_detail(input),
+            detail: tool_detail(&input),
             reason: first_line(&text(&value["decision_reason"])),
-            allow: allow_rule(name, input),
+            allow: allow_rule(&name, &input),
+            name,
         })
     }
 
@@ -601,6 +621,38 @@ mod tests {
         // Negada por uma regra do usuário: fica negada.
         let rule = r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"t1","decision_reason_type":"rule"}"#;
         assert_eq!(parser.parse(rule), []);
+    }
+
+    #[test]
+    fn background_subagent_denials_become_blocked_even_without_the_call() {
+        let mut parser = StreamParser::default();
+        // A chamada do subagente não veio no `assistant` do agente principal.
+        let events = parser.parse(
+            r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"sub1","decision_reason_type":"asyncAgent","decision_reason":"o subagente em segundo plano não pode perguntar"}"#,
+        );
+        assert_eq!(
+            events,
+            [AgentEvent::Blocked {
+                name: "Bash".into(),
+                detail: String::new(),
+                reason: "o subagente em segundo plano não pode perguntar".into(),
+                allow: "Bash".into(),
+            }]
+        );
+        // Com a chamada conhecida, o detalhe e a regra são os dela.
+        parser.parse(
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/p/x.rs"}}]}}"#,
+        );
+        let events = parser.parse(
+            r#"{"type":"system","subtype":"permission_denied","tool_name":"Edit","tool_use_id":"t1","decision_reason_type":"asyncAgent"}"#,
+        );
+        assert!(matches!(
+            &events[..],
+            [AgentEvent::Blocked { detail, allow, .. }] if detail == "/p/x.rs" && allow == "Edit(//p/x.rs)"
+        ));
+        // Sem o nome da ferramenta, não há o que liberar.
+        let nameless = r#"{"type":"system","subtype":"permission_denied","tool_use_id":"x","decision_reason_type":"asyncAgent"}"#;
+        assert_eq!(parser.parse(nameless), []);
     }
 
     #[test]
