@@ -97,6 +97,7 @@ pub fn number(n: u32) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::config::portable;
 
     const FILE: &str = "# meus agentes\n[global]\nmax_hops = 5 # cuidado com laços\n\n[agents.api]\ncwd = \"/proj/api\" # a pasta\n";
 
@@ -110,7 +111,7 @@ mod tests {
 
     #[test]
     fn edits_keep_the_comments_and_the_file_stays_valid() {
-        let (dir, mut editor) = editor(FILE);
+        let (dir, mut editor) = editor(&portable(FILE));
         editor.set_global("max_hops", number(7));
         editor.set_global("pausado", true);
         let config = editor.save().unwrap();
@@ -121,7 +122,9 @@ mod tests {
         let text = fs::read_to_string(dir.path().join("orchestrator.toml")).unwrap();
         assert!(text.starts_with("# meus agentes\n"));
         assert!(text.contains("# cuidado com laços"));
-        assert!(text.contains("[agents.api]\ncwd = \"/proj/api\" # a pasta\n"));
+        assert!(text.contains(&portable(
+            "[agents.api]\ncwd = \"/proj/api\" # a pasta\n"
+        )));
     }
 
     #[test]

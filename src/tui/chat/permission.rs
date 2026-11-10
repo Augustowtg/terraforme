@@ -1,8 +1,9 @@
 //! Pedidos de permissão do agente: a caixa acima do input com a ferramenta e
 //! os botões Permitir e Negar. Os pedidos ficam numa fila e aparecem um de
-//! cada vez. Há dois tipos: o agente esperando a resposta (ela vai para a
-//! sessão) e uma ferramenta que o modo já bloqueou (permitir libera ela numa
-//! mensagem nova).
+//! cada vez. Há três tipos: o agente esperando a resposta (ela vai para a
+//! sessão), uma ferramenta que o modo já bloqueou (permitir libera ela numa
+//! mensagem nova) e o agente de uma execução despachada esperando a resposta
+//! (ela vai ao hub; só no chat principal).
 
 use std::collections::VecDeque;
 
@@ -33,6 +34,14 @@ pub enum Kind {
     /// O modo bloqueou a ferramenta sem perguntar, pelo motivo `reason`; o
     /// agente seguiu sem ela. `allow` libera ela numa mensagem nova.
     Blocked { reason: String, allow: String },
+    /// O agente `agent` da execução despachada `run` espera a resposta: o id
+    /// do pedido no hub. Não depende da resposta deste chat: fica quando
+    /// ela acaba ou é interrompida, e sai quando a execução termina.
+    Remote {
+        run: String,
+        id: String,
+        agent: String,
+    },
 }
 
 /// A fila de pedidos e o botão escolhido no da frente.
@@ -58,16 +67,45 @@ impl Prompts {
         !self.queue.is_empty()
     }
 
-    /// Esquece os pedidos (a resposta foi interrompida).
+    /// Esquece os pedidos deste chat (a resposta foi interrompida); os das
+    /// execuções ficam.
     pub fn clear(&mut self) {
-        self.queue.clear();
+        self.queue
+            .retain(|request| matches!(request.kind, Kind::Remote { .. }));
     }
 
     /// Esquece os pedidos que esperavam a sessão (a resposta acabou); os
-    /// bloqueados ficam, porque não dependem dela.
+    /// bloqueados e os das execuções ficam, porque não dependem dela.
     pub fn clear_asks(&mut self) {
         self.queue
-            .retain(|request| matches!(request.kind, Kind::Blocked { .. }));
+            .retain(|request| !matches!(request.kind, Kind::Ask { .. }));
+    }
+
+    /// Esquece os pedidos da execução `run` (ela terminou).
+    pub fn clear_run(&mut self, run: &str) {
+        let front = self.queue.front().cloned();
+        self.queue
+            .retain(|request| !matches!(&request.kind, Kind::Remote { run: r, .. } if r == run));
+        // O botão escolhido era o do pedido que saiu.
+        if self.queue.front() != front.as_ref() {
+            self.allow = true;
+        }
+    }
+
+    /// Já está na fila o pedido `id` da execução `run` (o hub manda de novo
+    /// quando a janela reconecta).
+    pub fn has_remote(&self, run: &str, id: &str) -> bool {
+        self.queue.iter().any(|request| {
+            matches!(&request.kind, Kind::Remote { run: r, id: i, .. } if r == run && i == id)
+        })
+    }
+
+    /// Há pedido deste chat (os das execuções não contam): a sessão ainda
+    /// precisa dele.
+    pub fn has_local(&self) -> bool {
+        self.queue
+            .iter()
+            .any(|request| !matches!(request.kind, Kind::Remote { .. }))
     }
 
     /// Trata uma tecla com um pedido aberto: `←`/`→` trocam o botão, `Enter`
@@ -94,9 +132,13 @@ impl Prompts {
         let Some(request) = self.current() else {
             return;
         };
-        let (title, verb) = match request.kind {
-            Kind::Ask { .. } => ("Permissão", "O agente quer usar "),
-            Kind::Blocked { .. } => ("Bloqueado pelo modo Agente", "O agente tentou usar "),
+        let (title, verb) = match &request.kind {
+            Kind::Ask { .. } => ("Permissão".to_string(), "O agente quer usar "),
+            Kind::Blocked { .. } => (
+                "Bloqueado pelo modo Agente".to_string(),
+                "O agente tentou usar ",
+            ),
+            Kind::Remote { agent, .. } => (format!("Permissão · ▶ {agent}"), "O agente quer usar "),
         };
         let mut lines = vec![
             Line::styled(
@@ -192,6 +234,41 @@ mod tests {
         prompts.push(blocked.clone());
         prompts.clear_asks();
         assert_eq!(prompts.current(), Some(&blocked));
+    }
+
+    fn remote(run: &str, id: &str) -> Request {
+        Request {
+            kind: Kind::Remote {
+                run: run.to_string(),
+                id: id.to_string(),
+                agent: "api".to_string(),
+            },
+            ..request(id)
+        }
+    }
+
+    #[test]
+    fn requests_of_runs_survive_the_chat_and_leave_with_their_run() {
+        let mut prompts = Prompts::default();
+        prompts.push(request("r1"));
+        prompts.push(remote("run1", "a"));
+        prompts.push(remote("run2", "b"));
+        assert!(prompts.has_local());
+        prompts.clear_asks();
+        assert_eq!(prompts.current(), Some(&remote("run1", "a")));
+        assert!(!prompts.has_local());
+        prompts.clear();
+        assert!(prompts.has_remote("run1", "a") && prompts.has_remote("run2", "b"));
+        assert!(!prompts.has_remote("run1", "b"));
+
+        // Com Negar escolhido, o pedido sai e o próximo volta para Permitir.
+        assert_eq!(prompts.handle_key(key(KeyCode::Right)), None);
+        prompts.clear_run("run1");
+        assert_eq!(
+            prompts.handle_key(key(KeyCode::Enter)),
+            Some((remote("run2", "b"), true))
+        );
+        assert!(!prompts.is_open());
     }
 
     #[test]

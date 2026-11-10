@@ -65,6 +65,23 @@ fn kill_9(pid: u64) {
         .unwrap();
 }
 
+/// O `hub.log` na saída do teste que falhou (a pasta some com ele).
+fn dump_log(endpoint: &Endpoint) {
+    if thread::panicking() {
+        let log = fs::read_to_string(&endpoint.log).unwrap_or_default();
+        eprintln!("--- hub.log ---\n{log}--- fim do hub.log ---");
+    }
+}
+
+/// Mostra o `hub.log` se o teste falhar antes de ela sair.
+struct LogOnPanic(Endpoint);
+
+impl Drop for LogOnPanic {
+    fn drop(&mut self) {
+        dump_log(&self.0);
+    }
+}
+
 /// Espera `ok` valer, por até `secs`.
 fn wait<T>(secs: u64, what: &str, mut ok: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(secs);
@@ -174,9 +191,10 @@ fn ten_windows_opening_in_the_same_second_share_a_single_hub() {
 fn a_client_that_does_not_read_is_disconnected_without_holding_the_others() {
     let dir = tempfile::tempdir().unwrap();
     let endpoint = Endpoint::in_dir(dir.path());
+    let _log = LogOnPanic(endpoint.clone());
     let server = {
         let endpoint = endpoint.clone();
-        thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
+        thread::spawn(move || daemon::serve(&endpoint, daemon::TEST_IDLE).unwrap())
     };
     let connect = || {
         wait(5, "o hub subir", || {
@@ -209,7 +227,10 @@ fn a_client_that_does_not_read_is_disconnected_without_holding_the_others() {
         last.then_some(())
     });
     // O lento foi desconectado: depois do que ficou no buffer, vem o fim.
-    slow.set_recv_timeout(Some(Duration::from_secs(5))).unwrap();
+    // O tempo limite pode falhar: o pipe do Windows não tem, e o macOS o
+    // recusa (EINVAL) no socket que o hub já fechou. Nos dois casos, a
+    // leitura chega ao fim sem ele.
+    let _ = slow.set_recv_timeout(Some(Duration::from_secs(5)));
     let mut rest = Vec::new();
     BufReader::new(slow.clone())
         .read_to_end(&mut rest)
@@ -239,13 +260,14 @@ mod messages {
     impl Hub {
         fn start(config: &str) -> Self {
             let dir = tempfile::tempdir().unwrap();
+            let config = crate::orchestrator::config::portable(config);
             fs::write(dir.path().join("orchestrator.toml"), config).unwrap();
             let mut endpoint = Endpoint::in_dir(dir.path());
             // Nenhum teste roda o claude de verdade.
             endpoint.claude = Some(dir.path().join("sem-claude"));
             let server = {
                 let endpoint = endpoint.clone();
-                thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
+                thread::spawn(move || daemon::serve(&endpoint, daemon::TEST_IDLE).unwrap())
             };
             Self {
                 dir,
@@ -313,6 +335,7 @@ mod messages {
 
     impl Drop for Hub {
         fn drop(&mut self) {
+            dump_log(&self.endpoint);
             if let Some(server) = self.server.take() {
                 let _ = server.join();
             }
@@ -404,7 +427,9 @@ mod messages {
 
 // O despachante, com um `claude` falso (um script de shell): ele grava o
 // prompt, os argumentos e o ambiente que recebeu e se comporta pelo arquivo
-// `mode` da pasta do agente (`fail`, `wait` até existir `go`, ou sucesso).
+// `mode` da pasta do agente (`fail`, `wait` até existir `go`, `ask` pedindo
+// uma permissão, ou sucesso). Com o `--permission-prompt-tool stdio`, o
+// prompt é a primeira linha da entrada (o resto fica para as respostas).
 #[cfg(unix)]
 mod dispatch {
     use super::*;
@@ -414,7 +439,10 @@ mod dispatch {
     use crate::orchestrator::send;
 
     const FAKE_CLAUDE: &str = r#"#!/bin/sh
-cat > prompt.txt
+case " $* " in
+  *" --permission-prompt-tool stdio "*) IFS= read -r line; printf '%s\n' "$line" > prompt.txt ;;
+  *) cat > prompt.txt ;;
+esac
 echo "$@" > args.txt
 env | grep '^TERRA_' | sort > env.txt
 echo '{"type":"system","subtype":"init","session_id":"s","model":"claude-falso"}'
@@ -424,6 +452,11 @@ case "$(cat mode 2>/dev/null)" in
     exit 1 ;;
   wait)
     while [ ! -f go ]; do sleep 0.05; done ;;
+  ask)
+    echo '{"type":"control_request","request_id":"h1","request":{"subtype":"hook_callback"}}'
+    IFS= read -r line; printf '%s\n' "$line" > unsupported.txt
+    echo '{"type":"control_request","request_id":"p1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"npm publish"}}}'
+    IFS= read -r line; printf '%s\n' "$line" > answer.txt ;;
 esac
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":4}}'
 "#;
@@ -471,7 +504,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
             endpoint.claude = Some(fake);
             let server = {
                 let endpoint = endpoint.clone();
-                thread::spawn(move || daemon::serve(&endpoint, Duration::from_millis(300)).unwrap())
+                thread::spawn(move || daemon::serve(&endpoint, daemon::TEST_IDLE).unwrap())
             };
             wait(5, "o hub subir", || {
                 Stream::connect(endpoint.name().unwrap()).ok().map(|_| ())
@@ -522,6 +555,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
 
     impl Drop for Hub {
         fn drop(&mut self) {
+            dump_log(&self.endpoint);
             self.window.take();
             if let Some(server) = self.server.take() {
                 let _ = server.join();
@@ -546,14 +580,18 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
             (message::state(hub.home(), &message.id) == Some(State::Done)).then_some(())
         });
 
-        let prompt = hub.agent_file("api", "prompt.txt");
+        // Perguntando (o padrão), o prompt vem em stream-json.
+        let input: Value = serde_json::from_str(&hub.agent_file("api", "prompt.txt")).unwrap();
+        let prompt = input["message"]["content"].as_str().unwrap().to_string();
         assert!(prompt.starts_with("Você é o agente `api`. A nota (`"));
         assert!(prompt.contains(&message.note.display().to_string()));
         assert!(prompt.contains("# Handoff "));
         let args = hub.agent_file("api", "args.txt");
         for flag in [
             "-p",
-            "--permission-mode dontAsk",
+            "--permission-mode default",
+            "--input-format stream-json",
+            "--permission-prompt-tool stdio",
             "--model opus",
             "--max-turns 3",
             "--allowedTools Read",
@@ -566,6 +604,88 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
         assert!(env.contains("TERRA_AGENT=api"));
         assert!(env.contains("TERRA_HOPS=1"));
         assert!(env.contains(&format!("TERRA_RUN={}", run.id)));
+    }
+
+    #[test]
+    fn a_permission_request_of_a_run_goes_to_a_window_and_its_answer_back() {
+        let hub = Hub::start(
+            &[("api", "ask")],
+            "[global]\nmodo_execucao = \"segundo_plano\"\n",
+        );
+        let window = Reporter::start_with(
+            hub.endpoint.clone(),
+            false,
+            "api".into(),
+            hub.home().join("api").to_string_lossy().into_owned(),
+            Status::default(),
+        );
+        // A janela entrou no hub antes da execução.
+        wait(5, "a janela entrar", || {
+            let instances = client::snapshot_with(&hub.endpoint, false).ok()?;
+            (!instances.is_empty()).then_some(())
+        });
+        let (message, _) = hub.send("usuario", "api");
+        // Mesmo em segundo plano, o pedido vai à janela.
+        let (run, id) = wait(10, "o pedido de permissão", || {
+            window.events().into_iter().find_map(|event| match event {
+                client::Event::PermissionRequest {
+                    run,
+                    agent,
+                    id,
+                    name,
+                    detail,
+                } => {
+                    assert_eq!((agent.as_str(), name.as_str()), ("api", "Bash"));
+                    assert_eq!(detail, "npm publish");
+                    Some((run, id))
+                }
+                _ => None,
+            })
+        });
+        assert_eq!(id, "p1");
+        // O outro pedido de controle foi recusado sem passar pela janela.
+        let unsupported: Value =
+            serde_json::from_str(&hub.agent_file("api", "unsupported.txt")).unwrap();
+        assert_eq!(unsupported["response"]["subtype"], "error");
+        assert_eq!(unsupported["response"]["request_id"], "h1");
+        // Esperando a resposta, a execução segue rodando.
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(hub.run_of(&message.id).unwrap().state, RunState::Running);
+
+        window.permission_answer(&run, &id, true);
+        let done = hub.wait_state(&message.id, RunState::Done);
+        assert_eq!(done.id, run);
+        let answer: Value = serde_json::from_str(&hub.agent_file("api", "answer.txt")).unwrap();
+        assert_eq!(answer["type"], "control_response");
+        assert_eq!(answer["response"]["request_id"], "p1");
+        assert_eq!(answer["response"]["response"]["behavior"], "allow");
+        assert_eq!(
+            answer["response"]["response"]["updatedInput"]["command"],
+            "npm publish"
+        );
+        // A saída gravada é a do agente, sem os pedidos de controle.
+        let output = fs::read_to_string(done.dir(hub.home()).join(run::OUTPUT)).unwrap();
+        assert!(output.contains("\"result\"") && !output.contains("control_request"));
+        // A janela tira os pedidos da execução que terminou.
+        wait(5, "o fim da execução na janela", || {
+            window
+                .events()
+                .into_iter()
+                .find(|event| *event == client::Event::RunFinished { run: run.clone() })
+        });
+        drop(window);
+    }
+
+    #[test]
+    fn without_asking_the_run_denies_without_a_prompt() {
+        let hub = Hub::start(&[("api", "ok")], "[global]\nperguntar_permissoes = false\n");
+        let (message, _) = hub.send("usuario", "api");
+        hub.wait_state(&message.id, RunState::Done);
+        let prompt = hub.agent_file("api", "prompt.txt");
+        assert!(prompt.starts_with("Você é o agente `api`."), "{prompt}");
+        let args = hub.agent_file("api", "args.txt");
+        assert!(args.contains("--permission-mode dontAsk --permission-prompts none"));
+        assert!(!args.contains("stdio"), "{args}");
     }
 
     #[test]

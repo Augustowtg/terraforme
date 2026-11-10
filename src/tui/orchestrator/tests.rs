@@ -19,7 +19,11 @@ struct Tab {
 impl Tab {
     fn new(config: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("orchestrator.toml"), config).unwrap();
+        fs::write(
+            dir.path().join("orchestrator.toml"),
+            crate::orchestrator::config::portable(config),
+        )
+        .unwrap();
         let mut data = Data::new(Some(dir.path().to_path_buf()));
         data.reload();
         Self {
