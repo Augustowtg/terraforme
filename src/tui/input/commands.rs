@@ -19,6 +19,7 @@ const INTERFACES: &[&str] = &[
     "compact",
     "model",
     "login",
+    "new-login",
     "usage",
     "agente",
     "mensagens",
@@ -29,6 +30,10 @@ const TERRA_COMMANDS: &[(&str, &str)] = &[
     (
         "login",
         "Entra de novo na conta do agente (ex.: token expirado ou revogado)",
+    ),
+    (
+        "new-login",
+        "Adiciona uma conta nova ao provedor (depois, escolha-a nas Configurações)",
     ),
     (
         "agente",

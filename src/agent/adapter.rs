@@ -267,6 +267,15 @@ pub trait ChatAdapter {
         None
     }
 
+    /// O comando que adiciona uma conta nova ao provedor (o `/new-login`):
+    /// como o [`login`](Self::login), interativo e fora da tela, mas num
+    /// lugar novo, sem mexer nas contas que já existem. Depois dele, a conta
+    /// aparece em [`accounts`](Self::accounts). `None` quando o provedor só
+    /// tem uma conta.
+    fn new_login(&self) -> Option<Command> {
+        None
+    }
+
     /// Trechos, em minúsculas, das mensagens de erro do provedor que pedem
     /// um novo login (ex.: `"log in again"`). O chat então sugere o `/login`.
     /// Vazio: o chat nunca sugere.

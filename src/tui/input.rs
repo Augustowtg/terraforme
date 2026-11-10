@@ -162,6 +162,30 @@ impl InputBox {
             .collect()
     }
 
+    /// O trecho selecionado, como iria na mensagem (as menções viram
+    /// `@caminho`); `None` sem seleção.
+    pub fn selected_text(&self) -> Option<String> {
+        let range = self.selection()?;
+        Some(
+            self.buffer
+                .chars()
+                .skip(range.start)
+                .take(range.len())
+                .map(|c| match self.mention(c) {
+                    Some(mention) => mention::prompt_text(mention),
+                    None => c.to_string(),
+                })
+                .collect(),
+        )
+    }
+
+    /// Desfaz a seleção, sem mexer no texto nem no cursor.
+    pub fn clear_selection(&mut self) {
+        if !self.selecting {
+            self.anchor = None;
+        }
+    }
+
     /// Guarda o texto da caixa entre as mensagens enviadas, para voltar a
     /// ele com ↑ (sem repetir a última).
     pub fn remember(&mut self) {

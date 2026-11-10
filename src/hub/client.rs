@@ -136,6 +136,18 @@ pub enum Event {
         name: String,
         reason: String,
     },
+    /// O agente da execução `run` pede para usar a ferramenta `name`: o
+    /// chat principal pergunta, e a resposta volta pelo
+    /// [`Reporter::permission_answer`].
+    PermissionRequest {
+        run: String,
+        agent: String,
+        id: String,
+        name: String,
+        detail: String,
+    },
+    /// A execução `run` terminou: os pedidos dela sem resposta saem.
+    RunFinished { run: String },
 }
 
 impl Event {
@@ -155,6 +167,14 @@ impl Event {
                 name: text("name")?,
                 reason: text("reason").unwrap_or_default(),
             }),
+            "permission_request" => Some(Event::PermissionRequest {
+                run: text("run")?,
+                agent: text("agent").unwrap_or_default(),
+                id: text("request_id")?,
+                name: text("tool")?,
+                detail: text("detail").unwrap_or_default(),
+            }),
+            "run_finished" => Some(Event::RunFinished { run: text("run")? }),
             _ => None,
         }
     }
@@ -209,6 +229,17 @@ impl Reporter {
     /// Confirma ao hub que a mensagem `id` chegou à aba.
     pub fn ack(&self, id: &str) {
         let _ = self.tx.send(Msg::Raw(json!({"t": "ack", "id": id})));
+    }
+
+    /// A resposta do usuário ao pedido de permissão `request_id` da
+    /// execução `run`.
+    pub fn permission_answer(&self, run: &str, request_id: &str, allow: bool) {
+        let _ = self.tx.send(Msg::Raw(json!({
+            "t": "permission_answer",
+            "run": run,
+            "request_id": request_id,
+            "allow": allow,
+        })));
     }
 
     /// O id desta instância no hub.

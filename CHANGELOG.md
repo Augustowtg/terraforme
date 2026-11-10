@@ -4,6 +4,20 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Adicionado
+
+- **`/new-login`** no chat, para adicionar uma conta nova ao provedor sem mexer nas que já existem. No Claude, o terra cria a pasta `~/.claude-conta-N` (a primeira livre) e roda nela o `claude auth login` (com `CLAUDE_CONFIG_DIR`), fora da tela, com a mesma interface do `/login`. Com o login feito, a conta aparece na lista de contas das Configurações; uma pasta de um `/new-login` que não terminou (sem credenciais) é usada de novo no próximo. Provedores sem contas separadas (como o Antigravity) avisam que não adicionam contas pelo terra.
+- `perguntar_permissoes` no `[global]` do `orchestrator.toml` (`true` por padrão) e em cada `[agents.<nome>]` (vale só para ele). Com `false`, a execução volta a negar sem perguntar (`dontAsk`), para os agentes que rodam sem ninguém olhando.
+
+### Corrigido
+
+- Os **sub agentes** despachados pelo orquestrador não têm mais as ferramentas negadas em silêncio. Uma ferramenta fora das `ferramentas` do agente vira um pedido de permissão no **chat principal** da janela da pasta do agente (ou, sem ela, da mais nova), com o título `Permissão · ▶ <agente>` e os mesmos botões Permitir e Negar do agente do chat; a resposta volta à execução, que segue rodando. O pedido chega mesmo no modo `segundo_plano`, espera uma janela abrir se não há nenhuma, passa para outra se a janela fecha, não sai com o fim (ou a interrupção) da resposta do chat principal e sai quando a execução termina. O tempo esperando a resposta não conta no `tempo_limite_min`. A execução roda com `--permission-mode default --input-format stream-json --permission-prompt-tool stdio`, e as ferramentas da lista seguem liberadas sem perguntar.
+- As ferramentas negadas a um **subagente em segundo plano** do Claude (o `Task` com `run_in_background`, que não pode perguntar) viram um pedido no chat, como as que o modo Agente bloqueia: permitir manda o agente fazer numa mensagem nova, com ela liberada. Antes, elas sumiam sem aviso.
+- **Copiar e colar** funcionam sem o `wl-clipboard`, o `xclip` ou o `xsel` instalados (como no GNOME com o Ptyxis, que ignora o OSC 52): o terra usa a área de transferência do sistema direto (no Linux, pelo X11/XWayland) e só manda o OSC 52 se nem isso der. Antes, aparecia "Copiado" e nada ia para a área de transferência, e o Ctrl+V não colava nada.
+- Selecionar um trecho do **input** com o mouse copia o trecho, como no histórico. O **Ctrl+Shift+C** copia o que está selecionado no histórico ou no input, nos terminais que repassam essa tecla (kitty, WezTerm, Windows Terminal...); antes, nesses terminais ele fechava o terra, como o Ctrl+C.
+
 ## [0.13.24] - 2026-11-07
 
 ### Corrigido

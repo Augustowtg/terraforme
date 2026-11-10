@@ -17,6 +17,7 @@ impl Chat {
             "clear" => self.clear_conversation(),
             "compact" => self.compact(),
             "login" => self.start_login(),
+            "new-login" => self.start_new_login(),
             "agente" => self.agent_command(""),
             "mensagens" => self.show_messages(),
             // O consumo é a aba Consumo do terra.
@@ -123,13 +124,33 @@ impl Chat {
             .available_adapter()
             .and_then(|adapter| adapter.login(self.account.as_deref()));
         match login {
-            Some(command) => self.pending_login = Some(command),
+            Some(command) => {
+                self.pending_login = Some(command);
+                self.new_login = false;
+            }
             None => {
                 let help = self.available_adapter().and_then(|a| a.login_help());
                 self.history.push(Entry::Info(
                     help.unwrap_or_else(|| "Este provedor não tem login pelo terra.".to_string()),
                 ));
             }
+        }
+    }
+
+    /// O `/new-login`: pede à tela principal para rodar o login do provedor
+    /// numa conta nova, que depois aparece nas Configurações.
+    fn start_new_login(&mut self) {
+        match self
+            .available_adapter()
+            .and_then(|adapter| adapter.new_login())
+        {
+            Some(command) => {
+                self.pending_login = Some(command);
+                self.new_login = true;
+            }
+            None => self.history.push(Entry::Info(
+                "Este provedor não adiciona contas pelo terra.".to_string(),
+            )),
         }
     }
 
@@ -147,12 +168,27 @@ impl Chat {
     /// tela principal rodar.
     pub fn take_login(&mut self) -> Option<(Command, String)> {
         let login = self.pending_login.take()?;
-        Some((login, self.account_label()))
+        let label = if self.new_login {
+            "nova".to_string()
+        } else {
+            self.account_label()
+        };
+        Some((login, label))
     }
 
     /// Volta do login: avisa no histórico e recarrega os comandos e modelos
     /// (que dependem do login).
     pub fn finish_login(&mut self, result: Result<(), String>) {
+        if std::mem::take(&mut self.new_login) {
+            self.history.push(match result {
+                Ok(()) => Entry::Info(
+                    "Conta nova adicionada: escolha-a nas Configurações para usar.".to_string(),
+                ),
+                Err(reason) => Entry::Error(format!("A conta nova não foi adicionada: {reason}")),
+            });
+            self.history.follow();
+            return;
+        }
         let label = self.account_label();
         match result {
             Ok(()) => {

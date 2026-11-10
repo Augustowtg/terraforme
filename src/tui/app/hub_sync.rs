@@ -38,10 +38,18 @@ impl App {
 
     /// O que o hub mandou: as mensagens de outros agentes vão para a caixa
     /// do chat da aba (o `ack` confirma ao hub) e os nomes recusados saem
-    /// do chat. Nada disso vai ao agente do chat.
+    /// do chat. Os pedidos de permissão das execuções vão para o chat
+    /// principal, e as respostas a eles voltam ao hub. Nada disso vai ao
+    /// agente do chat.
     pub(super) fn receive_from_hub(&mut self) {
+        let answers = self.chat.take_remote_answers();
         let events = match &self.hub {
-            Some(hub) => hub.events(),
+            Some(hub) => {
+                for (run, id, allow) in answers {
+                    hub.permission_answer(&run, &id, allow);
+                }
+                hub.events()
+            }
             None => return,
         };
         for event in events {
@@ -61,6 +69,14 @@ impl App {
                         chat.name_rejected(&name, &reason);
                     }
                 }
+                Event::PermissionRequest {
+                    run,
+                    agent,
+                    id,
+                    name,
+                    detail,
+                } => self.chat.remote_request(run, id, agent, name, detail),
+                Event::RunFinished { run } => self.chat.run_finished(&run),
             }
         }
     }
