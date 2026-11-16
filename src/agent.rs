@@ -14,8 +14,8 @@ mod mode;
 
 pub use adapter::{
     AccountOption, Catalog, ChatAdapter, CommandInfo, CommandRoute, DailyTokens, Interactive,
-    ModelInfo, ModelOption, ProviderSkill, Request, Session, Usage, UsageWindow, kill_tree, launch,
-    own_group,
+    ModelInfo, ModelOption, ModelTokens, ProviderSkill, Request, Session, TokenReport, Usage,
+    UsageWindow, kill_tree, launch, own_group,
 };
 pub use event::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
 pub use follow::follow;

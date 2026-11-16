@@ -6,7 +6,8 @@
 //! resposta com vários blocos se repete em várias linhas, com o mesmo
 //! `message.id` e `requestId`, e conta uma vez só. Cada dia guarda a entrada
 //! e a saída separadas do cache (criação e leitura), para o gráfico mostrar
-//! com e sem cache.
+//! com e sem cache. O `message.model` de cada resposta dá o total por modelo,
+//! e o `cwd` da linha diz se ela foi gasta na pasta do workspace.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -21,29 +22,35 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan};
 use serde_json::Value;
 
-use crate::agent::DailyTokens;
+use crate::agent::{DailyTokens, ModelTokens, TokenReport};
 
 const PROJECTS: &str = "projects";
 const TOKEN_KEYS: [&str; 2] = ["input_tokens", "output_tokens"];
 const CACHE_KEYS: [&str; 2] = ["cache_creation_input_tokens", "cache_read_input_tokens"];
 
 /// Começa a somar numa thread; o resultado chega pelo canal.
-pub fn load(config_dir: PathBuf, days: usize) -> Receiver<Result<Vec<DailyTokens>, String>> {
+pub fn load(
+    config_dir: PathBuf,
+    days: usize,
+    workspace: PathBuf,
+) -> Receiver<Result<TokenReport, String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let tz = TimeZone::system();
         let today = Timestamp::now().to_zoned(tz.clone()).date();
-        let _ = tx.send(Ok(sum(&config_dir.join(PROJECTS), today, days, &tz)));
+        let projects = config_dir.join(PROJECTS);
+        let _ = tx.send(Ok(sum(&projects, today, days, &tz, &workspace)));
     });
     rx
 }
 
-/// Os `days` dias até `today`, o mais antigo primeiro.
-fn sum(projects: &Path, today: Date, days: usize, tz: &TimeZone) -> Vec<DailyTokens> {
+/// Os `days` dias até `today`, o mais antigo primeiro, e os totais por modelo.
+fn sum(projects: &Path, today: Date, days: usize, tz: &TimeZone, workspace: &Path) -> TokenReport {
     let first = today
         .checked_sub((days.saturating_sub(1) as i64).days())
         .unwrap_or(today);
     let mut totals: BTreeMap<Date, DailyTokens> = BTreeMap::new();
+    let mut report = TokenReport::default();
     let mut seen = HashSet::new();
     // Arquivos sem mudança desde antes do primeiro dia não têm nada dele.
     let since = first
@@ -55,10 +62,18 @@ fn sum(projects: &Path, today: Date, days: usize, tz: &TimeZone) -> Vec<DailyTok
             .and_then(|m| m.modified())
             .map_or(true, |modified| since.is_none_or(|since| modified >= since));
         if recent {
-            add_file(&file, first, tz, &mut seen, &mut totals);
+            add_file(
+                &file,
+                first,
+                tz,
+                workspace,
+                &mut seen,
+                &mut totals,
+                &mut report,
+            );
         }
     }
-    (0..days)
+    report.days = (0..days)
         .filter_map(|i| first.checked_add((i as i64).days()).ok())
         .map(|date| {
             totals
@@ -66,15 +81,18 @@ fn sum(projects: &Path, today: Date, days: usize, tz: &TimeZone) -> Vec<DailyTok
                 .copied()
                 .unwrap_or_else(|| DailyTokens::empty(date))
         })
-        .collect()
+        .collect();
+    report
 }
 
 fn add_file(
     file: &Path,
     first: Date,
     tz: &TimeZone,
+    workspace: &Path,
     seen: &mut HashSet<String>,
     totals: &mut BTreeMap<Date, DailyTokens>,
+    report: &mut TokenReport,
 ) {
     let Ok(file) = fs::File::open(file) else {
         return;
@@ -95,6 +113,15 @@ fn add_file(
             let hour = &mut day.hours[reply.hour];
             hour.tokens += reply.tokens;
             hour.cache += reply.cache;
+            ModelTokens::add(&mut report.models, &reply.model, reply.tokens, reply.cache);
+            if Path::new(&reply.cwd).starts_with(workspace) {
+                ModelTokens::add(
+                    &mut report.workspace,
+                    &reply.model,
+                    reply.tokens,
+                    reply.cache,
+                );
+            }
         }
     }
 }
@@ -106,6 +133,9 @@ struct Reply {
     hour: usize,
     tokens: u64,
     cache: u64,
+    model: String,
+    /// A pasta em que o agente rodava.
+    cwd: String,
 }
 
 /// A resposta de uma linha, se ela for uma que ainda não foi contada.
@@ -139,6 +169,11 @@ fn parse_line(line: &str, tz: &TimeZone, seen: &mut HashSet<String>) -> Option<R
         hour: at.hour() as usize,
         tokens: sum(&TOKEN_KEYS),
         cache: sum(&CACHE_KEYS),
+        model: message["model"]
+            .as_str()
+            .unwrap_or("desconhecido")
+            .to_string(),
+        cwd: value["cwd"].as_str().unwrap_or_default().to_string(),
     })
 }
 
@@ -169,6 +204,56 @@ mod tests {
         format!(
             r#"{{"type":"assistant","requestId":"{request}","timestamp":"{at}","message":{{"id":"{id}","usage":{{"input_tokens":1,"output_tokens":{output},"cache_creation_input_tokens":10,"cache_read_input_tokens":100}}}}}}"#
         )
+    }
+
+    fn sum(projects: &Path, today: Date, days: usize, tz: &TimeZone) -> Vec<DailyTokens> {
+        super::sum(projects, today, days, tz, Path::new("/repo")).days
+    }
+
+    #[test]
+    fn sums_per_model_and_only_the_workspace_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("projects").join("p");
+        fs::create_dir_all(&project).unwrap();
+        let reply = |id: &str, model: &str, cwd: &str, output: u64| {
+            format!(
+                r#"{{"type":"assistant","requestId":"{id}","cwd":"{cwd}","timestamp":"2026-10-27T12:00:00Z","message":{{"id":"{id}","model":"{model}","usage":{{"input_tokens":0,"output_tokens":{output},"cache_read_input_tokens":3}}}}}}"#
+            )
+        };
+        fs::write(
+            project.join("a.jsonl"),
+            [
+                reply("1", "claude-fable-5-2", "/repo", 10),
+                reply("2", "claude-fable-5-2", "/repo/src", 20),
+                reply("3", "claude-opus-5-5", "/repo-outro", 5),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let today = jiff::civil::date(2026, 10, 27);
+        let report = super::sum(
+            &dir.path().join("projects"),
+            today,
+            1,
+            &TimeZone::UTC,
+            Path::new("/repo"),
+        );
+        let found = |list: &[ModelTokens]| -> Vec<(String, u64, u64)> {
+            list.iter()
+                .map(|m| (m.model.clone(), m.tokens, m.cache))
+                .collect()
+        };
+        assert_eq!(
+            found(&report.models),
+            [
+                ("claude-fable-5-2".into(), 30, 6),
+                ("claude-opus-5-5".into(), 5, 3)
+            ]
+        );
+        assert_eq!(
+            found(&report.workspace),
+            [("claude-fable-5-2".into(), 30, 6)]
+        );
     }
 
     #[test]

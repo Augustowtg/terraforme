@@ -166,6 +166,46 @@ impl DailyTokens {
     }
 }
 
+/// Os tokens gastos com um modelo num período.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelTokens {
+    /// O id que o provedor informa (ex.: `claude-opus-5-5`).
+    pub model: String,
+    /// Entrada e saída.
+    pub tokens: u64,
+    /// Criação e leitura de cache.
+    pub cache: u64,
+}
+
+impl ModelTokens {
+    /// Soma um gasto ao modelo `model` da lista (que entra se for novo).
+    pub fn add(list: &mut Vec<ModelTokens>, model: &str, tokens: u64, cache: u64) {
+        let index = list
+            .iter()
+            .position(|m| m.model == model)
+            .unwrap_or_else(|| {
+                list.push(ModelTokens {
+                    model: model.to_string(),
+                    ..Default::default()
+                });
+                list.len() - 1
+            });
+        list[index].tokens += tokens;
+        list[index].cache += cache;
+    }
+}
+
+/// Os tokens dos últimos dias (aba Consumo e `terra usage`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TokenReport {
+    /// Cada dia, o mais antigo primeiro; dias sem uso vêm com 0.
+    pub days: Vec<DailyTokens>,
+    /// O total do período por modelo.
+    pub models: Vec<ModelTokens>,
+    /// O mesmo, só do que foi gasto na pasta do workspace (e nas de dentro).
+    pub workspace: Vec<ModelTokens>,
+}
+
 /// As configurações com que a interface original do provedor abre.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Interactive<'a> {
@@ -225,6 +265,12 @@ pub trait ChatAdapter {
     /// quando o provedor não tem contas.
     fn accounts(&self) -> Vec<AccountOption> {
         Vec::new()
+    }
+
+    /// A conta salva `account` como ela deve ficar: uma conta que é só
+    /// outro nome da Default vira `None`. O padrão a deixa como está.
+    fn normalize_account(&self, account: Option<String>) -> Option<String> {
+        account
     }
 
     /// As skills instaladas no provedor para `cwd` e a conta `account`,
@@ -297,14 +343,15 @@ pub trait ChatAdapter {
         None
     }
 
-    /// Começa a somar, em segundo plano, os tokens por dia da conta
-    /// `account` nos últimos `days` dias (até hoje, o mais antigo primeiro;
-    /// dias sem uso vêm com 0). `None` quando o provedor não informa.
+    /// Começa a somar, em segundo plano, os tokens da conta `account` nos
+    /// últimos `days` dias (até hoje): por dia, por modelo e por modelo na
+    /// pasta `workspace`. `None` quando o provedor não informa.
     fn load_daily(
         &self,
         _account: Option<&str>,
         _days: usize,
-    ) -> Option<Receiver<Result<Vec<DailyTokens>, String>>> {
+        _workspace: &Path,
+    ) -> Option<Receiver<Result<TokenReport, String>>> {
         None
     }
 

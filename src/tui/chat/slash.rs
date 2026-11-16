@@ -139,7 +139,7 @@ impl Chat {
 
     /// O `/new-login`: pede à tela principal para rodar o login do provedor
     /// numa conta nova, que depois aparece nas Configurações.
-    fn start_new_login(&mut self) {
+    pub fn start_new_login(&mut self) {
         match self
             .available_adapter()
             .and_then(|adapter| adapter.new_login())
@@ -182,7 +182,8 @@ impl Chat {
         if std::mem::take(&mut self.new_login) {
             self.history.push(match result {
                 Ok(()) => Entry::Info(
-                    "Conta nova adicionada: escolha-a nas Configurações para usar.".to_string(),
+                    "Conta nova adicionada: escolha-a na Conta das Configurações para usar."
+                        .to_string(),
                 ),
                 Err(reason) => Entry::Error(format!("A conta nova não foi adicionada: {reason}")),
             });

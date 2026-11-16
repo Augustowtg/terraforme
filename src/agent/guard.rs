@@ -16,8 +16,8 @@ use std::sync::mpsc::Receiver;
 use std::thread::{self, ThreadId};
 
 use super::{
-    AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
-    ModelOption, PermissionMode, ProviderSkill, Request, Session, Usage,
+    AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, ModelOption,
+    PermissionMode, ProviderSkill, Request, Session, TokenReport, Usage,
 };
 
 thread_local! {
@@ -136,6 +136,11 @@ impl ChatAdapter for Guarded {
         catch(|| self.inner.accounts()).unwrap_or_default()
     }
 
+    fn normalize_account(&self, account: Option<String>) -> Option<String> {
+        let fallback = account.clone();
+        catch(|| self.inner.normalize_account(account)).unwrap_or(fallback)
+    }
+
     fn skills(&self, cwd: &Path, account: Option<&str>) -> Vec<ProviderSkill> {
         catch(|| self.inner.skills(cwd, account)).unwrap_or_default()
     }
@@ -178,8 +183,9 @@ impl ChatAdapter for Guarded {
         &self,
         account: Option<&str>,
         days: usize,
-    ) -> Option<Receiver<Result<Vec<DailyTokens>, String>>> {
-        catch(|| self.inner.load_daily(account, days))
+        workspace: &Path,
+    ) -> Option<Receiver<Result<TokenReport, String>>> {
+        catch(|| self.inner.load_daily(account, days, workspace))
             .ok()
             .flatten()
     }

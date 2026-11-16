@@ -1,5 +1,7 @@
 //! Definição dos argumentos (clap) e execução dos comandos.
 
+mod usage;
+
 use std::env;
 use std::fs;
 use std::io::{IsTerminal, stdout};
@@ -37,6 +39,8 @@ enum Command {
     Cli,
     /// Lista os workspaces recentes e salvos e entra no escolhido
     Workspace(WorkspaceArgs),
+    /// Mostra o consumo da conta e os tokens por modelo e na workspace
+    Usage(UsageArgs),
     /// Atualiza o terra pelo instalador do GitHub (a última release)
     Upgrade(UpgradeArgs),
     /// Mostra os terminais do terra abertos, por workspace (pelo orquestrador)
@@ -114,6 +118,22 @@ struct StatusArgs {
 }
 
 #[derive(Args)]
+struct UsageArgs {
+    /// O provedor (ex.: claude, antigravity); o padrão é o do workspace
+    #[arg(long, value_name = "ID")]
+    provider: Option<String>,
+    /// A conta do provedor (ex.: .claude-trabalho); o padrão é a do workspace
+    #[arg(long, value_name = "ID")]
+    account: Option<String>,
+    /// Quantos dias os tokens somam, contando hoje
+    #[arg(long, default_value_t = 14, value_parser = clap::value_parser!(u16).range(1..=365), value_name = "N")]
+    days: u16,
+    /// Imprime em JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
 struct UpgradeArgs {
     /// Usa o instalador do repositório do diretório atual (install-linux.sh
     /// no Linux, install.ps1 no Windows)
@@ -135,6 +155,14 @@ struct WorkspaceArgs {
     #[arg(long)]
     save: bool,
 
+    /// Só imprime os workspaces salvos e os recentes, sem abrir a lista
+    #[arg(long, conflicts_with = "save")]
+    list: bool,
+
+    /// Com --list, imprime em JSON
+    #[arg(long, requires = "list")]
+    json: bool,
+
     /// Nome do workspace (padrão: nome da pasta)
     #[arg(long, value_name = "NOME", requires = "save")]
     name: Option<String>,
@@ -145,6 +173,8 @@ pub fn run() -> Result<()> {
     match cli.command {
         Command::Cli => open_app()?,
         Command::Workspace(args) if args.save => save_workspace(args.name.as_deref())?,
+        Command::Workspace(args) if args.list => list_workspaces(args.json)?,
+        Command::Usage(args) => show_usage(args)?,
         Command::Workspace(_) => open_workspace(cli.cwd_file.as_deref())?,
         Command::Upgrade(args) => crate::upgrade::run(args.repo, &args.args)?,
         Command::Status(args) => status(args.json)?,
@@ -340,6 +370,66 @@ fn save_workspace(name: Option<&str>) -> Result<()> {
             println!("{}", theme::paint_success(&msg, stdout().is_terminal()));
         }
         SaveOutcome::AlreadySaved(name) => println!("Este path já está salvo como {name}"),
+    }
+    Ok(())
+}
+
+/// O `terra usage`: sem `--provider` e `--account`, os do workspace do
+/// diretório atual (o `config.json` dele).
+fn show_usage(args: UsageArgs) -> Result<()> {
+    let dir = current_dir()?;
+    let saved = Db::open_default()
+        .and_then(|db| db.workspace_folder(&dir))
+        .ok()
+        .zip(db::data_dir().ok())
+        .and_then(|(name, root)| {
+            settings::AgentSettings::load_file(&settings::config_file(&root, &name))
+        })
+        .unwrap_or_default();
+    // A conta salva é do provedor salvo: com outro provedor, ela não vale.
+    let account = match &args.provider {
+        Some(id) if saved.provider.as_deref() != Some(id) => args.account,
+        _ => args.account.or(saved.account),
+    };
+    let provider = args.provider.or(saved.provider);
+    usage::run(
+        provider.as_deref(),
+        account.as_deref(),
+        args.days as usize,
+        args.json,
+        &dir,
+    )
+}
+
+/// O `terra workspace --list`: os salvos e os recentes, para scripts.
+fn list_workspaces(as_json: bool) -> Result<()> {
+    const ALL: usize = i64::MAX as usize;
+    let db = Db::open_default()?;
+    let (saved, recents) = (db.workspaces(0, ALL)?, db.recents(0, ALL)?);
+    if as_json {
+        let saved: Vec<_> = saved
+            .iter()
+            .map(|w| serde_json::json!({"name": w.name, "path": w.path}))
+            .collect();
+        let recents: Vec<_> = recents
+            .iter()
+            .map(|r| serde_json::json!({"path": r.path, "last_used_at": r.last_used_at}))
+            .collect();
+        println!(
+            "{:#}",
+            serde_json::json!({"saved": saved, "recents": recents})
+        );
+        return Ok(());
+    }
+    println!("Salvos");
+    let width = saved.iter().map(|w| w.name.chars().count()).max();
+    for workspace in &saved {
+        let width = width.unwrap_or(0);
+        println!("  {:<width$}  {}", workspace.name, workspace.path.display());
+    }
+    println!("\nRecentes");
+    for recent in &recents {
+        println!("  {}", recent.path.display());
     }
     Ok(())
 }

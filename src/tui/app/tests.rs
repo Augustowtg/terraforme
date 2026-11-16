@@ -19,6 +19,7 @@ fn press(app: &mut App, code: KeyCode) -> Tab {
 fn tab_key_cycles_tabs() {
     let mut app = App::default();
     assert_eq!(app.tab, Tab::Chat);
+    assert_eq!(press(&mut app, KeyCode::Tab), Tab::Terraforme);
     assert_eq!(press(&mut app, KeyCode::Tab), Tab::Consumo);
     assert_eq!(press(&mut app, KeyCode::Tab), Tab::Extensoes);
     assert_eq!(press(&mut app, KeyCode::Tab), Tab::Orquestrador);
@@ -33,6 +34,7 @@ fn aba_atualizacao_so_com_versao_nova_e_enter_pede_instalar() {
         version: "9.9.9".into(),
         notes: "## [9.9.9] - 2099-01-01\n\n- novo".into(),
     }));
+    assert_eq!(press(&mut app, KeyCode::Tab), Tab::Terraforme);
     assert_eq!(press(&mut app, KeyCode::Tab), Tab::Atualizacao);
     assert!(!app.take_update_install());
     press(&mut app, KeyCode::Enter);
@@ -50,8 +52,9 @@ fn orquestrador_tab_is_always_between_extensions_and_config() {
     assert_eq!(Tab::Extensoes.next(false), Tab::Orquestrador);
     assert_eq!(Tab::Orquestrador.next(false), Tab::Config);
     assert_eq!(Tab::Config.next(false), Tab::Chat);
-    assert_eq!(Tab::Chat.next(false), Tab::Consumo);
-    assert_eq!(Tab::Chat.next(true), Tab::Atualizacao);
+    assert_eq!(Tab::Chat.next(false), Tab::Terraforme);
+    assert_eq!(Tab::Terraforme.next(false), Tab::Consumo);
+    assert_eq!(Tab::Terraforme.next(true), Tab::Atualizacao);
     assert_eq!(Tab::Atualizacao.next(true), Tab::Consumo);
 }
 
@@ -85,7 +88,7 @@ fn esc_backs_out_of_confirm_and_quit() {
     assert_eq!(app.focus, Focus::Quit);
     assert!(!key(&mut app, KeyCode::Esc));
     assert_eq!(app.focus, Focus::Tabs);
-    assert_eq!(press(&mut app, KeyCode::Tab), Tab::Consumo);
+    assert_eq!(press(&mut app, KeyCode::Tab), Tab::Terraforme);
 }
 
 #[test]
@@ -115,8 +118,11 @@ fn config_tab_changes_settings_and_tab_still_switches() {
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
     assert_eq!(press(&mut app, KeyCode::Tab), Tab::Config);
-    // Provedor e Conta são as primeiras; ↓↓ vai para o Modo inicial.
+    // Provedor, Conta e Nova conta são as primeiras; ↓↓↓ vai para o Modo
+    // inicial.
+    assert!(!key(&mut app, KeyCode::Down));
     assert!(!key(&mut app, KeyCode::Down));
     assert!(!key(&mut app, KeyCode::Down));
     assert!(!key(&mut app, KeyCode::Right));
@@ -159,6 +165,7 @@ fn config_changes_are_saved_in_the_workspace_file() {
     };
     app.tab = Tab::Config;
     key(&mut app, KeyCode::Down); // Conta
+    key(&mut app, KeyCode::Down); // Nova conta
     key(&mut app, KeyCode::Down); // Modo inicial
     key(&mut app, KeyCode::Right);
     let saved = AgentSettings::load_file(&config).expect("config.json gravado");
@@ -278,7 +285,7 @@ fn provider_interface_opens_with_enter_and_chat_keys_are_not_used() {
     assert!(matches!(app.provider_result, Some(Err(_))));
     assert_eq!(
         press(&mut app, KeyCode::Tab),
-        Tab::Consumo,
+        Tab::Terraforme,
         "Tab troca a aba"
     );
 }
@@ -467,28 +474,36 @@ fn other_keys_do_nothing() {
 fn nav_bar_highlights_active_tab_and_right_aligns_quit() {
     use ratatui::{Terminal, backend::TestBackend};
 
-    let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
     let mut app = App::default();
+    press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Tab);
     terminal.draw(|frame| app.draw(frame)).unwrap();
 
     let buffer = terminal.backend().buffer();
-    let row = |y: u16| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>();
-    assert_eq!(row(0), format!("╭{}╮", "─".repeat(78)));
+    let row = |y: u16| {
+        (0..100)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    };
+    assert_eq!(row(0), format!("╭{}╮", "─".repeat(98)));
     assert_eq!(
         row(1),
-        "│  Chat   Consumo   Extensões   Orquestrador   Configurações             Sair  │"
+        format!(
+            "│  Chat   Terraforme   Consumo   Extensões   Orquestrador   Configurações{} Sair  │",
+            " ".repeat(19)
+        )
     );
-    assert_eq!(row(2), format!("╰{}╯", "─".repeat(78)));
+    assert_eq!(row(2), format!("╰{}╯", "─".repeat(98)));
 
-    // O pill " Consumo " (x = 9..18) usa o estilo da aba ativa; "Chat" não.
+    // O pill " Consumo " (x = 22..31) usa o estilo da aba ativa; "Chat" não.
     let active_bg = theme::tab_active().bg;
-    assert!((9..18).all(|x| buffer[(x, 1)].bg == active_bg.unwrap()));
+    assert!((22..31).all(|x| buffer[(x, 1)].bg == active_bg.unwrap()));
     assert_ne!(buffer[(3, 1)].bg, active_bg.unwrap());
 
-    // "Sair" (x = 72..78) é vermelho, sem fundo até receber foco.
+    // "Sair" (x = 92..98) é vermelho, sem fundo até receber foco.
     let red = theme::quit().fg.unwrap();
-    assert!((72..78).all(|x| buffer[(x, 1)].fg == red));
+    assert!((92..98).all(|x| buffer[(x, 1)].fg == red));
 }
 
 #[test]
@@ -604,4 +619,68 @@ fn confirm_box_shows_question_and_buttons() {
     assert!(screen.contains(CONFIRM_TEXT));
     assert!(screen.contains("Sim"));
     assert!(screen.contains("Não"));
+}
+
+#[test]
+fn aba_terraforme_tem_o_logo_e_o_input() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let mut app = App::default();
+    press(&mut app, KeyCode::Tab);
+    // O input da aba recebe o texto; o Tab no modo NORMAL ainda troca a aba.
+    key(&mut app, KeyCode::Char('i'));
+    key(&mut app, KeyCode::Char('o'));
+    key(&mut app, KeyCode::Char('i'));
+    assert_eq!(app.tab, Tab::Terraforme);
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| {
+        (0..140)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    };
+    // 15% de 40 linhas: 6 linhas para o logo, em escala 2, a partir de (1, 4).
+    assert!(row(4).starts_with(" ██████████"), "{}", row(4));
+    assert!((0..40).any(|y| row(y).contains("Terraforme") && row(y + 1).contains("oi")));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(press(&mut app, KeyCode::Tab), Tab::Consumo);
+}
+
+#[test]
+fn ctrl_c_sem_shift_copia_a_selecao_em_vez_de_sair() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut app = App::default();
+    key(&mut app, KeyCode::Char('i'));
+    for c in "ola".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    let mut terminal = Terminal::new(TestBackend::new(70, 14)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let (x, y) = (0..14)
+        .find_map(|y| {
+            let row: String = (0..70).map(|x| buffer[(x, y)].symbol()).collect();
+            row.find("ola")
+                .map(|byte| (row[..byte].chars().count() as u16, y))
+        })
+        .expect("o texto do input na tela");
+    let drag = |app: &mut App, kind, column| {
+        app.handle_mouse(MouseEvent {
+            kind,
+            column,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+    };
+    drag(&mut app, MouseEventKind::Down(MouseButton::Left), x);
+    drag(&mut app, MouseEventKind::Drag(MouseButton::Left), x + 3);
+    drag(&mut app, MouseEventKind::Up(MouseButton::Left), x + 3);
+    // Sem o Shift chegando do terminal (como no GNOME Terminal), o Ctrl+C
+    // comum copia a seleção em vez de fechar o terra.
+    assert!(app.copy_ambient_selection());
+    // A seleção foi limpa: um Ctrl+C de verdade, depois, volta a sair.
+    assert!(!app.copy_ambient_selection());
 }

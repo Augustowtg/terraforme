@@ -24,7 +24,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::theme::{self, Variant};
 
@@ -32,6 +32,10 @@ use crate::theme::{self, Variant};
 const SCROLLBAR_TICKS: u64 = 20;
 /// Dois cliques na mesma linha em até 4 ticks (~400 ms) são um duplo clique.
 const DOUBLE_CLICK_TICKS: u64 = 4;
+/// Colunas de uma parada de tabulação.
+const TAB_WIDTH: usize = 4;
+/// Junta emojis num só; cada terminal desenha o conjunto com uma largura.
+const ZERO_WIDTH_JOINER: char = '\u{200d}';
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
@@ -79,13 +83,18 @@ struct View {
 pub struct History {
     entries: Vec<Entry>,
     /// Linhas roladas para cima a partir do fim (0 = acompanhando o fim).
-    scroll: usize,
+    scroll: Cell<usize>,
     /// Quanto dá para rolar, calculado no último frame.
     max_scroll: Cell<usize>,
     area: Cell<Rect>,
     view: Cell<View>,
-    /// Linhas do último frame, para o mouse e a cópia.
+    /// Linhas do último frame, para o mouse e a cópia. Ficam guardadas entre
+    /// os frames: só as entradas novas ou que mudaram são quebradas de novo.
     rows: RefCell<Vec<Row>>,
+    /// Linha em que começa cada entrada já quebrada em `rows`.
+    starts: RefCell<Vec<usize>>,
+    /// Largura em que `rows` foi quebrado.
+    laid_width: Cell<u16>,
     /// Seleção: ponta fixa e ponta que segue o mouse.
     selection: Option<(Point, Point)>,
     /// Botão esquerdo pressionado sobre o histórico (arrastando).
@@ -110,8 +119,20 @@ impl History {
     /// Acrescenta um trecho ao texto do agente em andamento.
     pub fn append_text(&mut self, text: &str) {
         match self.entries.last_mut() {
-            Some(Entry::Assistant(current)) => current.push_str(text),
+            Some(Entry::Assistant(current)) => {
+                current.push_str(text);
+                self.invalidate(self.entries.len() - 1);
+            }
             _ => self.entries.push(Entry::Assistant(text.to_string())),
+        }
+    }
+
+    /// A entrada `index` mudou: as linhas dela são quebradas de novo.
+    fn invalidate(&mut self, index: usize) {
+        let starts = self.starts.get_mut();
+        if let Some(&start) = starts.get(index) {
+            self.rows.get_mut().truncate(start);
+            starts.truncate(index);
         }
     }
 
@@ -124,18 +145,19 @@ impl History {
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
-        self.scroll = (self.scroll + lines).min(self.max_scroll.get());
+        self.scroll
+            .set((self.scroll.get() + lines).min(self.max_scroll.get()));
         self.last_scroll = Some(self.ticks);
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
-        self.scroll = self.scroll.saturating_sub(lines);
+        self.scroll.set(self.scroll.get().saturating_sub(lines));
         self.last_scroll = Some(self.ticks);
     }
 
     /// Volta a acompanhar o fim da conversa.
     pub fn follow(&mut self) {
-        self.scroll = 0;
+        self.scroll.set(0);
     }
 
     pub fn contains(&self, column: u16, row: u16) -> bool {
@@ -272,16 +294,23 @@ impl History {
 
         if self.entries.is_empty() {
             self.rows.borrow_mut().clear();
+            self.starts.borrow_mut().clear();
             self.max_scroll.set(0);
             frame.render_widget(Paragraph::new(empty), inner);
             return;
         }
 
-        let rows = self.layout(inner.width);
+        self.layout(inner.width);
+        let rows = self.rows.borrow();
         let height = inner.height as usize;
         let max = rows.len().saturating_sub(height);
-        self.max_scroll.set(max);
-        let top = max - self.scroll.min(max);
+        // Rolado para cima, o trecho na tela fica onde está enquanto a
+        // conversa cresce embaixo (ex.: a resposta chegando).
+        let grown = max.saturating_sub(self.max_scroll.replace(max));
+        if self.scroll.get() > 0 {
+            self.scroll.set(self.scroll.get() + grown);
+        }
+        let top = max - self.scroll.get().min(max);
         self.view.set(View { inner, top });
 
         let selection = self.ordered_selection();
@@ -292,29 +321,42 @@ impl History {
             .take(height)
             .map(|(r, row)| {
                 let mut col = 0;
-                let spans = row
-                    .glyphs
-                    .iter()
-                    .map(|glyph| {
-                        let selected = glyph.text
-                            && selection.is_some_and(|(s, e)| (s..=e).contains(&(r, col)));
-                        col += glyph.ch.width().unwrap_or(0);
-                        let style = if selected {
-                            theme::selection()
-                        } else {
-                            glyph.style
-                        };
-                        Span::styled(glyph.ch.to_string(), style)
-                    })
-                    .collect::<Vec<_>>();
+                let mut spans: Vec<Span> = Vec::with_capacity(row.glyphs.len());
+                for glyph in &row.glyphs {
+                    let width = glyph.ch.width().unwrap_or(0);
+                    if width == 0 {
+                        // Um acento separado da letra (`e` + `´`) vai no
+                        // mesmo span que ela; sozinho, o ratatui o descarta.
+                        // O que mudaria a largura (ex.: o seletor de emoji)
+                        // fica de fora, para as colunas baterem com o mouse.
+                        if glyph.ch != ZERO_WIDTH_JOINER
+                            && let Some(last) = spans.last_mut()
+                        {
+                            let joined = format!("{}{}", last.content, glyph.ch);
+                            if joined.width() == last.content.width() {
+                                last.content = joined.into();
+                            }
+                        }
+                        continue;
+                    }
+                    let selected =
+                        glyph.text && selection.is_some_and(|(s, e)| (s..=e).contains(&(r, col)));
+                    col += width;
+                    let style = if selected {
+                        theme::selection()
+                    } else {
+                        glyph.style
+                    };
+                    spans.push(Span::styled(glyph.ch.to_string(), style));
+                }
                 Line::from(spans)
             })
             .collect();
         frame.render_widget(Paragraph::new(lines), inner);
-        *self.rows.borrow_mut() = rows;
+        drop(rows);
 
         if self.scrollbar_visible() {
-            let mut state = ScrollbarState::new(max)
+            let mut state = ScrollbarState::new(max + 1)
                 .position(top)
                 .viewport_content_length(height);
             let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -333,10 +375,17 @@ impl History {
         }
     }
 
-    /// Todas as linhas do histórico, quebradas em `width` colunas.
-    fn layout(&self, width: u16) -> Vec<Row> {
-        let mut rows: Vec<Row> = Vec::new();
-        for (i, entry) in self.entries.iter().enumerate() {
+    /// Quebra em `width` colunas, em `self.rows`, as entradas que ainda não
+    /// estão lá (as novas e a que mudou); em outra largura, todas.
+    fn layout(&self, width: u16) {
+        let mut rows = self.rows.borrow_mut();
+        let mut starts = self.starts.borrow_mut();
+        if self.laid_width.replace(width) != width {
+            rows.clear();
+            starts.clear();
+        }
+        for (i, entry) in self.entries.iter().enumerate().skip(starts.len()) {
+            starts.push(rows.len());
             if matches!(entry, Entry::Assistant(text) if text.trim().is_empty()) {
                 continue;
             }
@@ -353,7 +402,6 @@ impl History {
                 rows.extend(wrap(prefix, body, width, Some(i)));
             }
         }
-        rows
     }
 }
 
@@ -442,7 +490,7 @@ fn wrap(prefix: Vec<Glyph>, body: Vec<Glyph>, width: u16, entry: Option<usize>) 
     let mut body_start = row.len();
     let mut col = indent_width;
     let mut last_space: Option<usize> = None;
-    for glyph in body {
+    for glyph in expand_tabs(body) {
         let w = glyph.ch.width().unwrap_or(0);
         if col + w > width && row.len() > body_start {
             // Leva a palavra incompleta para a próxima linha.
@@ -473,6 +521,28 @@ fn wrap(prefix: Vec<Glyph>, body: Vec<Glyph>, width: u16, entry: Option<usize>) 
         entry,
     });
     rows
+}
+
+/// Troca cada Tab por espaços até a próxima parada de tabulação e tira os
+/// outros caracteres de controle (ex.: o `\r` de uma saída do Windows): o
+/// ratatui não desenha nenhum deles, e o Tab sumia com a indentação.
+fn expand_tabs(body: Vec<Glyph>) -> Vec<Glyph> {
+    if !body.iter().any(|g| g.ch.is_control()) {
+        return body;
+    }
+    let mut out = Vec::with_capacity(body.len());
+    let mut col = 0;
+    for glyph in body {
+        if glyph.ch == '\t' {
+            let spaces = TAB_WIDTH - col % TAB_WIDTH;
+            out.extend(std::iter::repeat_n(Glyph { ch: ' ', ..glyph }, spaces));
+            col += spaces;
+        } else if !glyph.ch.is_control() {
+            col += glyph.ch.width().unwrap_or(0);
+            out.push(glyph);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -685,5 +755,63 @@ mod tests {
     fn empty_history_shows_hint() {
         let history = History::default();
         assert_eq!(screen(&history, 20, 4)[1], "  vazio");
+    }
+
+    #[test]
+    fn tabs_become_spaces_and_control_characters_go_away() {
+        let mut history = History::default();
+        history.push(Entry::User("a\tb\r".into()));
+        history.push(Entry::Assistant("```go\n\tx := 1\n```".into()));
+        let lines = screen(&history, 30, 8);
+        assert_eq!(lines[1], "  › a   b");
+        assert!(lines[4].starts_with("    │     x := 1"), "{:?}", lines[4]);
+        // Na cópia, o `\r` não vai.
+        history.mouse_down(0, 1);
+        assert_eq!(history.mouse_up(29, 1).as_deref(), Some("a   b"));
+    }
+
+    #[test]
+    fn combining_accent_stays_with_its_letter() {
+        let mut history = History::default();
+        history.push(Entry::User("cafe\u{301} ok".into()));
+        let lines = screen(&history, 30, 4);
+        assert_eq!(lines[1], "  › cafe\u{301} ok");
+    }
+
+    #[test]
+    fn scrolled_up_view_stays_put_while_the_answer_arrives() {
+        let mut history = info_history(10);
+        screen(&history, 20, 6);
+        history.scroll_up(4);
+        let before = text_of(&screen(&history, 20, 6));
+        history.start_text();
+        history.append_text("um\n\ndois\n\ntres");
+        assert_eq!(text_of(&screen(&history, 20, 6)), before);
+        history.append_text("\n\nquatro");
+        assert_eq!(text_of(&screen(&history, 20, 6)), before);
+        // De volta ao fim, acompanha a resposta.
+        history.follow();
+        history.append_text("\n\ncinco");
+        assert_eq!(text_of(&screen(&history, 20, 6))[5], "    cinco");
+    }
+
+    #[test]
+    fn streamed_text_and_a_new_width_are_laid_out_again() {
+        let mut history = History::default();
+        history.push(Entry::User("oi".into()));
+        history.start_text();
+        history.append_text("um dois");
+        assert_eq!(
+            &screen(&history, 30, 6)[1..4],
+            ["  › oi", "", "  ⏺ um dois"]
+        );
+        history.append_text(" tres quatro");
+        assert_eq!(screen(&history, 30, 6)[3], "  ⏺ um dois tres quatro");
+        assert_eq!(
+            &screen(&history, 14, 8)[3..6],
+            ["  ⏺ um dois", "    tres", "    quatro"]
+        );
+        history.push(Entry::Info("fim".into()));
+        assert_eq!(screen(&history, 30, 8)[5], "  · fim");
     }
 }
