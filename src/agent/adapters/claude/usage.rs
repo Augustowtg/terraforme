@@ -27,13 +27,17 @@ const CREDENTIALS: &str = ".credentials.json";
 /// Segundos até desistir da chamada.
 const TIMEOUT: &str = "10";
 
-/// As janelas que o endpoint informa, na ordem da tela.
-const WINDOWS: [(&str, &str); 4] = [
-    ("five_hour", "Sessão (5 h)"),
-    ("seven_day", "Semana (todos os modelos)"),
-    ("seven_day_opus", "Semana (Opus)"),
-    ("seven_day_sonnet", "Semana (Sonnet)"),
-];
+/// As janelas de nome fixo, na ordem da tela, para a resposta sem `limits`.
+/// As semanais por modelo (`seven_day_opus`...) vêm depois, com o nome
+/// tirado da chave.
+const WINDOWS: [(&str, &str); 2] = [("five_hour", SESSION), ("seven_day", WEEK)];
+const SESSION: &str = "Sessão (5 h)";
+const WEEK: &str = "Semana (todos os modelos)";
+const WEEK_PREFIX: &str = "seven_day_";
+const EXTRA: &str = "extra_usage";
+/// A lista dos limites da conta, com o nome de cada um: é onde vem o
+/// semanal de um modelo (ex.: o do Fable).
+const LIMITS: &str = "limits";
 
 /// Começa a carregar numa thread; o resultado chega pelo canal. `config_dir`
 /// é a pasta da conta (ex.: `~/.claude`).
@@ -197,30 +201,86 @@ fn read_credentials(config_dir: &Path) -> Result<Credentials, String> {
     })
 }
 
-/// A resposta do endpoint: cada janela tem `utilization` (0–100) e
-/// `resets_at` (ISO 8601); janelas que não valem para o plano vêm `null`.
-/// O crédito extra entra no fim, só quando a conta o tem ativo.
+/// A resposta do endpoint. Os limites vêm em `limits` (o da sessão, o da
+/// semana e os semanais por modelo); sem ela, valem as janelas soltas, cada
+/// uma com `utilization` (0–100) e `resets_at` (ISO 8601), `null` quando não
+/// vale para o plano. O crédito extra entra no fim, só quando a conta o tem
+/// ativo.
 fn parse(body: &str, plan: Option<String>) -> Result<Usage, String> {
     let json: Value =
         serde_json::from_str(body).map_err(|_| "resposta inválida do Claude".to_string())?;
-    let mut windows: Vec<UsageWindow> = WINDOWS
-        .iter()
+    let mut windows: Vec<UsageWindow> = json[LIMITS]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(limit)
+        .collect();
+    if windows.is_empty() {
+        windows = loose_windows(&json);
+    }
+    windows.extend(extra_usage(&json[EXTRA]));
+    Ok(Usage { plan, windows })
+}
+
+/// Um item de `limits`: `kind` diz qual é (`session`, `weekly_all`,
+/// `weekly_scoped`) e `scope`, no último, de qual modelo ou superfície.
+fn limit(limit: &Value) -> Option<UsageWindow> {
+    let kind = limit["kind"].as_str()?;
+    let scope = &limit["scope"];
+    let scoped = [&scope["model"], &scope["surface"]]
+        .into_iter()
+        .find_map(|v| v["display_name"].as_str().or_else(|| v.as_str()));
+    let label = match (kind, scoped) {
+        ("session", _) => SESSION.to_string(),
+        ("weekly_all", _) => WEEK.to_string(),
+        (_, Some(name)) => format!("Semana ({name})"),
+        (kind, None) => readable(kind),
+    };
+    Some(UsageWindow {
+        label,
+        percent: limit["percent"].as_f64()?.clamp(0.0, 100.0),
+        resets_at: reset(&limit["resets_at"]),
+        detail: None,
+        session: kind == "session",
+    })
+}
+
+/// As janelas soltas da resposta sem `limits`.
+fn loose_windows(json: &Value) -> Vec<UsageWindow> {
+    let fixed = WINDOWS.iter().map(|(key, label)| (*key, label.to_string()));
+    let models = json
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, _)| {
+            let model = key.strip_prefix(WEEK_PREFIX)?;
+            Some((key.as_str(), format!("Semana ({})", readable(model))))
+        });
+    fixed
+        .chain(models)
         .filter_map(|(key, label)| {
             let window = &json[key];
             Some(UsageWindow {
-                label: label.to_string(),
+                label,
                 percent: window["utilization"].as_f64()?.clamp(0.0, 100.0),
-                resets_at: window["resets_at"]
-                    .as_str()
-                    .and_then(|s| s.parse::<jiff::Timestamp>().ok())
-                    .map(|t| t.as_second()),
+                resets_at: reset(&window["resets_at"]),
                 detail: None,
-                session: *key == "five_hour",
+                session: key == "five_hour",
             })
         })
-        .collect();
-    windows.extend(extra_usage(&json["extra_usage"]));
-    Ok(Usage { plan, windows })
+        .collect()
+}
+
+fn reset(value: &Value) -> Option<i64> {
+    value
+        .as_str()
+        .and_then(|s| s.parse::<jiff::Timestamp>().ok())
+        .map(|t| t.as_second())
+}
+
+/// `seven_day_opus` vira `Seven day opus`.
+fn readable(key: &str) -> String {
+    capitalize(&key.replace('_', " "))
 }
 
 /// O crédito extra (cobrado quando os limites do plano acabam): o gasto do
@@ -320,6 +380,61 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn model_windows_come_from_the_keys() {
+        let body = r#"{
+            "seven_day_sonnet": {"utilization": 3, "resets_at": null},
+            "seven_day_fable": {"utilization": 12, "resets_at": null},
+            "seven_day_oauth_apps": null,
+            "five_hour": {"utilization": 1, "resets_at": null},
+            "extra_usage": {"is_enabled": false, "utilization": 9}
+        }"#;
+        let usage = parse(body, None).unwrap();
+        let labels: Vec<_> = usage.windows.iter().map(|w| w.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Sessão (5 h)", "Semana (Fable)", "Semana (Sonnet)"]
+        );
+        assert!(usage.windows[0].session && !usage.windows[1].session);
+    }
+
+    #[test]
+    fn limits_list_names_the_model_window() {
+        let body = r#"{
+            "five_hour": {"utilization": 100.0, "resets_at": null},
+            "seven_day": {"utilization": 14.0, "resets_at": null},
+            "seven_day_opus": null,
+            "tangelo": null,
+            "limits": [
+                {"kind": "session", "percent": 100, "resets_at": "2026-10-27T18:00:00.123+00:00", "scope": null},
+                {"kind": "weekly_all", "percent": 14, "resets_at": null, "scope": null},
+                {"kind": "weekly_scoped", "percent": 22, "resets_at": null,
+                    "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}},
+                {"kind": "weekly_scoped", "percent": 5, "resets_at": null,
+                    "scope": {"model": null, "surface": "cowork"}},
+                {"kind": "monthly_pool", "percent": 1, "resets_at": null, "scope": null},
+                {"kind": "weekly_scoped", "percent": null, "scope": null}
+            ]
+        }"#;
+        let usage = parse(body, None).unwrap();
+        let found: Vec<_> = usage
+            .windows
+            .iter()
+            .map(|w| (w.label.as_str(), w.percent, w.session))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("Sessão (5 h)", 100.0, true),
+                ("Semana (todos os modelos)", 14.0, false),
+                ("Semana (Fable)", 22.0, false),
+                ("Semana (cowork)", 5.0, false),
+                ("Monthly pool", 1.0, false),
+            ]
+        );
+        assert_eq!(usage.windows[0].resets_at, Some(1_793_124_000));
     }
 
     #[test]

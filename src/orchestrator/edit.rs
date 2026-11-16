@@ -122,9 +122,7 @@ mod tests {
         let text = fs::read_to_string(dir.path().join("orchestrator.toml")).unwrap();
         assert!(text.starts_with("# meus agentes\n"));
         assert!(text.contains("# cuidado com laços"));
-        assert!(text.contains(&portable(
-            "[agents.api]\ncwd = \"/proj/api\" # a pasta\n"
-        )));
+        assert!(text.contains(&portable("[agents.api]\ncwd = \"/proj/api\" # a pasta\n")));
     }
 
     #[test]

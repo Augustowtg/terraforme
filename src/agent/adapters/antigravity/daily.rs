@@ -8,13 +8,14 @@
 //! `~/.terraforme/antigravity-usage.jsonl`:
 //!
 //! ```json
-//! {"at":1793000000,"conversation":"c1","step":2,"model":"gemini-3.8-flash-low","tokens":8000,"cache":5}
+//! {"at":1793000000,"cwd":"/home/eu/repo","conversation":"c1","step":2,"model":"gemini-3.8-flash-low","tokens":8000,"cache":5}
 //! ```
 //!
 //! `tokens` é a entrada mais a saída, e `cache` a leitura de cache (como nos
 //! badges do chat). Fica de fora o que o `agy` gasta fora do terra (a
 //! interface original e o uso anterior ao registro). Uma chamada repetida
-//! (mesma conversa e passo) conta uma vez.
+//! (mesma conversa e passo) conta uma vez. O `cwd` (a pasta do terra) dá o
+//! total do workspace; as linhas de antes dele ficam fora desse total.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -28,7 +29,7 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan};
 use serde_json::{Value, json};
 
-use crate::agent::DailyTokens;
+use crate::agent::{DailyTokens, ModelTokens, TokenReport};
 
 const FILE: &str = "antigravity-usage.jsonl";
 
@@ -51,11 +52,11 @@ pub struct Spend {
 
 /// Acrescenta os gastos ao registro, com a hora de agora. Erros de gravação
 /// são ignorados: o consumo é só informativo, e não pode derrubar o chat.
-pub fn record(file: &Path, spends: &[Spend]) {
-    record_at(file, spends, Timestamp::now().as_second());
+pub fn record(file: &Path, cwd: &Path, spends: &[Spend]) {
+    record_at(file, cwd, spends, Timestamp::now().as_second());
 }
 
-fn record_at(file: &Path, spends: &[Spend], at: i64) {
+fn record_at(file: &Path, cwd: &Path, spends: &[Spend], at: i64) {
     if spends.is_empty() {
         return;
     }
@@ -69,6 +70,7 @@ fn record_at(file: &Path, spends: &[Spend], at: i64) {
         .map(|s| {
             let line = json!({
                 "at": at,
+                "cwd": cwd.to_string_lossy(),
                 "conversation": s.conversation,
                 "step": s.step,
                 "model": s.model,
@@ -84,22 +86,27 @@ fn record_at(file: &Path, spends: &[Spend], at: i64) {
 }
 
 /// Começa a somar numa thread; o resultado chega pelo canal.
-pub fn load(file: PathBuf, days: usize) -> Receiver<Result<Vec<DailyTokens>, String>> {
+pub fn load(
+    file: PathBuf,
+    days: usize,
+    workspace: PathBuf,
+) -> Receiver<Result<TokenReport, String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let tz = TimeZone::system();
         let today = Timestamp::now().to_zoned(tz.clone()).date();
-        let _ = tx.send(Ok(sum(&file, today, days, &tz)));
+        let _ = tx.send(Ok(sum(&file, today, days, &tz, &workspace)));
     });
     rx
 }
 
-/// Os `days` dias até `today`, o mais antigo primeiro.
-fn sum(file: &Path, today: Date, days: usize, tz: &TimeZone) -> Vec<DailyTokens> {
+/// Os `days` dias até `today`, o mais antigo primeiro, e os totais por modelo.
+fn sum(file: &Path, today: Date, days: usize, tz: &TimeZone, workspace: &Path) -> TokenReport {
     let first = today
         .checked_sub((days.saturating_sub(1) as i64).days())
         .unwrap_or(today);
     let mut totals: BTreeMap<Date, DailyTokens> = BTreeMap::new();
+    let mut report = TokenReport::default();
     let mut seen = HashSet::new();
     if let Ok(file) = fs::File::open(file) {
         for line in BufReader::new(file).lines().map_while(Result::ok) {
@@ -117,9 +124,18 @@ fn sum(file: &Path, today: Date, days: usize, tz: &TimeZone) -> Vec<DailyTokens>
             let hour = &mut day.hours[entry.hour];
             hour.tokens += entry.tokens;
             hour.cache += entry.cache;
+            ModelTokens::add(&mut report.models, &entry.model, entry.tokens, entry.cache);
+            if entry.cwd.is_some_and(|cwd| cwd.starts_with(workspace)) {
+                ModelTokens::add(
+                    &mut report.workspace,
+                    &entry.model,
+                    entry.tokens,
+                    entry.cache,
+                );
+            }
         }
     }
-    (0..days)
+    report.days = (0..days)
         .filter_map(|i| first.checked_add((i as i64).days()).ok())
         .map(|date| {
             totals
@@ -127,7 +143,8 @@ fn sum(file: &Path, today: Date, days: usize, tz: &TimeZone) -> Vec<DailyTokens>
                 .copied()
                 .unwrap_or_else(|| DailyTokens::empty(date))
         })
-        .collect()
+        .collect();
+    report
 }
 
 struct Entry {
@@ -136,6 +153,9 @@ struct Entry {
     hour: usize,
     tokens: u64,
     cache: u64,
+    model: String,
+    /// A pasta do terra na hora; as linhas antigas não têm.
+    cwd: Option<PathBuf>,
 }
 
 /// A chamada de uma linha, se ela for válida e ainda não tiver sido contada.
@@ -157,6 +177,11 @@ fn parse_line(line: &str, tz: &TimeZone, seen: &mut HashSet<(String, u64)>) -> O
         hour: at.hour() as usize,
         tokens: value["tokens"].as_u64().unwrap_or_default(),
         cache: value["cache"].as_u64().unwrap_or_default(),
+        model: value["model"]
+            .as_str()
+            .unwrap_or("desconhecido")
+            .to_string(),
+        cwd: value["cwd"].as_str().map(PathBuf::from),
     })
 }
 
@@ -172,6 +197,68 @@ mod tests {
             tokens,
             cache,
         }
+    }
+
+    const REPO: &str = "/repo";
+
+    fn record_at(file: &Path, spends: &[Spend], at: i64) {
+        super::record_at(file, Path::new(REPO), spends, at);
+    }
+
+    fn sum(file: &Path, today: Date, days: usize, tz: &TimeZone) -> Vec<DailyTokens> {
+        super::sum(file, today, days, tz, Path::new(REPO)).days
+    }
+
+    #[test]
+    fn sums_per_model_and_only_the_workspace_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("antigravity-usage.jsonl");
+        let now = at("2026-10-27T12:00:00Z");
+        let pro = Spend {
+            model: "gemini-pro".into(),
+            ..spend("c1", 4, 100, 9)
+        };
+        super::record_at(
+            &file,
+            Path::new("/repo/sub"),
+            &[spend("c1", 2, 10, 1), pro],
+            now,
+        );
+        super::record_at(
+            &file,
+            Path::new("/repo-outro"),
+            &[spend("c2", 2, 5, 0)],
+            now,
+        );
+        // Linha antiga, sem `cwd`: entra na conta, não no workspace.
+        let mut out = OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(
+            out,
+            r#"{{"at":{now},"conversation":"c3","step":1,"model":"gemini-pro","tokens":7}}"#
+        )
+        .unwrap();
+
+        let today = jiff::civil::date(2026, 10, 27);
+        let report = super::sum(&file, today, 1, &TimeZone::UTC, Path::new(REPO));
+        let found = |list: &[ModelTokens]| -> Vec<(String, u64, u64)> {
+            list.iter()
+                .map(|m| (m.model.clone(), m.tokens, m.cache))
+                .collect()
+        };
+        assert_eq!(
+            found(&report.models),
+            [
+                ("gemini-3.8-flash-low".into(), 15, 1),
+                ("gemini-pro".into(), 107, 9)
+            ]
+        );
+        assert_eq!(
+            found(&report.workspace),
+            [
+                ("gemini-3.8-flash-low".into(), 10, 1),
+                ("gemini-pro".into(), 100, 9)
+            ]
+        );
     }
 
     fn at(rfc3339: &str) -> i64 {

@@ -25,6 +25,7 @@ use super::config::ConfigView;
 use super::extensions::ExtensionsView;
 use super::orchestrator::{self as orchestrator_tab, OrchestratorView};
 use super::term::Term;
+use super::terraforme::TerraformeView;
 use super::update::UpdateView;
 use super::usage::{SessionUsage, UsageView};
 use crate::agent::adapters::ProviderOption;
@@ -42,6 +43,8 @@ const MAIN_CHAT_TITLE: &str = "Principal";
 pub enum Tab {
     #[default]
     Chat,
+    /// O agente que vai orquestrar o terra (por enquanto, só o input).
+    Terraforme,
     /// Só com uma versão nova do terra no GitHub.
     Atualizacao,
     Consumo,
@@ -52,8 +55,9 @@ pub enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [
+    const ALL: [Tab; 7] = [
         Tab::Chat,
+        Tab::Terraforme,
         Tab::Atualizacao,
         Tab::Consumo,
         Tab::Extensoes,
@@ -64,6 +68,7 @@ impl Tab {
     fn title(self) -> &'static str {
         match self {
             Tab::Chat => "Chat",
+            Tab::Terraforme => "Terraforme",
             Tab::Atualizacao => "Atualização",
             Tab::Consumo => "Consumo",
             Tab::Extensoes => "Extensões",
@@ -173,6 +178,8 @@ pub struct App {
     /// de [`App::chats`].
     active_chat: usize,
     config_view: ConfigView,
+    /// A aba Terraforme, com o input do agente orquestrador.
+    terraforme: TerraformeView,
     usage: UsageView,
     /// O consumo da sessão, para a barra de consumo do chat.
     session_usage: SessionUsage,
@@ -218,7 +225,7 @@ impl App {
     /// `files` (sem eles, o padrão do router) e salvas neles.
     pub fn new(db: Db, dir: PathBuf, name: String, files: ConfigFiles) -> Self {
         let config = files.workspace;
-        let settings = AgentSettings::load_file(&config).unwrap_or_default();
+        let mut settings = AgentSettings::load_file(&config).unwrap_or_default();
         let saved = db.workspace_name(&dir).ok().flatten().is_some();
         let hub = Reporter::start(
             name,
@@ -228,7 +235,10 @@ impl App {
                 ..Default::default()
             },
         );
-        let mut chat = Chat::connect(&settings);
+        let adapter = crate::agent::adapters::select(settings.provider.as_deref());
+        // Uma conta salva que é a Default com outro nome passa a ser a Default.
+        settings.account = adapter.normalize_account(settings.account.take());
+        let mut chat = Chat::with_adapter(adapter, &settings);
         chat.set_history_file(files.history.clone());
         let mut app = Self {
             chat,
@@ -358,6 +368,12 @@ impl App {
         self.tab == Tab::Chat && self.focus == Focus::Tabs && self.term_focus && self.term.is_some()
     }
 
+    /// O Ctrl+C comum, quando o terminal não distingue do Ctrl+Shift+C: copia
+    /// o trecho selecionado do chat em vez de sair, se houver um.
+    pub fn copy_ambient_selection(&mut self) -> bool {
+        self.tab == Tab::Chat && self.current_chat_mut().copy_ambient_selection()
+    }
+
     fn uses_provider(&self) -> bool {
         self.settings.interface == Interface::Provider
     }
@@ -367,9 +383,11 @@ impl App {
         for reason in crate::agent::guard::take_panics() {
             self.chat.provider_failed(&reason);
         }
-        self.chat
-            .set_caps_lock(keyboard::caps_lock().unwrap_or(false));
+        let caps_lock = keyboard::caps_lock().unwrap_or(false);
+        self.chat.set_caps_lock(caps_lock);
         self.chat.tick();
+        self.terraforme.set_caps_lock(caps_lock);
+        self.terraforme.tick();
         for tab in &mut self.chats {
             tab.chat.tick();
         }

@@ -6,7 +6,8 @@
 //!
 //! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor (nas
 //! skills, passam de uma para outra, com os detalhes
-//! embaixo; nos Sub agentes, o `Enter` abre o menu do `/model`); a
+//! embaixo; nos Sub agentes, o `Enter` abre o menu do `/model`; na Nova
+//! conta, o `Enter` faz o login numa conta nova, como o `/new-login`); a
 //! tela principal salva e aplica a mudança. `Shift+Tab` alterna entre o
 //! Agente e as Extensões. Nas Extensões, a lista é paginada (como a dos
 //! modelos do `/model`, mas com páginas): `↑`/`↓` escolhem, `←`/`→` trocam
@@ -48,6 +49,7 @@ const DETAIL_WIDTH: usize = 36;
 enum Field {
     Provider,
     Account,
+    AddAccount,
     StartMode,
     Model,
     SubagentModel,
@@ -61,9 +63,10 @@ enum Field {
     Skills,
 }
 
-const FIELDS: [Field; 13] = [
+const FIELDS: [Field; 14] = [
     Field::Provider,
     Field::Account,
+    Field::AddAccount,
     Field::StartMode,
     Field::Model,
     Field::SubagentModel,
@@ -77,11 +80,11 @@ const FIELDS: [Field; 13] = [
     Field::Skills,
 ];
 /// Onde começa a seção Contexto em [`FIELDS`].
-const CONTEXT_START: usize = 6;
+const CONTEXT_START: usize = 7;
 /// Onde começa a seção Consumo em [`FIELDS`].
-const USAGE_START: usize = 10;
+const USAGE_START: usize = 11;
 /// Onde começa a seção Skills em [`FIELDS`].
-const SKILLS_START: usize = 12;
+const SKILLS_START: usize = 13;
 
 /// As opções que vêm do provedor: os provedores conhecidos (e o `id` do que
 /// o chat usa), contas e modelos (e o catálogo, para o menu do `/model`), e
@@ -127,6 +130,8 @@ pub enum Outcome {
     Changed,
     /// Uma extensão foi ligada ou desligada: salvar e aplicar.
     ExtensionsChanged,
+    /// Pediu para adicionar uma conta ao provedor (o `/new-login`).
+    AddAccount,
 }
 
 /// A seção em foco.
@@ -216,6 +221,15 @@ impl ConfigView {
             };
             self.skill = cycle(self.skill.min(len - 1), len, step);
             return Outcome::Moved;
+        }
+        if FIELDS[self.focus] == Field::AddAccount && changes {
+            // Só o Enter (ou →) faz o login; o ← não faz nada.
+            let adds = !matches!(key.code, KeyCode::Left | KeyCode::Char('h'));
+            return if adds && can_add_account(choices) {
+                Outcome::AddAccount
+            } else {
+                Outcome::Moved
+            };
         }
         if FIELDS[self.focus] == Field::SubagentModel && key.code == KeyCode::Enter {
             let mut menu =
@@ -495,6 +509,7 @@ fn field_label(field: Field) -> &'static str {
     match field {
         Field::Provider => "Provedor",
         Field::Account => "Conta",
+        Field::AddAccount => "Nova conta",
         Field::StartMode => "Modo inicial",
         Field::Model => "Modelo",
         Field::SubagentModel => "Sub agentes",
@@ -533,6 +548,12 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
                 },
                 |a| a.label.clone(),
             ),
+        Field::AddAccount => if can_add_account(choices) {
+            "+ Adicionar conta (Enter)"
+        } else {
+            "Este provedor não tem outras contas"
+        }
+        .to_string(),
         Field::StartMode => settings.start_mode.label().to_string(),
         Field::Interface => settings.interface.label().to_string(),
         Field::ContextDisplay => if settings.context.visible {
@@ -572,6 +593,11 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
         Field::Model => model_label(&settings.model, models),
         Field::SubagentModel => model_label(&settings.subagent_model, models),
     }
+}
+
+/// O provedor tem contas (e, então, o `/new-login`).
+fn can_add_account(choices: &Choices) -> bool {
+    !choices.accounts.is_empty()
 }
 
 /// O nome do modelo escolhido; `None` é o Padrão.
@@ -620,6 +646,7 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
                 .unwrap_or(0);
             settings.account = options[cycle(i, options.len(), step)].clone();
         }
+        Field::AddAccount => {}
         Field::StartMode => {
             let all = StartMode::ALL;
             let i = all
@@ -990,6 +1017,39 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_new_account_asks_for_a_login() {
+        let mut view = ConfigView::default();
+        let mut settings = AgentSettings::default();
+        press(&mut view, &mut settings, KeyCode::Down);
+        press(&mut view, &mut settings, KeyCode::Down);
+        assert_eq!(FIELDS[view.focus], Field::AddAccount);
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Enter),
+            Outcome::AddAccount
+        );
+        assert_eq!(
+            press(&mut view, &mut settings, KeyCode::Left),
+            Outcome::Moved,
+            "o ← não faz login"
+        );
+        assert_eq!(settings, AgentSettings::default(), "nada mudou");
+
+        // Sem contas no provedor, não há o que adicionar.
+        let none = Choices::default();
+        let outcome = view.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut settings,
+            &mut ExtensionSettings::default(),
+            &none,
+        );
+        assert_eq!(outcome, Outcome::Moved);
+        assert_eq!(
+            value_label(Field::AddAccount, &settings, &none),
+            "Este provedor não tem outras contas"
+        );
+    }
+
+    #[test]
     fn without_accounts_only_default_exists() {
         let mut settings = AgentSettings::default();
         change(Field::Account, &mut settings, &Choices::default(), 1);
@@ -1004,7 +1064,8 @@ mod tests {
     fn arrows_change_start_mode_and_model() {
         let mut view = ConfigView::default();
         let mut settings = AgentSettings::default();
-        // Pula o Provedor e a Conta, as primeiras configurações.
+        // Pula o Provedor, a Conta e a Nova conta, as primeiras configurações.
+        press(&mut view, &mut settings, KeyCode::Down);
         press(&mut view, &mut settings, KeyCode::Down);
         assert_eq!(
             press(&mut view, &mut settings, KeyCode::Down),
@@ -1130,7 +1191,7 @@ mod tests {
                 &choices,
             )
         };
-        for _ in 0..4 {
+        for _ in 0..5 {
             press(&mut view, &mut settings, KeyCode::Down);
         }
         assert_eq!(FIELDS[view.focus], Field::SubagentModel);
@@ -1206,26 +1267,27 @@ mod tests {
         assert_eq!(row(1), "  Agente");
         assert_eq!(row(2), " ▌ Provedor          ‹ Claude · disponível ›");
         assert_eq!(row(3), "   Conta               Default · eu@gmail.com");
-        assert_eq!(row(4), "   Modo inicial        Do provedor");
-        assert_eq!(row(5), "   Modelo              HAIKU");
-        assert_eq!(row(6), "   Sub agentes         Padrão");
-        assert_eq!(row(7), "   Interface           Original do provedor");
+        assert_eq!(row(4), "   Nova conta          + Adicionar conta (Enter)");
+        assert_eq!(row(5), "   Modo inicial        Do provedor");
+        assert_eq!(row(6), "   Modelo              HAIKU");
+        assert_eq!(row(7), "   Sub agentes         Padrão");
+        assert_eq!(row(8), "   Interface           Original do provedor");
         assert_eq!(buffer[(3, 2)].bg, theme::focused().bg.unwrap());
         // A linha que separa o Contexto vai até onde vai a seção.
-        assert!(row(8).starts_with("  ─"));
-        assert_eq!(row(8).chars().count(), row(3).chars().count());
-        assert_eq!(row(9), "  Contexto");
-        assert_eq!(row(10), "   Display             Oculto");
-        assert_eq!(row(11), "   Auto compactação    Não");
-        assert_eq!(row(12), "   Limite de tokens    200K");
-        assert_eq!(row(13), "   Compactar em        75% · 150K tokens");
-        assert!(row(14).starts_with("  ─"));
-        assert_eq!(row(15), "  Consumo");
-        assert_eq!(row(16), "   Display             Oculto");
-        assert_eq!(row(17), "   Consumo geral       Visível");
+        assert!(row(9).starts_with("  ─"));
+        assert_eq!(row(9).chars().count(), row(4).chars().count());
+        assert_eq!(row(10), "  Contexto");
+        assert_eq!(row(11), "   Display             Oculto");
+        assert_eq!(row(12), "   Auto compactação    Não");
+        assert_eq!(row(13), "   Limite de tokens    200K");
+        assert_eq!(row(14), "   Compactar em        75% · 150K tokens");
+        assert!(row(15).starts_with("  ─"));
+        assert_eq!(row(16), "  Consumo");
+        assert_eq!(row(17), "   Display             Oculto");
+        assert_eq!(row(18), "   Consumo geral       Visível");
         // As Skills, separadas.
-        assert_eq!(row(18), "");
-        assert_eq!(row(19), "  Skills");
+        assert_eq!(row(19), "");
+        assert_eq!(row(20), "  Skills");
     }
 
     #[test]

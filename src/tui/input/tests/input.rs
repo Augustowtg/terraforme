@@ -842,3 +842,66 @@ fn backspace_turns_a_pattern_badge_back_into_text() {
     assert!(input.picker_open());
     assert_eq!(input.buffer, "&TDD");
 }
+
+#[test]
+fn up_and_down_follow_the_wrapped_rows_before_the_sent_messages() {
+    let mut input = input_after_sending(&["antiga"]);
+    // 56 colunas de texto: 60 letras ocupam duas linhas da tela.
+    type_text(&mut input, &"a".repeat(60));
+    render(&input);
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.cursor, 4, "sobe na mesma coluna, sem trocar o texto");
+    assert_eq!(input.text(), "a".repeat(60));
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.cursor, 60);
+    press(&mut input, KeyCode::Up);
+    press(&mut input, KeyCode::Up);
+    assert_eq!(
+        input.text(),
+        "antiga",
+        "na primeira linha, a mensagem enviada"
+    );
+}
+
+#[test]
+fn shift_enter_on_a_sent_message_keeps_the_edited_text() {
+    let mut input = input_after_sending(&["primeira", "segunda"]);
+    press(&mut input, KeyCode::Up);
+    press(&mut input, KeyCode::Up);
+    assert_eq!(input.text(), "primeira");
+    press_with(&mut input, KeyCode::Enter, KeyModifiers::SHIFT);
+    press(&mut input, KeyCode::Down);
+    assert_eq!(input.text(), "primeira\n", "o ↓ não troca o texto editado");
+}
+
+#[test]
+fn cursor_before_a_line_break_stays_on_a_full_row() {
+    let mut input = InputBox::default();
+    press(&mut input, KeyCode::Char('i'));
+    type_text(&mut input, &"a".repeat(56));
+    press_with(&mut input, KeyCode::Enter, KeyModifiers::SHIFT);
+    type_text(&mut input, "b");
+    press(&mut input, KeyCode::Up);
+    press(&mut input, KeyCode::End);
+    // `End` vai ao fim do texto; volta para antes da quebra de linha.
+    press(&mut input, KeyCode::Left);
+    press(&mut input, KeyCode::Left);
+    assert_eq!(input.cursor, 56);
+    let mut terminal = render(&input);
+    let position = terminal.get_cursor_position().unwrap();
+    assert_eq!(
+        (position.x, position.y),
+        (2 + 56, 2),
+        "na margem da linha cheia"
+    );
+}
+
+#[test]
+fn alt_gr_types_on_windows_and_shortcuts_do_not_type() {
+    let alt_gr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    assert_eq!(types_text(alt_gr), cfg!(windows));
+    assert!(types_text(KeyModifiers::SHIFT));
+    assert!(!types_text(KeyModifiers::CONTROL));
+    assert!(!types_text(KeyModifiers::ALT));
+    assert!(!types_text(KeyModifiers::SUPER));
+}

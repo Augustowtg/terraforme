@@ -15,6 +15,10 @@
 //! da altura da seção dos limites. Os botões **Sem cache** (o padrão, verde)
 //! e **Com cache** (vermelho) escolhem se o cache entra; clique ou `c`.
 //!
+//! Embaixo do gráfico (ou do Contexto, em telas estreitas), **Tokens por
+//! modelo** (a conta do route) e **Tokens na workspace** (a pasta aberta,
+//! por provedor e modelo, com todas as contas), no mesmo período do gráfico.
+//!
 //! O consumo é carregado ao abrir a aba e atualizado a cada [`STALE`]
 //! enquanto ela está aberta; `r` atualiza na hora.
 
@@ -33,9 +37,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Bar, BarChart, BarGroup, Block, Padding, Paragraph};
 
 mod context;
+mod models;
 
 use super::chat::compact_count;
-use crate::agent::{ChatAdapter, DailyTokens, Usage, UsageWindow};
+use crate::agent::{ChatAdapter, DailyTokens, ModelTokens, TokenReport, Usage, UsageWindow};
 use crate::theme::{self, Variant};
 use context::SkillCost;
 
@@ -76,7 +81,13 @@ pub struct UsageView {
     updated_at: Option<Timestamp>,
     /// Tokens por dia, o mais antigo primeiro.
     daily: Option<Vec<DailyTokens>>,
-    daily_loading: Option<Receiver<Result<Vec<DailyTokens>, String>>>,
+    daily_loading: Option<Receiver<Result<TokenReport, String>>>,
+    /// Os tokens do período por modelo: da conta e só os do workspace.
+    models: Vec<ModelTokens>,
+    workspace: Vec<ModelTokens>,
+    /// As outras contas (do provedor do chat e dos outros provedores), para
+    /// o total do workspace.
+    others: Vec<Other>,
     /// O gráfico soma o cache (botão Com cache); o padrão é sem.
     with_cache: bool,
     /// Onde os botões Sem cache e Com cache ficaram no último desenho.
@@ -93,6 +104,20 @@ pub struct UsageView {
     skill_page: usize,
     /// Onde os botões `‹` e `›` das skills ficaram no último desenho.
     pager: Cell<[Rect; 2]>,
+}
+
+/// Um provedor e o que as contas dele gastaram no workspace, fora a conta
+/// do chat (que já vem em `workspace`).
+struct Other {
+    adapter: Box<dyn ChatAdapter>,
+    accounts: Vec<OtherAccount>,
+}
+
+struct OtherAccount {
+    /// `None` é a conta padrão do provedor.
+    id: Option<String>,
+    loading: Option<Receiver<Result<TokenReport, String>>>,
+    workspace: Vec<ModelTokens>,
 }
 
 impl UsageView {
@@ -124,7 +149,12 @@ impl UsageView {
     /// Recarrega se nunca carregou, se passou [`STALE`], se a conta mudou ou
     /// se uma janela já zerou.
     pub fn refresh_if_stale(&mut self, adapter: Option<&dyn ChatAdapter>, account: Option<&str>) {
-        if self.loading.is_some() || self.daily_loading.is_some() {
+        let loading_others = self
+            .others
+            .iter()
+            .flat_map(|o| &o.accounts)
+            .any(|a| a.loading.is_some());
+        if self.loading.is_some() || self.daily_loading.is_some() || loading_others {
             return;
         }
         let stale = match &self.fetched {
@@ -153,7 +183,7 @@ impl UsageView {
         if changed {
             // O consumo era da outra conta.
             self.usage = None;
-            self.daily = None;
+            self.clear_tokens();
         }
         self.fetched = Some((Instant::now(), account.map(str::to_string)));
         self.error = None;
@@ -163,18 +193,55 @@ impl UsageView {
         if self.loading.is_none() {
             self.usage = None;
         }
+        let cwd = std::env::current_dir().unwrap_or_default();
         self.skills = adapter
             .filter(|a| a.is_available())
-            .zip(std::env::current_dir().ok())
-            .map(|(a, cwd)| a.skills(&cwd, account).iter().map(SkillCost::new).collect())
+            .map(|a| a.skills(&cwd, account).iter().map(SkillCost::new).collect())
             .unwrap_or_default();
         self.turn_page(0);
         self.daily_loading = adapter
             .filter(|a| a.is_available())
-            .and_then(|a| a.load_daily(account, DAYS));
+            .and_then(|a| a.load_daily(account, DAYS, &cwd));
         if self.daily_loading.is_none() {
-            self.daily = None;
+            self.clear_tokens();
         }
+        // As outras contas de cada provedor; o que já estava na tela fica
+        // até o novo chegar.
+        let current = adapter.map(|a| a.id().to_string());
+        let mut old = std::mem::take(&mut self.others);
+        self.others = crate::agent::guard::catch(crate::agent::adapters::all)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a.is_available())
+            .map(|adapter| {
+                let is_current = Some(adapter.id()) == current.as_deref();
+                let mut kept = old
+                    .iter()
+                    .position(|o| o.adapter.id() == adapter.id())
+                    .map(|i| old.swap_remove(i).accounts)
+                    .unwrap_or_default();
+                let accounts = account_ids(adapter.as_ref())
+                    .into_iter()
+                    .filter(|id| !(is_current && id.as_deref() == account))
+                    .map(|id| OtherAccount {
+                        loading: adapter.load_daily(id.as_deref(), DAYS, &cwd),
+                        workspace: kept
+                            .iter()
+                            .position(|k| k.id == id)
+                            .map(|i| kept.swap_remove(i).workspace)
+                            .unwrap_or_default(),
+                        id,
+                    })
+                    .collect();
+                Other { adapter, accounts }
+            })
+            .collect();
+    }
+
+    fn clear_tokens(&mut self) {
+        self.daily = None;
+        self.models.clear();
+        self.workspace.clear();
     }
 
     /// Uma janela zerou depois do último pedido: o que está na tela já não
@@ -192,14 +259,32 @@ impl UsageView {
         if let Some(loading) = &self.daily_loading {
             match loading.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Ok(Ok(daily)) => {
-                    self.daily = Some(daily);
+                Ok(Ok(report)) => {
+                    self.daily = Some(report.days);
+                    self.models = report.models;
+                    self.workspace = report.workspace;
                     self.daily_loading = None;
                 }
                 // Sem os dados por dia, o gráfico some; as barras continuam.
                 Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.daily = None;
+                    self.clear_tokens();
                     self.daily_loading = None;
+                }
+            }
+        }
+        for other in self.others.iter_mut().flat_map(|o| &mut o.accounts) {
+            let Some(loading) = &other.loading else {
+                continue;
+            };
+            match loading.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Ok(Ok(report)) => {
+                    other.workspace = report.workspace;
+                    other.loading = None;
+                }
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    other.workspace.clear();
+                    other.loading = None;
                 }
             }
         }
@@ -244,6 +329,7 @@ impl UsageView {
             (area, None)
         };
         let lines = self.lines(adapter, route, bars_area.width, &tz, now.as_second());
+        let model_lines = self.model_lines(adapter);
         // O gráfico tem a altura da seção dos limites (o padding de cima e as
         // linhas), com um mínimo para as barras caberem.
         let height = (lines.len() as u16 + 1).max(CHART_MIN_HEIGHT);
@@ -252,13 +338,17 @@ impl UsageView {
                 height: height.min(right.height),
                 ..right
             }),
-            // Embaixo, com a mesma altura, se couber.
+            // Embaixo, se couber; encolhe até o mínimo para o Contexto e os
+            // tokens por modelo, que vêm depois, também caberem.
             None => {
                 let used = lines.len() as u16 + 2;
                 let rest = area.height.saturating_sub(used);
+                let sections = self.context_height() + model_lines.len() as u16 + 3;
                 (rest >= CHART_MIN_HEIGHT).then(|| Rect {
                     y: area.y + used,
-                    height: rest.min(CHART_BELOW_HEIGHT),
+                    height: rest
+                        .saturating_sub(sections)
+                        .clamp(CHART_MIN_HEIGHT, CHART_BELOW_HEIGHT),
                     ..area
                 })
             }
@@ -274,14 +364,28 @@ impl UsageView {
             (false, None) => bars_area.y + lines.len() as u16 + 1,
             (true, _) => bars_area.y + lines.len() as u16 + 1,
         };
-        self.draw_context(
-            frame,
-            Rect {
-                y: below,
-                height: (bars_area.y + bars_area.height).saturating_sub(below),
-                ..bars_area
-            },
-            padding,
+        let context_area = Rect {
+            y: below,
+            height: (bars_area.y + bars_area.height).saturating_sub(below),
+            ..bars_area
+        };
+        self.draw_context(frame, context_area, padding);
+        // Os tokens por modelo: embaixo do gráfico ou, em telas estreitas,
+        // do Contexto.
+        let models_y = match chart_area {
+            Some(chart) if side_by_side => chart.y + chart.height + 1,
+            _ => below + self.context_height() + 2,
+        };
+        let models_area = Rect {
+            y: models_y,
+            height: (area.y + area.height).saturating_sub(models_y),
+            ..chart_area.filter(|_| side_by_side).unwrap_or(area)
+        };
+        frame.render_widget(
+            Paragraph::new(model_lines),
+            Block::new()
+                .padding(Padding::new(1, 2, 0, 0))
+                .inner(models_area),
         );
         if let Some(chart_area) = chart_area {
             let pad = if side_by_side { 1 } else { 0 };
@@ -290,6 +394,51 @@ impl UsageView {
                 .inner(chart_area);
             self.draw_daily(frame, chart_area, today);
         }
+    }
+
+    /// Quantas linhas a seção Contexto ocupa.
+    fn context_height(&self) -> u16 {
+        context::lines(&self.skills, self.skill_page, self.with_cache).len() as u16
+    }
+
+    /// As seções **Tokens por modelo** e **Tokens na workspace**: a segunda
+    /// soma todas as contas de todos os provedores, cada modelo com o provedor.
+    fn model_lines(&self, adapter: Option<&dyn ChatAdapter>) -> Vec<Line<'static>> {
+        if self.daily.is_none() && self.others.is_empty() {
+            return Vec::new();
+        }
+        let row = |label: String, m: &ModelTokens| models::Row {
+            label,
+            tokens: m.tokens,
+            cache: m.cache,
+        };
+        let by_model: Vec<models::Row> = adapter
+            .iter()
+            .flat_map(|a| self.models.iter().map(|m| row(a.model_label(&m.model), m)))
+            .collect();
+        let others = self.others.iter().flat_map(|o| {
+            o.accounts
+                .iter()
+                .map(|a| (o.adapter.as_ref(), &a.workspace))
+        });
+        let workspace: Vec<models::Row> = adapter
+            .map(|a| (a, &self.workspace))
+            .into_iter()
+            .chain(others)
+            .flat_map(|(a, list)| {
+                list.iter()
+                    .map(move |m| row(format!("{} · {}", a.name(), a.model_label(&m.model)), m))
+            })
+            .collect();
+        let mut lines = models::lines("Tokens por modelo", &by_model, DAYS, self.with_cache);
+        lines.push(Line::default());
+        lines.extend(models::lines(
+            "Tokens na workspace",
+            &workspace,
+            DAYS,
+            self.with_cache,
+        ));
+        lines
     }
 
     /// A seção **Contexto** em `area`; guarda onde os botões de página ficaram.
@@ -589,6 +738,16 @@ impl UsageView {
         }
         lines
     }
+}
+
+/// As contas de `adapter` (`None` é a padrão); um provedor sem contas
+/// separadas tem só a padrão.
+pub(crate) fn account_ids(adapter: &dyn ChatAdapter) -> Vec<Option<String>> {
+    let mut ids: Vec<_> = adapter.accounts().into_iter().map(|a| a.id).collect();
+    if !ids.contains(&None) {
+        ids.insert(0, None);
+    }
+    ids
 }
 
 /// Uma barra do gráfico (um dia ou uma hora).
@@ -1044,6 +1203,56 @@ mod tests {
         assert!(view.with_cache);
         assert!(view.handle_key(key, None, None));
         assert!(!view.with_cache);
+    }
+
+    /// A aba inteira num terminal `cols`x`rows`, com o Claude de route.
+    fn draw_tab(view: &UsageView, cols: u16, rows: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let adapter = crate::agent::adapters::claude::ClaudeAdapter::detect();
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal
+            .draw(|frame| view.draw(frame, frame.area(), Some(&adapter), "Claude"))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..rows)
+            .map(|y| (0..cols).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn tab_shows_the_tokens_per_model_and_in_the_workspace() {
+        let tokens = |model: &str, tokens, cache| ModelTokens {
+            model: model.into(),
+            tokens,
+            cache,
+        };
+        let view = UsageView {
+            models: vec![
+                tokens("claude-fable-5-2", 122_000, 900_000),
+                tokens("claude-opus-5-5", 564_000, 0),
+            ],
+            workspace: vec![tokens("claude-fable-5-2", 6_000, 452_000)],
+            ..chart_view()
+        };
+        // Ao lado das barras (tela larga) e embaixo de tudo (tela estreita,
+        // com o gráfico encolhido para as seções caberem).
+        for (cols, rows) in [(140, 30), (90, 30)] {
+            let screen = draw_tab(&view, cols, rows).join("\n");
+            for text in [
+                "Tokens por modelo  últimos 14 dias",
+                "Opus - 5.5     564K",
+                "Fable - 5.2    122K",
+                "Total          686K",
+                "Tokens na workspace  últimos 14 dias",
+                "Claude · Fable - 5.2      6K",
+            ] {
+                assert!(
+                    screen.contains(text),
+                    "{cols}x{rows} sem `{text}`:\n{screen}"
+                );
+            }
+        }
     }
 
     #[test]
