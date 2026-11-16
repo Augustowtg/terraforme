@@ -28,6 +28,15 @@ impl App {
                 self.apply_extensions();
                 true
             }
+            config::Outcome::SetupExtensions => {
+                self.extension_setup = self.registry.pending_setup(&self.extensions.active());
+                if self.extension_setup.is_empty() {
+                    self.config_view.set_notice(
+                        "Nada a instalar: marque com Espaço as extensões que faltam.".to_string(),
+                    );
+                }
+                true
+            }
             config::Outcome::AddAccount => {
                 // O login roda fora da tela, como o do `/new-login`.
                 self.chat.start_new_login();

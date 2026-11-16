@@ -1,5 +1,5 @@
-//! A aba Atualização: aparece ao lado do Chat quando o CHANGELOG do GitHub
-//! tem uma versão mais nova que a do terra. Mostra as notas das versões
+//! A aba Atualização: aparece ao lado do Chat quando a última release do
+//! GitHub é mais nova que o terra. Mostra as notas das versões
 //! novas (`↑/↓` e `PgUp/PgDn` rolam) e o `Enter` instala, pelo mesmo
 //! caminho do `terra upgrade`, fora da tela.
 
@@ -56,6 +56,11 @@ impl UpdateView {
     /// Há versão nova: a aba aparece.
     pub fn available(&self) -> bool {
         self.update.is_some()
+    }
+
+    /// A versão nova, para a Config mostrar.
+    pub fn version(&self) -> Option<&str> {
+        self.update.as_ref().map(|update| update.version.as_str())
     }
 
     #[cfg(test)]

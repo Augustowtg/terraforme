@@ -182,6 +182,13 @@ pub trait Extension {
     fn load_report(&self) -> Option<Receiver<Result<Report, String>>> {
         None
     }
+
+    /// O script que instala e configura a extensão neste sistema, para o
+    /// [`super::setup_command`] rodar quando ela falta (os mesmos passos do
+    /// instalador do terra). `None` quando ela não tem instalação automática.
+    fn setup(&self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]

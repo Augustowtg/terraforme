@@ -35,6 +35,44 @@ pub fn all() -> Vec<Box<dyn Extension>> {
     ]
 }
 
+/// O comando que roda o script de [`Extension::setup`] no shell do sistema:
+/// o `sh` ou, no Windows, o PowerShell.
+pub fn setup_command(script: &str) -> Command {
+    if cfg!(windows) {
+        let mut command = Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("sh");
+        // Os instaladores gravam em ~/.local/bin, que pode não estar no PATH.
+        command.args(["-c", &format!("PATH=\"$HOME/.local/bin:$PATH\"\n{script}")]);
+        command
+    }
+}
+
+/// O script que instala o pacote Python `package` como ferramenta, com o uv
+/// ou o pipx. Fora do Windows, sem nenhum dos dois, instala antes o uv pelo
+/// instalador oficial (em ~/.local/bin, sem mexer nos arquivos do shell).
+fn python_tool(package: &str) -> String {
+    if cfg!(windows) {
+        return format!(
+            "if (Get-Command uv -ErrorAction SilentlyContinue) {{ uv tool install {package} }} else {{ pipx install {package} }}"
+        );
+    }
+    format!(
+        r#"if ! command -v uv >/dev/null 2>&1 && ! command -v pipx >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" UV_NO_MODIFY_PATH=1 sh
+fi
+if command -v uv >/dev/null 2>&1; then uv tool install {package}; else pipx install {package}; fi"#
+    )
+}
+
 /// Procura o executável `name` no `PATH`.
 fn find_program(name: &str) -> Option<PathBuf> {
     let names: Vec<String> = if cfg!(windows) {
@@ -105,6 +143,23 @@ mod tests {
         let text = "# comentário {não}\nclaude mcp add \\\n{\n  \"a\": {\"b\": 1}\n}\n# fim\n";
         assert_eq!(first_json(text), Some(serde_json::json!({"a": {"b": 1}})));
         assert_eq!(first_json("sem json"), None);
+    }
+
+    #[test]
+    fn all_extensions_have_a_setup() {
+        for extension in all() {
+            let script = extension.setup().unwrap_or_default();
+            assert!(!script.trim().is_empty(), "{}", extension.id());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_command_runs_the_script_with_local_bin_in_the_path() {
+        let output = setup_command("echo \"$PATH\"\nexit 3").output().unwrap();
+        let path = String::from_utf8_lossy(&output.stdout);
+        assert!(path.contains("/.local/bin:"), "{path}");
+        assert_eq!(output.status.code(), Some(3), "sai como o último comando");
     }
 
     #[test]

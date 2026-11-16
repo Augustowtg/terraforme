@@ -16,4 +16,5 @@ mod registry;
 pub use contract::{
     Contribution, Extension, Hook, Launcher, McpServer, Report, Stat, StatValue, Status,
 };
+pub use extensions::setup_command;
 pub use registry::Registry;

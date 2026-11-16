@@ -4,6 +4,17 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.13.26] - 2026-11-16
+
+### Adicionado
+
+- Nas Extensões da Config, marcar (`Espaço`) uma extensão que falta e apertar **`c`** instala e configura todas as marcadas que faltam, fora da tela: o AI Memory, o Graphify, o Headroom, o Ponytail e o rtk cada um com o instalador oficial (ou o `uv`/`pipx` para os pacotes Python). Ao voltar, as extensões são detectadas de novo e a lista mostra o que não terminou de instalar.
+- Embaixo das Extensões da Config, a seção **Terraforme**: a versão instalada, a release nova do GitHub (quando há uma) e o caminho do executável que está rodando.
+
+### Corrigido
+
+- O `terra upgrade` (e a aba Atualização) checa a última **release publicada** no GitHub, a mesma que o instalador baixa, em vez da versão mais alta do CHANGELOG.md: uma versão já no CHANGELOG mas sem release publicada não contava como atualização disponível, e o instalador baixava de novo a release antiga.
+
 ## [0.13.25] - 2026-11-11
 
 ### Adicionado

@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 use super::App;
 use super::draw::content_area;
 use crate::agent::Interactive;
+use crate::extension::Registry;
 use crate::settings::StartMode;
 use crate::tui::term::Term;
 
@@ -25,6 +26,29 @@ impl App {
 
     pub fn update_finished(&mut self, result: Result<(), String>) {
         self.update_view.finish_install(result);
+    }
+
+    /// O `c` das Extensões da Config, para o loop instalar fora da tela.
+    pub fn take_extension_setup(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.extension_setup)
+    }
+
+    /// Volta dos instaladores: as extensões são detectadas de novo, e as que
+    /// agora estão instaladas passam a valer no agente.
+    pub fn extension_setup_finished(&mut self) {
+        self.registry = Registry::detect();
+        self.apply_extensions();
+        let missing = self.registry.pending_setup(&self.extensions.active());
+        let names: Vec<&str> = missing.iter().map(|(name, _)| name.as_str()).collect();
+        self.config_view.set_notice(if names.is_empty() {
+            "Extensões instaladas e configuradas.".to_string()
+        } else {
+            // Um instalador que só muda o PATH dos terminais novos.
+            format!(
+                "Não foi instalada: {}. Se o instalador terminou bem, abra o terra de novo.",
+                names.join(", ")
+            )
+        });
     }
 
     /// A interface original pedida por um comando da `/` do chat.
