@@ -13,6 +13,7 @@ use crate::hub::client::{Monitor, Reporter};
 use crate::theme;
 use crate::tui::extensions;
 use crate::tui::orchestrator as orchestrator_tab;
+use crate::tui::terraforme;
 use crate::tui::update;
 
 const QUIT_LABEL: &str = " Sair ";
@@ -50,6 +51,7 @@ impl App {
             Focus::Tabs if self.tab == Tab::Chat => {
                 format!("{} · {HELP_NEW_CHAT}", self.current_chat().help()).into()
             }
+            Focus::Tabs if self.tab == Tab::Terraforme => terraforme::HELP.into(),
             Focus::Tabs if self.tab == Tab::Config => self.config_view.help().into(),
             Focus::Tabs if self.tab == Tab::Extensoes => extensions::HELP.into(),
             Focus::Tabs if self.tab == Tab::Orquestrador => self.orchestrator_view.help().into(),
@@ -191,6 +193,10 @@ impl App {
             }
             chat.draw_history(frame, history);
             chat.draw(frame, panel);
+            return;
+        }
+        if self.tab == Tab::Terraforme {
+            self.terraforme.draw(frame, area, frame.area());
             return;
         }
         if self.tab == Tab::Config {

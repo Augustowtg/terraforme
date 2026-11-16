@@ -4,15 +4,22 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Não lançado]
+## [0.13.25] - 2026-11-11
 
 ### Adicionado
 
+- **Tokens por modelo** e **Tokens na workspace** na aba Consumo, embaixo do gráfico (ou do Contexto, em telas estreitas): o total dos últimos 14 dias que a conta gastou em cada modelo e o que foi gasto no diretório aberto por provedor e modelo, somando todas as contas de todos os provedores instalados. Os botões Sem cache e Com cache valem para as duas, e cada uma termina com o total.
+- **`terra usage`**: o consumo da aba Consumo no terminal (os limites da conta e os tokens por modelo e na workspace), com `--provider`, `--account`, `--days` e `--json`. E **`terra workspace --list`** (com `--json`), que imprime os salvos e os recentes sem abrir a lista.
+- **Headroom** e **Ponytail** na aba Extensões. O Headroom (`headroom wrap claude --`) abre o agente atrás do proxy local dele, que comprime a saída antes de chegar ao modelo; o Ponytail não tem binário próprio, e o terra só mostra se a skill está instalada em `~/.claude/skills/ponytail`.
+- **Nova conta** nas Configurações, logo abaixo da Conta: o `Enter` nela faz o login numa conta nova do provedor, como o `/new-login`. Com o login feito, a conta aparece na lista da Conta.
 - **`/new-login`** no chat, para adicionar uma conta nova ao provedor sem mexer nas que já existem. No Claude, o terra cria a pasta `~/.claude-conta-N` (a primeira livre) e roda nela o `claude auth login` (com `CLAUDE_CONFIG_DIR`), fora da tela, com a mesma interface do `/login`. Com o login feito, a conta aparece na lista de contas das Configurações; uma pasta de um `/new-login` que não terminou (sem credenciais) é usada de novo no próximo. Provedores sem contas separadas (como o Antigravity) avisam que não adicionam contas pelo terra.
 - `perguntar_permissoes` no `[global]` do `orchestrator.toml` (`true` por padrão) e em cada `[agents.<nome>]` (vale só para ele). Com `false`, a execução volta a negar sem perguntar (`dontAsk`), para os agentes que rodam sem ninguém olhando.
 
 ### Corrigido
 
+- O limite semanal do **Fable** aparece na aba Consumo (`Semana (Fable)`). O Claude passou a informar os limites numa lista (`limits`), com o nome do modelo de cada um, e o terra só lia as janelas antigas (`seven_day_opus`, `seven_day_sonnet`), que hoje vêm vazias. Um modelo novo com limite próprio aparece sem mudar o terra.
+- Em telas estreitas, o gráfico Consumo por dia encolhe para as seções de baixo caberem.
+- O login do **Claude** não cai mais toda hora. A conta Default (sem `CLAUDE_CONFIG_DIR`) e a pasta `~/.claude` apareciam como duas contas, mas usam o mesmo `~/.claude/.credentials.json`, e cada uma lia o e-mail de um `.claude.json` diferente (o `~/.claude.json` e o `~/.claude/.claude.json`). O login de uma (com o e-mail dela) trocava o token da outra, e a outra caía no login de novo. Agora a `~/.claude` é a própria Default: ela sai da lista de contas, e uma configuração salva com ela passa a usar a Default.
 - Os **sub agentes** despachados pelo orquestrador não têm mais as ferramentas negadas em silêncio. Uma ferramenta fora das `ferramentas` do agente vira um pedido de permissão no **chat principal** da janela da pasta do agente (ou, sem ela, da mais nova), com o título `Permissão · ▶ <agente>` e os mesmos botões Permitir e Negar do agente do chat; a resposta volta à execução, que segue rodando. O pedido chega mesmo no modo `segundo_plano`, espera uma janela abrir se não há nenhuma, passa para outra se a janela fecha, não sai com o fim (ou a interrupção) da resposta do chat principal e sai quando a execução termina. O tempo esperando a resposta não conta no `tempo_limite_min`. A execução roda com `--permission-mode default --input-format stream-json --permission-prompt-tool stdio`, e as ferramentas da lista seguem liberadas sem perguntar.
 - As ferramentas negadas a um **subagente em segundo plano** do Claude (o `Task` com `run_in_background`, que não pode perguntar) viram um pedido no chat, como as que o modo Agente bloqueia: permitir manda o agente fazer numa mensagem nova, com ela liberada. Antes, elas sumiam sem aviso.
 - **Copiar e colar** funcionam sem o `wl-clipboard`, o `xclip` ou o `xsel` instalados (como no GNOME com o Ptyxis, que ignora o OSC 52): o terra usa a área de transferência do sistema direto (no Linux, pelo X11/XWayland) e só manda o OSC 52 se nem isso der. Antes, aparecia "Copiado" e nada ia para a área de transferência, e o Ctrl+V não colava nada.

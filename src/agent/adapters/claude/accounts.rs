@@ -53,7 +53,16 @@ impl Info {
 /// As contas: primeiro a Default (com o e-mail da conta que o `claude` usa
 /// sem `CLAUDE_CONFIG_DIR`, lido de `default_json`), depois as pastas de
 /// `home` com credenciais, pessoais antes das de trabalho.
-pub fn discover(home: &Path, default_json: &Path) -> Vec<AccountOption> {
+///
+/// A pasta `default_dir` (a que o `claude` usa sem `CLAUDE_CONFIG_DIR`,
+/// normalmente `~/.claude`) não entra na lista: as credenciais dela são as
+/// da Default. Listadas as duas, cada login numa delas trocava o token da
+/// outra, e a outra caía no login de novo.
+pub fn discover(
+    home: &Path,
+    default_json: &Path,
+    default_dir: Option<&Path>,
+) -> Vec<AccountOption> {
     let default = AccountOption {
         id: None,
         label: match read_info(default_json) {
@@ -69,7 +78,9 @@ pub fn discover(home: &Path, default_json: &Path) -> Vec<AccountOption> {
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
-            (is_account_name(&name) && path.join(CREDENTIALS).is_file()).then_some((name, path))
+            let is_default = default_dir.is_some_and(|dir| same_dir(&path, dir));
+            (is_account_name(&name) && !is_default && path.join(CREDENTIALS).is_file())
+                .then_some((name, path))
         })
         .map(|(name, path)| match read_info(&path.join(".claude.json")) {
             Some(info) => {
@@ -118,6 +129,14 @@ pub fn create_new(home: &Path) -> std::io::Result<PathBuf> {
         .expect("sempre há um número livre");
     fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+/// As duas pastas são a mesma (com links e `..` resolvidos, quando existem).
+pub fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 fn is_account_name(name: &str) -> bool {
@@ -183,7 +202,7 @@ mod tests {
         )
         .unwrap();
 
-        let accounts = discover(home, &home.join(".claude.json"));
+        let accounts = discover(home, &home.join(".claude.json"), None);
         let found: Vec<_> = accounts
             .iter()
             .map(|a| (a.id.as_deref(), a.label.as_str()))
@@ -199,6 +218,34 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn the_default_folder_is_the_default_account_and_not_a_second_one() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        // O `~/.claude.json` diz uma conta e o `~/.claude/.claude.json`
+        // outra, mas as credenciais são o mesmo `~/.claude/.credentials.json`.
+        account(&home.join(".claude"), "eu@gmail.com", "", true);
+        account(
+            &home.join(".claude-empresa"),
+            "eu@empresa.com",
+            "Empresa",
+            true,
+        );
+        fs::write(
+            home.join(".claude.json"),
+            r#"{"oauthAccount":{"emailAddress":"eu@empresa.com"}}"#,
+        )
+        .unwrap();
+
+        let accounts = discover(
+            home,
+            &home.join(".claude.json"),
+            Some(&home.join(".claude")),
+        );
+        let ids: Vec<_> = accounts.iter().map(|a| a.id.as_deref()).collect();
+        assert_eq!(ids, [None, Some(".claude-empresa")]);
     }
 
     #[test]

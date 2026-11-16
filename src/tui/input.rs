@@ -267,7 +267,7 @@ impl InputBox {
         match key.code {
             // Com Caps Lock ou Shift, o `i` chega maiúsculo.
             KeyCode::Char('i' | 'I') => {}
-            KeyCode::Char('a') => self.move_to(self.cursor + 1),
+            KeyCode::Char('a' | 'A') => self.move_to(self.cursor + 1),
             _ => return Outcome::Ignored,
         }
         self.mode = InputMode::Insert;
@@ -288,9 +288,11 @@ impl InputBox {
             self.show_cursor();
             return outcome;
         }
-        let typed = !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let typed = types_text(key.modifiers);
+        // O ↑ e o ↓ trocam o texto pela mensagem enviada; as outras teclas, se
+        // mudam o texto, encerram a visita às mensagens enviadas.
+        let browses = matches!(key.code, KeyCode::Up | KeyCode::Down);
+        let before = (self.browsing.is_some() && !browses).then(|| self.buffer.clone());
         let edited = matches!(
             key.code,
             KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
@@ -373,8 +375,9 @@ impl InputBox {
             KeyCode::Enter => outcome = Outcome::Submit,
             _ => {}
         }
-        if edited {
-            // O texto mudou: ele passa a ser o que está sendo escrito.
+        if before.is_some_and(|before| before != self.buffer) {
+            // O texto mudou (também com uma quebra de linha do Shift+Enter):
+            // ele passa a ser o que está sendo escrito.
             self.browsing = None;
         }
         self.refresh_picker(edited);
@@ -415,12 +418,13 @@ impl InputBox {
         self.insert_char(token);
     }
 
-    /// ↑: sobe uma linha do texto; na primeira, mostra a mensagem enviada
-    /// anterior.
+    /// ↑: sobe uma linha do texto, como ele está na tela (uma linha longa
+    /// ocupa várias); na primeira, mostra a mensagem enviada anterior.
     fn up(&mut self) {
-        let (line, column) = self.line_and_column();
-        if line > 0 {
-            self.move_to_line(line - 1, column);
+        let rows = self.screen_rows();
+        let (row, column) = self.row_and_column(&rows);
+        if row > 0 {
+            self.move_to_row(&rows, row - 1, column);
             return;
         }
         let index = match &self.browsing {
@@ -437,12 +441,14 @@ impl InputBox {
         self.browsing = Some((index, draft));
     }
 
-    /// ↓: desce uma linha do texto; na última, mostra a mensagem enviada
-    /// seguinte e, depois da mais nova, o texto que estava sendo escrito.
+    /// ↓: desce uma linha do texto, como ele está na tela; na última, mostra
+    /// a mensagem enviada seguinte e, depois da mais nova, o texto que estava
+    /// sendo escrito.
     fn down(&mut self) {
-        let (line, column) = self.line_and_column();
-        if line + 1 < self.buffer.split('\n').count() {
-            self.move_to_line(line + 1, column);
+        let rows = self.screen_rows();
+        let (row, column) = self.row_and_column(&rows);
+        if row + 1 < rows.len() {
+            self.move_to_row(&rows, row + 1, column);
             return;
         }
         let Some((index, draft)) = self.browsing.take() else {
@@ -474,26 +480,57 @@ impl InputBox {
         self.move_to(self.len());
     }
 
-    /// Linha do cursor e a coluna dele nela, em caracteres.
-    fn line_and_column(&self) -> (usize, usize) {
-        let before: Vec<char> = self.buffer.chars().take(self.cursor).collect();
-        let line = before.iter().filter(|&&c| c == '\n').count();
-        let column = before.iter().rev().take_while(|&&c| c != '\n').count();
-        (line, column)
+    /// As linhas do texto como estão na tela (com a quebra automática), cada
+    /// uma com o trecho dela em caracteres.
+    fn screen_rows(&self) -> Vec<Range<usize>> {
+        // Antes do primeiro desenho não há largura: só as quebras do texto.
+        let width = match self.view.get().text.width {
+            0 => u16::MAX,
+            width => width,
+        };
+        wrap_rows(&self.buffer, width, |c| self.width_of(c))
     }
 
-    /// Leva o cursor à `column` da linha `line` (ou ao fim dela, se for mais
-    /// curta).
-    fn move_to_line(&mut self, line: usize, column: usize) {
-        let mut start = 0;
-        for (i, text) in self.buffer.split('\n').enumerate() {
-            let len = text.chars().count();
-            if i == line {
-                self.move_to(start + column.min(len));
-                return;
+    /// Linha da tela em que o cursor está e a coluna dele nela.
+    fn row_and_column(&self, rows: &[Range<usize>]) -> (usize, usize) {
+        let row = rows
+            .iter()
+            .rposition(|r| r.start <= self.cursor)
+            .unwrap_or(0);
+        let column = self
+            .buffer
+            .chars()
+            .take(self.cursor)
+            .skip(rows[row].start)
+            .map(|c| self.width_of(c))
+            .sum();
+        (row, column)
+    }
+
+    /// Leva o cursor à `column` da linha `row` da tela (ou ao fim dela, se
+    /// for mais curta).
+    fn move_to_row(&mut self, rows: &[Range<usize>], row: usize, column: usize) {
+        let range = rows[row].clone();
+        // Numa linha que continua na próxima, o fim dela já é o começo da
+        // outra: o cursor para um caractere antes.
+        let continues = rows
+            .get(row + 1)
+            .is_some_and(|next| next.start == range.end);
+        let last = if continues {
+            range.end.saturating_sub(1).max(range.start)
+        } else {
+            range.end
+        };
+        let mut pos = range.start;
+        let mut col = 0;
+        for c in self.buffer.chars().take(last).skip(range.start) {
+            if col >= column {
+                break;
             }
-            start += len + 1;
+            col += self.width_of(c);
+            pos += 1;
         }
+        self.move_to(pos);
     }
 
     /// Teclas da lista de arquivos, enquanto ela está aberta: ↑/↓ (ou
@@ -1099,8 +1136,10 @@ impl InputBox {
             .skip(rows[row].start)
             .map(|c| self.width_of(c))
             .sum();
-        // No fim de uma linha cheia, o cursor desce para a próxima.
-        if col >= width as usize && width > 0 {
+        // No fim da última linha, cheia, o cursor desce para a próxima. Antes
+        // de uma quebra de linha do texto ele fica onde está, na coluna da
+        // margem: embaixo, pareceria estar depois da quebra.
+        if col >= width as usize && width > 0 && row + 1 == rows.len() {
             (row + 1, 0)
         } else {
             (row, col)
@@ -1153,6 +1192,17 @@ impl InputBox {
         }
         Line::from(spans)
     }
+}
+
+/// Se uma tecla com esses modificadores escreve o caractere dela. Com Ctrl
+/// ou Alt é um atalho, menos no Windows com os dois juntos: é assim que o
+/// AltGr chega lá (ex.: `/` e `?` no ABNT2, `@` e `{` em vários teclados).
+fn types_text(modifiers: KeyModifiers) -> bool {
+    let alt_gr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    if cfg!(windows) && modifiers.contains(alt_gr) {
+        return true;
+    }
+    !modifiers.intersects(alt_gr | KeyModifiers::SUPER | KeyModifiers::HYPER | KeyModifiers::META)
 }
 
 /// O texto colado como vai para a caixa: quebras de linha do Windows e do

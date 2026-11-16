@@ -67,8 +67,8 @@ impl Chat {
         }
     }
 
-    /// Manda `prompt` ao agente como uma mensagem do usuário (ex.: a
-    /// primeira de um chat aberto pelo orquestrador).
+    /// Manda `prompt` ao agente como uma mensagem do usuário, nos testes.
+    #[cfg(test)]
     pub fn submit(&mut self, prompt: &str) {
         if self.run.is_none() && self.start(prompt, Entry::User(prompt.to_string())) {
             self.auto_compact_armed = true;

@@ -60,8 +60,8 @@ use self::permission::Gate;
 use self::plugin::Overlay;
 use self::stream::StreamParser;
 use crate::agent::{
-    AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive, PermissionMode,
-    ProviderSkill, Request, Session, Usage, kill_tree, launch, own_group,
+    AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, PermissionMode, ProviderSkill,
+    Request, Session, TokenReport, Usage, kill_tree, launch, own_group,
 };
 use crate::extension::Contribution;
 
@@ -248,8 +248,13 @@ impl ChatAdapter for AntigravityAdapter {
         &self,
         _account: Option<&str>,
         days: usize,
-    ) -> Option<Receiver<Result<Vec<DailyTokens>, String>>> {
-        Some(daily::load(daily::default_file()?, days))
+        workspace: &Path,
+    ) -> Option<Receiver<Result<TokenReport, String>>> {
+        Some(daily::load(
+            daily::default_file()?,
+            days,
+            workspace.to_path_buf(),
+        ))
     }
 
     /// O nome do catálogo (ex.: `Gemini 3.8 Flash (High)`); antes dele, o id.
@@ -484,12 +489,14 @@ impl Run {
             send_line(&stdin, &message);
             let mut parser = StreamParser::new(model.as_deref());
             let usage_file = daily::default_file();
+            // O `agy` roda na pasta do terra: é ela que marca o workspace do gasto.
+            let cwd = std::env::current_dir().unwrap_or_default();
             let mut done = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let events = parser.parse(&line);
                 // Na hora, para o consumo de um turno interrompido não se perder.
                 if let Some(file) = &usage_file {
-                    daily::record(file, &parser.take_spends());
+                    daily::record(file, &cwd, &parser.take_spends());
                 }
                 for event in events {
                     if matches!(event, AgentEvent::Done { .. }) {
