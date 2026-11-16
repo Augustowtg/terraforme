@@ -78,6 +78,17 @@ impl Extension for Rtk {
         })
     }
 
+    /// O instalador oficial, que baixa o binário da release; no Windows, que
+    /// ele não cobre, compila com o cargo.
+    fn setup(&self) -> Option<String> {
+        let script = if cfg!(windows) {
+            "cargo install --locked --git https://github.com/rtk-ai/rtk rtk"
+        } else {
+            r#"curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | RTK_INSTALL_DIR="$HOME/.local/bin" sh"#
+        };
+        Some(script.to_string())
+    }
+
     fn load_report(&self) -> Option<Receiver<Result<Report, String>>> {
         let bin = self.bin.clone()?;
         let version = self.version.clone();
