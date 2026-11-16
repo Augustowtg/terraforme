@@ -531,6 +531,25 @@ impl Chat {
         }
     }
 
+    /// O Ctrl+C comum, no GNOME Terminal e em outros que não repassam o
+    /// Shift: copia o trecho selecionado em vez de fechar o terra à toa.
+    /// Sem seleção, `false` deixa o Ctrl+C sair como sempre.
+    pub fn copy_ambient_selection(&mut self) -> bool {
+        match self
+            .history
+            .selected_text()
+            .or_else(|| self.input.selected_text())
+        {
+            Some(text) => {
+                self.copy(&text);
+                self.history.clear_selection();
+                self.input.clear_selection();
+                true
+            }
+            None => false,
+        }
+    }
+
     fn copy(&mut self, text: &str) {
         let message = if clipboard::copy(text) {
             format!("Copiado ({} caracteres)", text.chars().count())

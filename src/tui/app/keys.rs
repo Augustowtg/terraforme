@@ -28,6 +28,11 @@ impl App {
                 self.apply_extensions();
                 true
             }
+            config::Outcome::AddAccount => {
+                // O login roda fora da tela, como o do `/new-login`.
+                self.chat.start_new_login();
+                true
+            }
         }
     }
 
@@ -63,6 +68,12 @@ impl App {
             if self.current_chat_mut().take_open_usage() {
                 self.tab = Tab::Consumo;
             }
+            return false;
+        }
+        if self.tab == Tab::Terraforme
+            && self.focus == Focus::Tabs
+            && self.terraforme.handle_key(key)
+        {
             return false;
         }
         if self.tab == Tab::Config && self.focus == Focus::Tabs && self.handle_config_key(key) {
@@ -137,6 +148,9 @@ impl App {
         if self.tab == Tab::Chat && self.focus == Focus::Tabs && !self.uses_provider() {
             self.current_chat_mut().handle_paste(text);
         }
+        if self.tab == Tab::Terraforme && self.focus == Focus::Tabs {
+            self.terraforme.handle_paste(text);
+        }
     }
 
     /// Na barra de chats, `Alt+N` abre um chat novo, `Alt+←/→` troca de chat
@@ -171,6 +185,7 @@ impl App {
         match self.tab {
             Tab::Chat if self.uses_provider() => {}
             Tab::Chat => self.current_chat_mut().handle_mouse(mouse),
+            Tab::Terraforme => self.terraforme.handle_mouse(mouse),
             Tab::Consumo => self.usage.handle_mouse(mouse),
             Tab::Extensoes | Tab::Config | Tab::Orquestrador | Tab::Atualizacao => {}
         }

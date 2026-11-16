@@ -30,8 +30,8 @@ use serde_json::Value;
 
 use self::stream::{StreamParser, text, tool_detail};
 use crate::agent::{
-    AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, DailyTokens, Interactive,
-    ModelOption, PermissionMode, ProviderSkill, Request, Session, Usage, kill_tree, launch,
+    AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, ModelOption,
+    PermissionMode, ProviderSkill, Request, Session, TokenReport, Usage, kill_tree, launch,
     own_group,
 };
 use crate::extension::{Contribution, Hook};
@@ -59,15 +59,30 @@ impl ClaudeAdapter {
     }
 
     /// A pasta de configuração da conta, ou `None` para a padrão.
+    /// A pasta da conta `account`; `None` é a Default. A pasta que o
+    /// `claude` já usa sem `CLAUDE_CONFIG_DIR` (a `~/.claude`) também é a
+    /// Default: as credenciais são as mesmas, e o `claude` roda do mesmo
+    /// jeito que nela, com o mesmo `.claude.json`.
     fn account_dir(&self, account: Option<&str>) -> Result<Option<PathBuf>, String> {
         let Some(id) = account else {
             return Ok(None);
         };
-        self.home
+        let dir = self
+            .home
             .as_deref()
             .and_then(|home| accounts::config_dir(home, id))
-            .map(Some)
-            .ok_or_else(|| format!("Conta do Claude não encontrada: {id}"))
+            .ok_or_else(|| format!("Conta do Claude não encontrada: {id}"))?;
+        let is_default = self
+            .default_dir()
+            .is_some_and(|default| accounts::same_dir(&dir, &default));
+        Ok((!is_default).then_some(dir))
+    }
+
+    /// A pasta que o `claude` usa sem conta escolhida.
+    fn default_dir(&self) -> Option<PathBuf> {
+        env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .or_else(|| self.home.as_ref().map(|home| home.join(".claude")))
     }
 }
 
@@ -98,7 +113,16 @@ impl ChatAdapter for ClaudeAdapter {
         let Some(home) = &self.home else {
             return Vec::new();
         };
-        accounts::discover(home, &default_json(home))
+        accounts::discover(home, &default_json(home), self.default_dir().as_deref())
+    }
+
+    /// A `~/.claude` salva como conta (de antes de ela virar a Default)
+    /// passa a ser a Default.
+    fn normalize_account(&self, account: Option<String>) -> Option<String> {
+        match self.account_dir(account.as_deref()) {
+            Ok(None) => None,
+            _ => account,
+        }
     }
 
     /// As skills da pasta da conta (do usuário, do claude.ai e dos
@@ -244,12 +268,13 @@ impl ChatAdapter for ClaudeAdapter {
         &self,
         account: Option<&str>,
         days: usize,
-    ) -> Option<Receiver<Result<Vec<DailyTokens>, String>>> {
+        workspace: &Path,
+    ) -> Option<Receiver<Result<TokenReport, String>>> {
         let dir = match self.account_dir(account).ok()? {
             Some(dir) => dir,
             None => default_config_dir()?,
         };
-        Some(daily::load(dir, days))
+        Some(daily::load(dir, days, workspace.to_path_buf()))
     }
 
     /// Os apelidos que o `claude --model` aceita.
@@ -1009,5 +1034,35 @@ mod tests {
         assert_eq!(env, [("CLAUDE_CONFIG_DIR".as_ref(), Some(dir.as_os_str()))]);
 
         assert!(adapter.login(Some(".claude-inexistente")).is_none());
+    }
+
+    #[test]
+    fn the_claude_folder_saved_as_an_account_is_the_default() {
+        if env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+            // A Default seria outra pasta: o teste não vale aqui.
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        for dir in [".claude", ".claude-trabalho"] {
+            fs::create_dir_all(home.path().join(dir)).unwrap();
+            fs::write(home.path().join(dir).join(".credentials.json"), "{}").unwrap();
+        }
+        let adapter = ClaudeAdapter {
+            bin: Some(PathBuf::from("claude")),
+            home: Some(home.path().to_path_buf()),
+        };
+
+        assert_eq!(adapter.normalize_account(Some(".claude".into())), None);
+        assert_eq!(
+            adapter
+                .normalize_account(Some(".claude-trabalho".into()))
+                .as_deref(),
+            Some(".claude-trabalho")
+        );
+        let ids: Vec<_> = adapter.accounts().into_iter().map(|a| a.id).collect();
+        assert_eq!(ids, [None, Some(".claude-trabalho".to_string())]);
+        // O login da `.claude` não põe a pasta: é o da Default.
+        let login = adapter.login(Some(".claude")).unwrap();
+        assert_eq!(login.get_envs().count(), 0);
     }
 }

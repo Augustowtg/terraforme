@@ -10,10 +10,14 @@ mod input;
 mod login;
 mod orchestrator;
 mod term;
+mod terraforme;
 mod update;
 mod usage;
 mod widgets;
 mod workspace;
+
+pub(crate) use chat::compact_count;
+pub(crate) use usage::account_ids;
 
 use std::collections::VecDeque;
 use std::io::stdout;
@@ -189,7 +193,11 @@ fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) 
                 Event::Paste(text) => app.handle_paste(&text),
                 // No Windows também chegam eventos de Release; só interessa o Press.
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if (is_ctrl_c(&key) && !app.captures_keys()) || app.handle_key(key) {
+                    if is_ctrl_c(&key) && !app.captures_keys() {
+                        if !app.copy_ambient_selection() {
+                            return Ok(());
+                        }
+                    } else if app.handle_key(key) {
                         return Ok(());
                     }
                     if let Some((login, account)) = app.take_login() {
@@ -230,6 +238,9 @@ fn is_text_key(key: &KeyEvent) -> bool {
 /// colado chega como teclas, uma atrás da outra, e cada Enter enviaria a
 /// mensagem. Com `first` e as teclas que já estão na fila, junta a rajada: se
 /// ela tem uma quebra de linha ou passa de 100 caracteres, é uma colagem.
+/// Fora do Windows, onde a colagem quase sempre chega pelo bracketed paste,
+/// uma rajada curta que só tem o Enter no fim é digitação que chegou junta
+/// (terminal lento, SSH): o Enter envia.
 /// Senão, as teclas (e o evento que interrompeu a rajada) vão para `pending`,
 /// para serem tratadas uma a uma.
 fn paste_burst(first: KeyEvent, pending: &mut VecDeque<Event>) -> Result<Option<String>> {
@@ -254,11 +265,18 @@ fn paste_burst(first: KeyEvent, pending: &mut VecDeque<Event>) -> Result<Option<
             _ => '\n',
         })
         .collect();
-    if keys.len() > 1 && (text.contains('\n') || text.chars().count() > chat::PASTE_LIMIT) {
+    if keys.len() > 1 && is_paste(&text, cfg!(windows)) {
         return Ok(Some(text));
     }
     pending.extend(keys.into_iter().map(Event::Key));
     Ok(None)
+}
+
+/// Se o texto de uma rajada de teclas é uma colagem (veja [`paste_burst`]).
+fn is_paste(text: &str, windows: bool) -> bool {
+    let long = text.chars().count() > chat::PASTE_LIMIT;
+    let typed_enter = !windows && !long && text.find('\n') == Some(text.len() - 1);
+    long || (text.contains('\n') && !typed_enter)
 }
 
 fn with_terminal<T>(f: impl FnOnce(&mut DefaultTerminal) -> Result<T>) -> Result<T> {
@@ -269,7 +287,9 @@ fn with_terminal<T>(f: impl FnOnce(&mut DefaultTerminal) -> Result<T>) -> Result
 }
 
 /// Em raw mode o Ctrl+C não gera SIGINT; tratamos como saída em todas as telas.
-/// O Ctrl+Shift+C, nos terminais que o repassam, é o copiar, não a saída.
+/// O Ctrl+Shift+C, nos terminais que o repassam, é o copiar, não a saída; nos
+/// que não repassam (GNOME Terminal...) ele chega igual ao Ctrl+C comum, que
+/// então copia em vez de sair se há um trecho selecionado no chat.
 fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('c')
         && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -279,6 +299,19 @@ fn is_ctrl_c(key: &KeyEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_burst_of_keys_is_a_paste_with_a_line_break_or_a_long_text() {
+        for windows in [false, true] {
+            assert!(is_paste("um\ndois", windows));
+            assert!(is_paste("um\ndois\n", windows));
+            assert!(is_paste(&"a".repeat(chat::PASTE_LIMIT + 1), windows));
+            assert!(!is_paste("oi", windows));
+        }
+        // Digitado rápido, com o Enter no fim: no Windows não dá para saber.
+        assert!(!is_paste("oi\n", false));
+        assert!(is_paste("oi\n", true));
+    }
 
     #[test]
     fn ctrl_shift_c_is_copy_not_quit() {

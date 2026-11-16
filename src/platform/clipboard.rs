@@ -7,9 +7,9 @@
 //! (Windows Terminal, kitty, WezTerm, iTerm2...); o GNOME Terminal e o
 //! Ptyxis a ignoram.
 //!
-//! Para colar ([`paste`]): `wl-paste`, `xclip` ou `xsel` no Linux, `pbpaste`
-//! no macOS e o `Get-Clipboard` do PowerShell no Windows; sem eles, o
-//! `arboard`.
+//! Para colar ([`paste`]): `wl-paste`, `xclip` ou `xsel` no Linux e `pbpaste`
+//! no macOS; sem eles, o `arboard`. No Windows é o contrário: o `arboard`
+//! primeiro (abrir o PowerShell demora) e o `Get-Clipboard` se ele falhar.
 
 use std::env;
 use std::io::{Write, stdout};
@@ -78,6 +78,11 @@ pub fn paste() -> Option<String> {
     if cfg!(test) {
         return None;
     }
+    if cfg!(windows)
+        && let Some(text) = system_paste()
+    {
+        return Some(text);
+    }
     paste_tool()
         .and_then(|(bin, args)| tool_paste(bin, args))
         .or_else(system_paste)
@@ -109,13 +114,16 @@ fn paste_tool() -> Option<(&'static str, &'static [&'static str])> {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "Get-Clipboard -Raw",
+                // Sem isso a saída vem na página de código do console, e os
+                // acentos chegam trocados.
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw",
             ],
         ));
     }
     let wayland = env::var_os("WAYLAND_DISPLAY").is_some();
     let tools: [(&str, &[&str]); 3] = [
-        ("wl-paste", &["--no-newline"]),
+        // Só texto: com uma imagem copiada, viriam os bytes dela.
+        ("wl-paste", &["--no-newline", "--type", "text"]),
         ("xclip", &["-selection", "clipboard", "-o"]),
         ("xsel", &["--clipboard", "--output"]),
     ];

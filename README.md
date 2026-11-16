@@ -82,9 +82,11 @@ Depois, abra um terminal novo (Git Bash, PowerShell ou CMD). Pelo `irm ... | iex
 | `terra --version` | Mostra a versão |
 | `terra cli` | Abre a interface com as abas Chat, Consumo, Extensões, Orquestrador e Configurações e registra o diretório atual em **Recentes** |
 | `terra workspace` | Lista Recentes e Salvos; `Enter` entra no diretório escolhido |
+| `terra workspace --list` | Só imprime os salvos e os recentes, sem abrir a lista; `--json` para scripts |
 | `terra workspace --save` | Salva o diretório atual como workspace |
 | `terra workspace --save --name <nome>` | Salva com um nome definido por você |
 | `terra upgrade` | Atualiza o terra para a última release pelo instalador do GitHub, sem clonar o repositório, e mostra o que mudou |
+| `terra usage` | Mostra o consumo da aba Consumo no terminal: os limites da conta do workspace e os tokens dos últimos 14 dias por modelo e, no diretório atual, por provedor e modelo (com todas as contas). `--provider <id>` e `--account <id>` escolhem outros, `--days <n>` muda o período e `--json` imprime para scripts |
 | `terra status` | Mostra os terminais do terra abertos na máquina, separados por workspace, com as abas de cada um (pelo daemon orquestrador); `--json` para scripts |
 | `terra send <agente> [texto] [--ref <arquivo>]... [--handoff <arquivo>] [--tag <tag>]` | Manda uma mensagem a outro agente: a uma aba com nome (`/agente`), que só mostra, ou a um agente do `~/.terraforme/orchestrator.toml`, que a processa numa execução do `claude` (veja `docs/infra/orquestrador.md`) |
 | `terra send --lote <arquivo \| ->` | Manda várias mensagens de uma vez, uma por linha (`agente: texto`), sem um agente coordenando |
@@ -152,7 +154,9 @@ A barra do **Crédito extra** só aparece quando a conta tem o crédito extra at
 
 Ao lado das barras, com a mesma altura da seção dos limites (embaixo, em telas com menos de 100 colunas), fica o gráfico **Consumo por dia**: os tokens de cada um dos últimos 14 dias, com o de hoje em destaque, o maior valor e o resumo (`Hoje · média/dia · total`). Os botões **Sem cache** (verde, o padrão: entrada e saída) e **Com cache** (vermelho: soma a criação e a leitura de cache) trocam o que é somado, com um clique ou com `c`. **Clicar num dia** mostra as horas daquele dia (00 a 23), com o consumo do dia embaixo (total e o horário de pico); **‹ Dias** ou `Esc` volta aos dias. No Claude, ele soma os transcripts do Claude Code da conta (`projects/**/*.jsonl`, incluindo as conversas do terra), no fuso local; não depende do login.
 
-No Claude, os limites são os mesmos do `/usage` do Claude Code (sessão de 5 h e semana, mais Opus/Sonnet quando o plano tem), lidos do endpoint de uso com o token da conta escolhida nas Configurações. Não chama o modelo nem gasta tokens; precisa do `curl` no `PATH`.
+Embaixo do gráfico (ou do Contexto, em telas estreitas) ficam os totais do mesmo período: **Tokens por modelo**, com o que a conta gastou em cada modelo, e **Tokens na workspace**, com o que foi gasto no diretório aberto (e nas pastas de dentro) por provedor e modelo, somando todas as contas de todos os provedores instalados. Cada seção lista o maior primeiro e termina com o total; os botões Sem cache e Com cache valem para elas também.
+
+No Claude, os limites são os mesmos do `/usage` do Claude Code (sessão de 5 h, semana e a semana de cada modelo que o plano limita à parte, como o Fable), lidos do endpoint de uso com o token da conta escolhida nas Configurações. Não chama o modelo nem gasta tokens; precisa do `curl` no `PATH`.
 
 ### Aba Extensões
 
@@ -191,7 +195,8 @@ As configurações ficam em `~/.terraforme/workspace/<nome do workspace>/config.
 | Configuração | Valores |
 | --- | --- |
 | Provedor | Qual agente o chat usa e se está disponível (só leitura) |
-| Conta | Default (a conta padrão do `claude`) ou uma das contas encontradas em `~/.claude` e `~/.claude-*`, como Pessoal e Trabalho, com o e-mail de cada uma |
+| Conta | Default (a conta padrão do `claude`, que é a da `~/.claude`) ou uma das contas encontradas em `~/.claude-*`, como Pessoal e Trabalho, com o e-mail de cada uma |
+| Nova conta | `Enter` faz o login numa conta nova, como o `/new-login`; depois, ela aparece na Conta |
 | Modo inicial | Do provedor (o `defaultMode` do Claude), Agente, Yolo, Manual, Accept Edits ou Plan |
 | Modelo | Padrão ou um modelo do provedor (Opus, Sonnet, Haiku), enviado com `--model` |
 | Interface | **Agente Terraforme** (o chat e o input do terra, o padrão) ou **Original do provedor**: a aba Chat roda o `claude` interativo no workspace, dentro da tela do terra (abaixo da barra de abas, com o rodapé), aberto ao iniciar e com `Enter`, com a conta, o modelo, o esforço e o modo inicial das Configurações (o Yolo vira `bypassPermissions`). As teclas vão para o `claude` (inclusive `Tab`, `Esc` e `Ctrl+C`); `Ctrl+Q` volta às abas e `Enter` na aba Chat volta ao terminal. Trocar a Interface não fecha o `claude` se já foi enviada alguma mensagem: a sessão reaparece ao voltar |
