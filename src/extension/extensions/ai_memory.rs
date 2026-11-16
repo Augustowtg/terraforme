@@ -83,6 +83,19 @@ impl Extension for AiMemory {
             .clone()
     }
 
+    /// O instalador da release e o `ai-memory setup`, que deixa o servidor
+    /// como serviço do usuário. No Windows, o instalador só põe o `ai-memory`
+    /// no PATH dos terminais abertos depois; daí o caminho inteiro.
+    fn setup(&self) -> Option<String> {
+        let script = if cfg!(windows) {
+            r#"irm https://github.com/akitaonrails/ai-memory/releases/latest/download/install.ps1 | iex
+& "$env:LOCALAPPDATA\Programs\ai-memory\ai-memory.exe" setup --yes"#
+        } else {
+            "curl -fsSL https://github.com/akitaonrails/ai-memory/releases/latest/download/install.sh | sh\nai-memory setup --yes"
+        };
+        Some(script.to_string())
+    }
+
     fn load_report(&self) -> Option<Receiver<Result<Report, String>>> {
         let bin = self.bin.clone()?;
         let (tx, rx) = mpsc::channel();

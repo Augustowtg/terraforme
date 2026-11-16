@@ -92,6 +92,14 @@ impl Extension for Ponytail {
     fn contribution(&self) -> Result<Contribution, String> {
         Ok(Contribution::default())
     }
+
+    /// Como plugin do Claude Code, do jeito que o README dela recomenda.
+    fn setup(&self) -> Option<String> {
+        Some(
+            "claude plugin marketplace add DietrichGebert/ponytail\nclaude plugin install ponytail@ponytail"
+                .to_string(),
+        )
+    }
 }
 
 #[cfg(test)]
