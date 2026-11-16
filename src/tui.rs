@@ -139,10 +139,28 @@ fn run_upgrade() -> std::result::Result<(), String> {
     if let Err(err) = &result {
         eprintln!("\n{err}");
     }
+    wait_enter();
+    result
+}
+
+/// Os instaladores das extensões no terminal normal, um por vez.
+fn run_extension_setup(steps: &[(String, String)]) {
+    for (name, script) in steps {
+        println!("\nInstalando e configurando {name}...");
+        match crate::extension::setup_command(script).status() {
+            Ok(status) if status.success() => {}
+            Ok(status) => eprintln!("o instalador do {name} terminou com erro ({status})"),
+            Err(err) => eprintln!("não foi possível rodar o instalador do {name}: {err}"),
+        }
+    }
+    wait_enter();
+}
+
+/// Espera o Enter para voltar, para o usuário ler a saída do instalador.
+fn wait_enter() {
     println!("\nEnter para voltar ao terra.");
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
-    result
 }
 
 /// Sai da tela do terra, roda `f` no terminal normal e volta.
@@ -207,6 +225,11 @@ fn app_loop(terminal: &mut DefaultTerminal, app: &mut app::App, enhanced: bool) 
                     if app.take_update_install() {
                         let result = outside_screen(terminal, enhanced, run_upgrade)?;
                         app.update_finished(result);
+                    }
+                    let setup = app.take_extension_setup();
+                    if !setup.is_empty() {
+                        outside_screen(terminal, enhanced, || run_extension_setup(&setup))?;
+                        app.extension_setup_finished();
                     }
                     if let Some((original, command)) = app.take_original() {
                         let result = outside_screen(terminal, enhanced, || run_original(original))?;

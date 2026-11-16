@@ -6,10 +6,12 @@
 //! instalador no repositório do diretório atual (ou de um diretório acima):
 //! o `install-linux.sh` no Linux e o `install.ps1` no Windows.
 //!
-//! Pelo GitHub, o terra lê antes o CHANGELOG.md da `main`: sem versão mais
-//! nova que a atual, avisa e não instala; com versão nova, instala sem
-//! perguntar (o `-y` vai ao instalador) e mostra depois as notas das versões
-//! novas.
+//! Pelo GitHub, o terra lê antes a última release publicada, que é a que o
+//! instalador baixa: se ela não é mais nova que a atual, avisa e não instala;
+//! se é, instala sem perguntar (o `-y` vai ao instalador) e mostra depois as
+//! notas das versões novas, do CHANGELOG.md da `main`. Uma versão que está
+//! no CHANGELOG mas ainda não tem release não conta: o instalador baixaria a
+//! release antiga de novo.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -18,6 +20,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 
 const RAW: &str = "https://raw.githubusercontent.com/Augustowtg/terraforme/main";
+const RELEASES: &str = "https://github.com/Augustowtg/terraforme/releases";
 
 /// O instalador deste sistema no repositório.
 #[cfg(windows)]
@@ -40,20 +43,22 @@ pub fn run(repo: bool, args: &[String]) -> Result<()> {
         println!("Atualizando o terra com {}...", script.display());
         local_command(&script, args)
     } else {
-        notes = match fetch_changelog() {
-            Ok(changelog) => Some(newer_notes(&changelog, CURRENT)),
-            Err(err) => {
-                eprintln!("aviso: não foi possível ler o CHANGELOG ({err:#})");
-                None
+        match fetch_latest_release() {
+            Ok(latest) if !is_newer(&latest, CURRENT) => {
+                println!(
+                    "O terra ({CURRENT}) já está em dia: a última release publicada é a {latest}."
+                );
+                return Ok(());
             }
-        };
-        if let Some(notes) = &notes
-            && notes.is_empty()
-        {
-            println!("O terra já está na última versão ({CURRENT}).");
-            return Ok(());
+            Ok(latest) => {
+                println!("Atualizando o terra da {CURRENT} para a {latest}...");
+                notes = Some(fetch_notes(&latest));
+            }
+            Err(err) => {
+                eprintln!("aviso: não foi possível ler a última release ({err:#})");
+                println!("Atualizando o terra {CURRENT} pelo instalador do GitHub...");
+            }
         }
-        println!("Atualizando o terra {CURRENT} pelo instalador do GitHub...");
         let mut args = args.to_vec();
         if !args.iter().any(|arg| arg == "-y" || arg == "--yes") {
             args.push("-y".into());
@@ -69,14 +74,16 @@ pub fn run(repo: bool, args: &[String]) -> Result<()> {
     if !status.success() {
         bail!("o instalador terminou com erro ({status})");
     }
-    if let Some(notes) = notes {
+    if let Some(notes) = notes
+        && !notes.is_empty()
+    {
         println!("\nO que mudou desde a {CURRENT}:\n\n{notes}");
     }
     Ok(())
 }
 
-/// Uma versão mais nova que a atual: a mais nova do CHANGELOG e as notas de
-/// todas as que vieram depois da atual.
+/// Uma versão mais nova que a atual: a da última release e as notas de todas
+/// as que vieram depois da atual, até ela.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Update {
     pub version: String,
@@ -88,22 +95,25 @@ pub fn current() -> &'static str {
     CURRENT
 }
 
-/// Lê o CHANGELOG do GitHub; `None` se o terra já está na última versão.
+/// Lê a última release do GitHub; `None` se o terra já está nela.
 pub fn check() -> Result<Option<Update>> {
-    Ok(update_from(&fetch_changelog()?, CURRENT))
+    let version = fetch_latest_release()?;
+    Ok(is_newer(&version, CURRENT).then(|| Update {
+        notes: fetch_notes(&version),
+        version,
+    }))
 }
 
-fn update_from(changelog: &str, current: &str) -> Option<Update> {
-    let notes = newer_notes(changelog, current);
-    let version = notes.strip_prefix("## [")?.split(']').next()?.to_string();
-    Some(Update { version, notes })
+fn is_newer(version: &str, current: &str) -> bool {
+    parse_version(version) > parse_version(current)
 }
 
-/// O CHANGELOG.md da `main`, pelo `curl` (no Windows 10+, o `curl.exe`).
-fn fetch_changelog() -> Result<String> {
+/// A saída do `curl` (no Windows 10+, o `curl.exe`) com `args`.
+fn curl(args: &[&str]) -> Result<String> {
     let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
     let output = Command::new(curl)
-        .args(["-fsSL", "--max-time", "15", &format!("{RAW}/CHANGELOG.md")])
+        .args(["-fsSL", "--max-time", "15"])
+        .args(args)
         .output()
         .with_context(|| format!("não foi possível rodar o {curl}"))?;
     if !output.status.success() {
@@ -112,16 +122,44 @@ fn fetch_changelog() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// As seções `## [x.y.z]` do CHANGELOG de versão maior que `current`, na ordem
-/// do arquivo (da mais nova para a mais velha). Vazio se não houver.
-fn newer_notes(changelog: &str, current: &str) -> String {
-    let current = parse_version(current);
+/// A versão da última release publicada, a que o instalador baixa: o
+/// `/releases/latest` redireciona para `/releases/tag/vX.Y.Z` (como no
+/// install.sh). A URL final vem na última linha, depois dos cabeçalhos.
+fn fetch_latest_release() -> Result<String> {
+    let output = curl(&[
+        "-I",
+        "-w",
+        "\n%{url_effective}",
+        &format!("{RELEASES}/latest"),
+    ])?;
+    release_version(output.lines().last().unwrap_or_default())
+        .map(str::to_string)
+        .context("o repositório não tem release publicada")
+}
+
+fn release_version(url: &str) -> Option<&str> {
+    Some(url.trim().rsplit_once("/releases/tag/v")?.1)
+}
+
+/// As notas das versões depois da atual até a `latest`, do CHANGELOG.md da
+/// `main`; vazio sem conseguir ler (a atualização segue sem as notas).
+fn fetch_notes(latest: &str) -> String {
+    curl(&[&format!("{RAW}/CHANGELOG.md")])
+        .map(|changelog| notes_between(&changelog, CURRENT, latest))
+        .unwrap_or_default()
+}
+
+/// As seções `## [x.y.z]` do CHANGELOG de versão maior que `current` e até a
+/// `latest`, na ordem do arquivo (da mais nova para a mais velha). Vazio se
+/// não houver.
+fn notes_between(changelog: &str, current: &str, latest: &str) -> String {
+    let (current, latest) = (parse_version(current), parse_version(latest));
     let mut notes = String::new();
     let mut keep = false;
     for line in changelog.lines() {
         if let Some(rest) = line.strip_prefix("## [") {
-            let version = rest.split(']').next().unwrap_or_default();
-            keep = parse_version(version) > current;
+            let version = parse_version(rest.split(']').next().unwrap_or_default());
+            keep = version > current && version <= latest;
         }
         if keep {
             notes.push_str(line);
@@ -233,14 +271,30 @@ mod tests {
     }
 
     #[test]
-    fn newer_notes_pega_so_as_versoes_novas() {
+    fn notes_between_pega_as_versoes_novas_ate_a_release() {
         let changelog = "# Changelog\n\nintro\n\n## [Unreleased]\n\n- x\n\n## [0.9.0] - 2026-11-01\n\n- b\n\n## [0.8.25] - 2026-10-28\n\n- a\n\n## [0.8.24] - 2026-10-28\n\n- velho\n";
         assert_eq!(
-            newer_notes(changelog, "0.8.24"),
+            notes_between(changelog, "0.8.24", "0.9.0"),
             "## [0.9.0] - 2026-11-01\n\n- b\n\n## [0.8.25] - 2026-10-28\n\n- a"
         );
-        assert_eq!(newer_notes(changelog, "0.9.0"), "");
-        assert_eq!(update_from(changelog, "0.8.24").unwrap().version, "0.9.0");
-        assert_eq!(update_from(changelog, "0.9.0"), None);
+        // A 0.9.0 está no CHANGELOG, mas a última release é a 0.8.25.
+        assert_eq!(
+            notes_between(changelog, "0.8.24", "0.8.25"),
+            "## [0.8.25] - 2026-10-28\n\n- a"
+        );
+        assert_eq!(notes_between(changelog, "0.9.0", "0.9.0"), "");
+    }
+
+    #[test]
+    fn a_release_so_e_nova_se_for_maior_que_a_atual() {
+        let url = "https://github.com/Augustowtg/terraforme/releases/tag/v0.13.23\n";
+        assert_eq!(release_version(url), Some("0.13.23"));
+        // Sem release, o /releases/latest redireciona para /releases.
+        assert_eq!(release_version("https://github.com/x/y/releases"), None);
+        assert!(is_newer("0.13.26", "0.13.25"));
+        assert!(is_newer("0.14.0", "0.13.25"));
+        // Compilado da main, na frente da última release: nada a instalar.
+        assert!(!is_newer("0.13.23", "0.13.25"));
+        assert!(!is_newer("0.13.25", "0.13.25"));
     }
 }

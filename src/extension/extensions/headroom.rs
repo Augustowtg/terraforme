@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use super::{find_program, version};
+use super::{find_program, python_tool, version};
 use crate::extension::{Contribution, Extension, Launcher, Status};
 
 pub struct Headroom {
@@ -66,6 +66,10 @@ impl Extension for Headroom {
             }],
             ..Contribution::default()
         })
+    }
+
+    fn setup(&self) -> Option<String> {
+        Some(python_tool("headroom-ai"))
     }
 }
 

@@ -93,6 +93,7 @@ impl App {
                 })
                 .collect(),
             skills: self.skills(),
+            update: self.update_view.version().map(str::to_string),
         }
     }
 

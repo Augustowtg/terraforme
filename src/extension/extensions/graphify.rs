@@ -14,7 +14,7 @@ use std::thread;
 
 use serde_json::Value;
 
-use super::{find_program, version};
+use super::{find_program, python_tool, version};
 use crate::extension::{Contribution, Extension, Hook, Report, Stat, StatValue, Status};
 
 /// A pasta que o graphify grava no workspace (a pasta do terra).
@@ -73,6 +73,12 @@ impl Extension for Graphify {
             hooks: vec![hook("Bash|Grep", "search"), hook("Read|Glob", "read")],
             ..Contribution::default()
         })
+    }
+
+    /// O pacote `graphifyy` e o `graphify install`, que põe a skill
+    /// `/graphify` nos agentes.
+    fn setup(&self) -> Option<String> {
+        Some(format!("{}\ngraphify install", python_tool("graphifyy")))
     }
 
     fn load_report(&self) -> Option<Receiver<Result<Report, String>>> {

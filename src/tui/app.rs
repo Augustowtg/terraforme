@@ -191,6 +191,9 @@ pub struct App {
     registry: Registry,
     /// As extensões ativas na conta do agente (e as de usar sempre).
     extensions: ExtensionSettings,
+    /// O `c` da Config: o nome e o script das extensões a instalar, para o
+    /// loop rodar fora da tela.
+    extension_setup: Vec<(String, String)>,
     /// O `config.json` do workspace, onde as configurações são salvas
     /// (`None` nos testes).
     config: Option<PathBuf>,

@@ -41,6 +41,16 @@ impl Registry {
         }
         (total, warnings)
     }
+
+    /// O que falta instalar entre as `enabled` (ids): o nome e o script
+    /// ([`Extension::setup`]) de cada uma que não está instalada.
+    pub fn pending_setup(&self, enabled: &[String]) -> Vec<(String, String)> {
+        self.all()
+            .filter(|e| enabled.iter().any(|id| id == e.id()))
+            .filter(|e| !e.status().is_installed())
+            .filter_map(|e| Some((e.name().to_string(), e.setup()?)))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +86,9 @@ mod tests {
         }
         fn contribution(&self) -> Result<Contribution, String> {
             self.result.clone()
+        }
+        fn setup(&self) -> Option<String> {
+            Some(format!("instala {}", self.id))
         }
     }
 
@@ -133,6 +146,18 @@ mod tests {
         let registry = registry();
         let ids: Vec<_> = registry.all().map(|e| e.id()).collect();
         assert_eq!(ids, ["a", "b", "faltando", "quebrada"]);
+    }
+
+    #[test]
+    fn pending_setup_is_only_the_enabled_extensions_that_are_missing() {
+        let registry = registry();
+        let enabled = ["a".to_string(), "faltando".to_string()];
+        assert_eq!(
+            registry.pending_setup(&enabled),
+            [("faltando".to_string(), "instala faltando".to_string())]
+        );
+        assert!(registry.pending_setup(&["a".to_string()]).is_empty());
+        assert!(registry.pending_setup(&[]).is_empty());
     }
 
     #[test]

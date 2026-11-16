@@ -11,7 +11,9 @@
 //! tela principal salva e aplica a mudança. `Shift+Tab` alterna entre o
 //! Agente e as Extensões. Nas Extensões, a lista é paginada (como a dos
 //! modelos do `/model`, mas com páginas): `↑`/`↓` escolhem, `←`/`→` trocam
-//! de página e `Espaço` (ou `Enter`) liga ou desliga a extensão.
+//! de página, `Espaço` (ou `Enter`) liga ou desliga a extensão e o `c`
+//! instala e configura as marcadas que faltam. Embaixo delas, a versão do
+//! terra.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
@@ -33,7 +35,7 @@ use crate::theme::{self, Variant};
 const HELP: &str =
     "↑/↓ escolher · ←/→ ou Enter alterar · Shift+Tab extensões · Tab trocar aba · Esc ir para Sair";
 const HELP_MODEL: &str = "↑/↓ escolher · Enter selecionar · Esc fechar";
-const HELP_EXTENSIONS: &str = "↑/↓ escolher · Espaço ativar/usar sempre/desativar · ←/→ página · Shift+Tab agente · Tab trocar aba · Esc ir para Sair";
+const HELP_EXTENSIONS: &str = "↑/↓ escolher · Espaço ativar/usar sempre/desativar · c configurar as marcadas · ←/→ página · Shift+Tab agente · Tab trocar aba · Esc ir para Sair";
 /// Largura da coluna dos nomes das configurações.
 const LABEL_WIDTH: usize = 18;
 /// Extensões em cada página.
@@ -100,6 +102,8 @@ pub struct Choices {
     pub context_window: u64,
     pub extensions: Vec<ExtensionOption>,
     pub skills: Vec<SkillInfo>,
+    /// A versão nova do terra, quando há uma release mais nova que a atual.
+    pub update: Option<String>,
 }
 
 /// Uma skill instalada no agente: de onde vem (ex.: `Claude · plugin`) e o
@@ -132,6 +136,8 @@ pub enum Outcome {
     ExtensionsChanged,
     /// Pediu para adicionar uma conta ao provedor (o `/new-login`).
     AddAccount,
+    /// Pediu para instalar e configurar as extensões marcadas que faltam.
+    SetupExtensions,
 }
 
 /// A seção em foco.
@@ -153,6 +159,8 @@ pub struct ConfigView {
     skill: usize,
     /// O menu do `/model` dos sub agentes, quando aberto.
     model_menu: Option<ModelMenu>,
+    /// Como terminou o último pedido de configurar as extensões.
+    notice: Option<String>,
 }
 
 impl ConfigView {
@@ -166,6 +174,10 @@ impl ConfigView {
         }
     }
 
+    pub fn set_notice(&mut self, notice: String) {
+        self.notice = Some(notice);
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -173,6 +185,7 @@ impl ConfigView {
         extensions: &mut ExtensionSettings,
         choices: &Choices,
     ) -> Outcome {
+        self.notice = None;
         // O menu, aberto, fica com todas as teclas.
         if let Some(menu) = &mut self.model_menu {
             return match menu.handle_key(key, choices.catalog.as_ref()) {
@@ -256,8 +269,9 @@ impl ConfigView {
 
     /// `↑`/`↓` andam pela lista (trocando de página), `←`/`→` trocam de
     /// página e `Espaço`/`Enter` passam de inativa para ativa nesta conta,
-    /// usar sempre e inativa de novo. Uma extensão que não está instalada não
-    /// liga, mas desliga.
+    /// usar sempre e inativa de novo. Uma extensão que não está instalada
+    /// também é marcada: ela só vale depois de instalada, o que o `c` faz
+    /// com todas as marcadas que faltam.
     fn handle_extension_key(
         &mut self,
         key: KeyEvent,
@@ -283,17 +297,10 @@ impl ConfigView {
                 self.extension = ((page + 1).min(pages) * PAGE).min(last);
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
-                let option = &options[self.extension];
-                if !option.status.is_installed() {
-                    if !settings.is_enabled(&option.id) {
-                        return Outcome::Moved;
-                    }
-                    settings.set(&option.id, ExtensionMode::Off);
-                    return Outcome::ExtensionsChanged;
-                }
-                settings.toggle(&option.id);
+                settings.toggle(&options[self.extension].id);
                 return Outcome::ExtensionsChanged;
             }
+            KeyCode::Char('c') => return Outcome::SetupExtensions,
             _ => return Outcome::Ignored,
         }
         Outcome::Moved
@@ -341,7 +348,9 @@ impl ConfigView {
         lines.push(Line::default());
         lines.extend(skill_lines);
 
-        let extension_lines = self.extension_lines(extensions, &choices.extensions);
+        let mut extension_lines = self.extension_lines(extensions, &choices.extensions);
+        extension_lines.push(Line::default());
+        extension_lines.extend(version_lines(choices.update.as_deref()));
         // A seção Agente com o recuo (1) e a folga (2) do bloco.
         let agent_width = width.unwrap_or(0) as u16 + 3;
         let (agent_area, extensions_area) = if area.width >= agent_width + EXTENSIONS_MIN_WIDTH {
@@ -501,8 +510,41 @@ impl ConfigView {
             format!("  {}", option.homepage),
             theme::path(),
         ));
+        let hint = match &self.notice {
+            Some(notice) => notice.as_str(),
+            None => "c instala e configura as marcadas que faltam",
+        };
+        lines.push(Line::styled(format!("  {hint}"), theme::muted()));
         lines
     }
+}
+
+/// A seção Terraforme: a versão do terra, a release nova (quando há uma) e o
+/// executável que está rodando.
+fn version_lines(update: Option<&str>) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::styled(" Terraforme", theme::section_title()),
+        info_row(
+            "Versão",
+            Span::styled(crate::upgrade::current(), theme::text()),
+        ),
+    ];
+    if let Some(version) = update {
+        lines.push(info_row(
+            "Nova versão",
+            Span::styled(
+                format!("{version} · aba Atualização ou terra upgrade"),
+                theme::variant(Variant::Success),
+            ),
+        ));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        lines.push(info_row(
+            "Executável",
+            Span::styled(exe.display().to_string(), theme::path()),
+        ));
+    }
+    lines
 }
 
 fn field_label(field: Field) -> &'static str {
@@ -807,6 +849,7 @@ mod tests {
             context_window: 200_000,
             extensions: Vec::new(),
             skills: Vec::new(),
+            update: None,
         }
     }
 
@@ -861,8 +904,10 @@ mod tests {
             Outcome::ExtensionsChanged
         );
         press(&mut view, KeyCode::Down);
-        // A segunda não está instalada: não liga.
-        assert_eq!(press(&mut view, KeyCode::Char(' ')), Outcome::Moved);
+        assert_eq!(
+            press(&mut view, KeyCode::Char('c')),
+            Outcome::SetupExtensions
+        );
         // → vai para a próxima página; ← volta para o começo da anterior.
         press(&mut view, KeyCode::Right);
         assert_eq!(view.extension, 5);
@@ -883,27 +928,50 @@ mod tests {
     }
 
     #[test]
-    fn missing_extension_can_still_be_turned_off() {
+    fn missing_extension_can_be_marked_to_be_set_up_and_unmarked() {
         let mut view = ConfigView {
             section: Section::Extensions,
             extension: 1,
             ..ConfigView::default()
         };
-        let mut extensions = ExtensionSettings {
-            enabled: vec!["ext2".into()],
-            ..ExtensionSettings::default()
+        let mut extensions = ExtensionSettings::default();
+        let choices = Choices {
+            extensions: extension_options(2),
+            ..choices()
         };
-        let outcome = view.handle_key(
-            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-            &mut AgentSettings::default(),
-            &mut extensions,
-            &Choices {
-                extensions: extension_options(2),
-                ..choices()
-            },
+        let mut space = |extensions: &mut ExtensionSettings| {
+            view.handle_key(
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+                &mut AgentSettings::default(),
+                extensions,
+                &choices,
+            )
+        };
+        assert_eq!(space(&mut extensions), Outcome::ExtensionsChanged);
+        assert_eq!(extensions.enabled, ["ext2"]);
+        space(&mut extensions);
+        assert_eq!(space(&mut extensions), Outcome::ExtensionsChanged);
+        assert!(extensions.active().is_empty());
+    }
+
+    #[test]
+    fn version_section_shows_the_current_version_and_a_new_release() {
+        let text = |line: &Line| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        let lines = version_lines(None);
+        assert_eq!(text(&lines[0]), " Terraforme");
+        assert_eq!(
+            text(&lines[1]),
+            format!("  {}{}", label_span("Versão"), env!("CARGO_PKG_VERSION"))
         );
-        assert_eq!(outcome, Outcome::ExtensionsChanged);
-        assert!(extensions.enabled.is_empty());
+        assert!(!lines.iter().any(|l| text(l).contains("Nova versão")));
+
+        let lines = version_lines(Some("99.0.0"));
+        assert!(text(&lines[2]).contains("99.0.0"), "{}", text(&lines[2]));
     }
 
     #[test]
