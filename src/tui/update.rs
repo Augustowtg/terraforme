@@ -132,3 +132,27 @@ impl UpdateView {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ao_abrir_com_versao_nova_a_aba_atualizacao_aparece() {
+        let (tx, rx) = mpsc::channel();
+        let mut view = UpdateView {
+            checking: Some(rx),
+            ..UpdateView::default()
+        };
+        view.tick();
+        assert!(!view.available());
+        tx.send(Some(Update {
+            version: "9.9.9".into(),
+            notes: String::new(),
+        }))
+        .unwrap();
+        view.tick();
+        assert!(view.available());
+        assert_eq!(view.version(), Some("9.9.9"));
+    }
+}
