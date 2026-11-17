@@ -819,6 +819,15 @@ impl InputBox {
             .collect()
     }
 
+    /// Quantos arquivos e pastas combinam com a consulta, sem o limite de
+    /// [`mention::matches`] (para o título continuar diminuindo ao digitar).
+    fn found_count(&self) -> usize {
+        let (Some(files), Some(query)) = (&self.files, self.query()) else {
+            return 0;
+        };
+        mention::match_count(&files.snapshot(), &query)
+    }
+
     /// Troca `@consulta` pelo badge de `entry` (e um espaço). Sem item, a
     /// consulta escrita vira o badge ([`Self::commit_typed`]).
     fn accept(&mut self, entry: Option<&FileEntry>) {
@@ -1116,7 +1125,7 @@ impl InputBox {
             let found = self.found();
             let selected = picker.selected.min(found.len().saturating_sub(1));
             let refs: Vec<&FileEntry> = found.iter().collect();
-            mention::draw(frame, area, &refs, selected);
+            mention::draw(frame, area, &refs, selected, self.found_count());
         }
 
         if let Some(picker) = self.pattern_picker {

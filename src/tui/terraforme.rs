@@ -1,172 +1,374 @@
-//! Aba Terraforme: o agente que vai orquestrar o terra. Por enquanto, só o
-//! logo no canto superior esquerdo (15% da altura da tela) e o mesmo input
-//! do chat, embaixo.
+//! Aba Terraforme: a conversa com o agente à esquerda (o mesmo chat
+//! principal da aba Chat, com o mesmo histórico e sessão) e, à direita, o
+//! consumo da sessão (5 h), as sessões do terra abertas na máquina e uma
+//! caixa por sub agente (as execuções do orquestrador) rodando ou que
+//! terminou há pouco:
+//!
+//! ```text
+//! ╭──────────────────────────────╮
+//! │ ● busca · 1.2K tokens        │   ● verde pulsando: trabalhando
+//! │ Grep: subagent_model         │   ● amarelo: espera uma permissão
+//! ╰──────────────────────────────╯   ● vermelho: falhou
+//! ```
 
-use crossterm::event::{KeyEvent, MouseEvent};
+use std::cell::RefCell;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 
-use super::input::{self, InputBox, Outcome};
-use crate::theme;
+use super::chat::Chat;
+use super::chat::compact_count;
+use super::orchestrator::HubView;
+use super::usage::SessionUsage;
+use crate::hub::protocol::{Health, Instance, now};
+use crate::hub::view;
+use crate::orchestrator::run::{self, Run, RunState};
+use crate::theme::{self, Variant};
 
-pub const HELP: &str = "i escrever · Esc sair do modo de escrita · Tab trocar aba";
+/// Quanto da largura da tela a conversa ocupa; as sessões ficam com o resto,
+/// um pouco mais para a direita.
+const CHAT_PERCENT: u16 = 45;
 
-/// Quanto da altura da tela o logo ocupa, em porcentagem.
-const LOGO_PERCENT: u16 = 15;
-const WORD: &str = "TERRAFORME";
-/// Altura e largura de cada letra do logo, em "pixels".
-const GLYPH_HEIGHT: usize = 5;
-const GLYPH_WIDTH: usize = 5;
-/// Pixels vazios entre as letras.
-const GLYPH_GAP: usize = 1;
+/// De quantos ticks em quantos ticks a bolinha de quem trabalha pulsa
+/// (mesmo ritmo do cursor do input).
+const PULSE_TICKS: u32 = 5;
+/// De quantos em quantos ticks (de 100 ms) as execuções são relidas do
+/// disco, com a aba aberta.
+const RELOAD_TICKS: u32 = 10;
+/// Por quanto tempo uma execução que terminou continua na tela.
+const RECENT_SECS: u64 = 10 * 60;
+/// A altura de uma caixa: a borda e as duas linhas.
+const BOX_HEIGHT: u16 = 4;
+/// As linhas vazias entre uma caixa e a próxima.
+const BOX_GAP: u16 = 1;
+/// As colunas vazias de cada lado da coluna da direita.
+const SIDE_MARGIN: u16 = 1;
 
-/// As letras do logo, cinco linhas de cinco pixels (`#` aceso).
-fn glyph(c: char) -> [&'static str; GLYPH_HEIGHT] {
-    match c {
-        'T' => ["#####", "  #  ", "  #  ", "  #  ", "  #  "],
-        'E' => ["#####", "#    ", "#### ", "#    ", "#####"],
-        'R' => ["#### ", "#   #", "#### ", "#  # ", "#   #"],
-        'A' => [" ### ", "#   #", "#####", "#   #", "#   #"],
-        'F' => ["#####", "#    ", "#### ", "#    ", "#    "],
-        'O' => [" ### ", "#   #", "#   #", "#   #", " ### "],
-        'M' => ["#   #", "## ##", "# # #", "#   #", "#   #"],
-        _ => ["     "; GLYPH_HEIGHT],
+/// O estado de um sub agente na caixa: cada um tem a sua cor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    Working,
+    Permission,
+    Error,
+    Queued,
+    Done,
+}
+
+impl Tier {
+    fn style(self) -> Style {
+        match self {
+            Tier::Working => theme::variant(Variant::Success),
+            Tier::Permission => theme::variant(Variant::Warning),
+            Tier::Error => theme::variant(Variant::Danger),
+            Tier::Queued => theme::muted(),
+            Tier::Done => theme::variant(Variant::Active),
+        }
     }
 }
 
-/// O logo em pixels, sem escala: uma linha por linha de pixels.
-fn pixels() -> Vec<Vec<bool>> {
-    let letters: Vec<_> = WORD.chars().map(glyph).collect();
-    (0..GLYPH_HEIGHT)
-        .map(|row| {
-            let mut line = Vec::new();
-            for (i, letter) in letters.iter().enumerate() {
-                if i > 0 {
-                    line.extend(std::iter::repeat_n(false, GLYPH_GAP));
-                }
-                line.extend(letter[row].chars().map(|c| c == '#'));
-            }
-            line
-        })
-        .collect()
+/// A caixa de um sub agente: o nome, os tokens sem o cache e o que ele faz.
+#[derive(Debug, Clone, PartialEq)]
+struct RunBox {
+    run: String,
+    name: String,
+    tier: Tier,
+    tokens: u64,
+    description: String,
 }
 
-/// Largura do logo sem escala, em colunas.
-fn base_width() -> usize {
-    WORD.chars().count() * (GLYPH_WIDTH + GLYPH_GAP) - GLYPH_GAP
-}
-
-/// O logo na escala `scale`, com meio bloco (`▀▄█`): cada linha da tela
-/// guarda duas linhas de pixels, e os pixels ficam quase quadrados.
-fn logo_lines(scale: usize) -> Vec<String> {
-    let scaled: Vec<Vec<bool>> = pixels()
+/// As caixas das execuções rodando, na fila ou que terminaram há menos de
+/// [`RECENT_SECS`] (em `now`), a mais nova primeiro.
+fn load_boxes(home: &Path, now: u64) -> Vec<RunBox> {
+    run::list(home)
         .into_iter()
-        .flat_map(|row| {
-            let wide: Vec<bool> = row
-                .into_iter()
-                .flat_map(|p| std::iter::repeat_n(p, scale))
-                .collect();
-            std::iter::repeat_n(wide, scale)
+        .rev()
+        .filter(|run| {
+            matches!(run.state, RunState::Queued | RunState::Running)
+                || run
+                    .finished
+                    .is_some_and(|f| now.saturating_sub(f) < RECENT_SECS)
         })
-        .collect();
-    let empty = vec![false; scaled[0].len()];
-    scaled
-        .chunks(2)
-        .map(|pair| {
-            let top = &pair[0];
-            let bottom = pair.get(1).unwrap_or(&empty);
-            top.iter()
-                .zip(bottom)
-                .map(|(&t, &b)| match (t, b) {
-                    (true, true) => '█',
-                    (true, false) => '▀',
-                    (false, true) => '▄',
-                    (false, false) => ' ',
-                })
-                .collect()
+        .map(|run| run_box(home, run))
+        .collect()
+}
+
+fn run_box(home: &Path, run: Run) -> RunBox {
+    let output = || fs::read_to_string(run.dir(home).join(run::OUTPUT)).unwrap_or_default();
+    let used = run.usage.as_ref().map_or(0, |u| u.input + u.output);
+    let (tier, tokens, description) = match run.state {
+        RunState::Queued => (Tier::Queued, 0, "Na fila".to_string()),
+        RunState::Running => {
+            let live = run::live(&output());
+            let activity = live.activity.unwrap_or_else(|| "Pensando...".into());
+            (Tier::Working, live.tokens, activity)
+        }
+        RunState::Done => {
+            let text = run.summary.clone().or_else(|| run::final_text(&output()));
+            let first = text
+                .as_deref()
+                .and_then(|t| t.lines().find(|l| !l.trim().is_empty()));
+            (
+                Tier::Done,
+                used,
+                first.unwrap_or("Concluída").trim().to_string(),
+            )
+        }
+        RunState::Failed | RunState::Timeout | RunState::Rejected => (
+            Tier::Error,
+            used,
+            run.error.clone().unwrap_or_else(|| "Falhou".into()),
+        ),
+    };
+    RunBox {
+        run: run.id,
+        name: run.agent,
+        tier,
+        tokens,
+        description,
+    }
+}
+
+/// As caixas com os pedidos de permissão (`waiting`: a execução e o pedido)
+/// por cima: quem espera fica amarelo, com o pedido na descrição.
+fn with_permissions(boxes: &[RunBox], waiting: &[(String, String)]) -> Vec<RunBox> {
+    boxes
+        .iter()
+        .map(|b| match waiting.iter().find(|(run, _)| *run == b.run) {
+            Some((_, request)) if b.tier == Tier::Working => RunBox {
+                tier: Tier::Permission,
+                description: format!("Permissão: {request}"),
+                ..b.clone()
+            },
+            _ => b.clone(),
         })
         .collect()
 }
 
-/// A maior escala que cabe em `area` (ao menos 1).
-fn logo_scale(area: Rect) -> usize {
-    (1..)
-        .take_while(|&s| {
-            (GLYPH_HEIGHT * s).div_ceil(2) <= area.height as usize
-                && base_width() * s <= area.width as usize
-        })
-        .last()
-        .unwrap_or(1)
+/// As caixas, uma embaixo da outra, até onde cabem em `area`.
+fn draw_boxes(frame: &mut Frame, area: Rect, boxes: &[RunBox], pulse_on: bool) {
+    let mut y = area.y;
+    for b in boxes {
+        if y + BOX_HEIGHT > area.bottom() {
+            break;
+        }
+        let rect = Rect::new(area.x, y, area.width, BOX_HEIGHT);
+        let dot = match b.tier {
+            Tier::Working => theme::pulse(pulse_on),
+            tier => tier.style(),
+        };
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("● ", dot),
+                Span::styled(b.name.clone(), theme::text()),
+                Span::styled(
+                    format!(" · {} tokens", compact_count(b.tokens)),
+                    theme::variant(theme::tokens_variant(b.tokens)),
+                ),
+            ]),
+            Line::styled(b.description.clone(), theme::path()),
+        ];
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(b.tier.style())
+            .padding(Padding::horizontal(1));
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+        y += BOX_HEIGHT + BOX_GAP;
+    }
 }
 
 #[derive(Default)]
 pub struct TerraformeView {
-    input: InputBox,
+    /// Os workspaces abertos na lista de sessões.
+    expanded: Vec<String>,
+    /// O workspace escolhido, entre os do último desenho.
+    selected: usize,
+    /// Os workspaces do último desenho, na ordem da tela (as teclas chegam
+    /// sem o hub).
+    workspaces: RefCell<Vec<String>>,
+    /// Ticks desde a abertura, para a bolinha pulsar.
+    pulse_ticks: u32,
+    /// Ticks até reler as execuções; 0 relê no próximo tick com a aba aberta.
+    reload_in: u32,
+    /// A pasta do terra, onde ficam as execuções.
+    home: Option<PathBuf>,
+    /// As caixas da última leitura.
+    boxes: Vec<RunBox>,
 }
 
 impl TerraformeView {
-    /// Retorna `true` se a tecla foi usada pelo input.
+    /// Retorna `true` se a tecla foi usada pela lista de sessões (`↑`/`↓`
+    /// escolhe um workspace, `Enter` abre ou fecha). Chamado só depois do
+    /// chat não ter consumido a tecla (ver [`crate::tui::chat::Chat::handle_key`]):
+    /// no modo INSERT, ↑/↓/Enter são do chat, não da lista.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
-        match self.input.handle_key(key) {
-            Outcome::Ignored => false,
-            // O agente ainda não existe: o texto enviado só fica no
-            // histórico do ↑.
-            Outcome::Submit => {
-                self.input.remember();
-                self.input.clear();
+        match key.code {
+            KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
                 true
             }
-            Outcome::Handled | Outcome::Command(_) => true,
+            KeyCode::Down => {
+                let count = self.workspaces.borrow().len();
+                self.selected = (self.selected + 1).min(count.saturating_sub(1));
+                true
+            }
+            KeyCode::Enter => {
+                if let Some(name) = self.workspaces.borrow().get(self.selected).cloned() {
+                    if self.expanded.contains(&name) {
+                        self.expanded.retain(|w| *w != name);
+                    } else {
+                        self.expanded.push(name);
+                    }
+                }
+                true
+            }
+            _ => false,
         }
     }
 
-    pub fn handle_paste(&mut self, text: &str) {
-        self.input.paste(text);
+    /// Com a aba aberta (`visible`), relê as execuções a cada
+    /// [`RELOAD_TICKS`]; fechada, só marca para reler ao abrir.
+    pub fn tick(&mut self, visible: bool) {
+        self.pulse_ticks = self.pulse_ticks.wrapping_add(1);
+        if !visible {
+            self.reload_in = 0;
+            return;
+        }
+        if self.reload_in > 0 {
+            self.reload_in -= 1;
+            return;
+        }
+        self.reload_in = RELOAD_TICKS;
+        if self.home.is_none() {
+            self.home = crate::hub::endpoint::Endpoint::current()
+                .ok()
+                .map(|e| e.home);
+        }
+        if let Some(home) = &self.home {
+            self.boxes = load_boxes(home, now());
+        }
     }
 
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) {
-        self.input.handle_mouse(mouse);
+    /// Desenha a aba em `area`: o histórico da conversa (o `chat` principal)
+    /// à esquerda, o painel de entrada embaixo, na largura toda, e à direita,
+    /// uma seção embaixo da outra: o consumo da sessão (`usage`), as sessões
+    /// abertas (do `hub`) e os sub agentes.
+    pub fn draw(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        hub: &HubView,
+        chat: &Chat,
+        usage: &SessionUsage,
+    ) {
+        let [top, panel] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(chat.height())]).areas(area);
+        let [history, side] =
+            Layout::horizontal([Constraint::Percentage(CHAT_PERCENT), Constraint::Fill(1)])
+                .areas(top);
+        let frame_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(theme::border());
+        chat.draw_history(frame, frame_block.inner(history));
+        frame.render_widget(frame_block, history);
+        chat.draw(frame, panel);
+
+        // Uma margem em volta, para a coluna não colar no histórico.
+        let side = side.inner(Margin::new(SIDE_MARGIN, 1));
+        let mut lines = usage.lines(usize::from(side.width));
+        lines.push(Line::default());
+        let (sessions, workspaces) = session_lines(hub, &self.expanded, self.selected);
+        *self.workspaces.borrow_mut() = workspaces;
+        lines.extend(sessions);
+        let shown = with_permissions(&self.boxes, &chat.waiting_runs());
+        if !shown.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::styled(" Sub agentes", theme::section_title()));
+        }
+        let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let [text, boxes] =
+            Layout::vertical([Constraint::Length(height), Constraint::Fill(1)]).areas(side);
+        frame.render_widget(Paragraph::new(lines), text);
+        let pulse_on = (self.pulse_ticks / PULSE_TICKS).is_multiple_of(2);
+        draw_boxes(frame, boxes, &shown, pulse_on);
     }
+}
 
-    pub fn set_caps_lock(&mut self, on: bool) {
-        self.input.set_caps_lock(on);
+/// As sessões do terra abertas na máquina, em grupos por workspace: cada
+/// grupo fica fechado até o `Enter` abri-lo. Retorna as linhas e os nomes
+/// dos workspaces, na ordem da tela (para o `handle_key` escolher entre
+/// eles sem o hub).
+fn session_lines(
+    hub: &HubView,
+    expanded: &[String],
+    selected: usize,
+) -> (Vec<Line<'static>>, Vec<String>) {
+    let mut lines = vec![Line::styled(" Sessões abertas", theme::section_title())];
+    let message = match hub.instances {
+        None if hub.own.is_none() => Some("Sem o orquestrador neste terra."),
+        None | Some((false, _)) => Some("Conectando ao orquestrador..."),
+        Some(_) => None,
+    };
+    if let Some(message) = message {
+        lines.push(Line::styled(format!(" {message}"), theme::muted()));
+        return (lines, Vec::new());
     }
-
-    pub fn tick(&mut self) {
-        self.input.tick();
+    let Some((_, instances)) = hub.instances else {
+        return (lines, Vec::new());
+    };
+    let alive: Vec<Instance> = instances
+        .iter()
+        .filter(|i| i.health != Health::Gone)
+        .cloned()
+        .collect();
+    if alive.is_empty() {
+        lines.push(Line::styled(" Nenhuma sessão ativa.", theme::muted()));
+        return (lines, Vec::new());
     }
-
-    /// Desenha a aba em `area`; o logo usa 15% da altura de `screen`.
-    pub fn draw(&self, frame: &mut Frame, area: Rect, screen: Rect) {
-        let logo_height = (screen.height * LOGO_PERCENT / 100).max(3);
-        let [logo, _, input] = Layout::vertical([
-            Constraint::Length(logo_height),
-            Constraint::Fill(1),
-            Constraint::Length(input::HEIGHT),
-        ])
-        .areas(area);
-        let [_, logo] =
-            Layout::horizontal([Constraint::Length(1), Constraint::Fill(1)]).areas(logo);
-        let [_, logo] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(logo);
-
-        let lines: Vec<Line> = if logo.width as usize >= base_width() {
-            logo_lines(logo_scale(logo))
-                .into_iter()
-                .map(|l| Line::from(Span::styled(l, theme::section_title())))
-                .collect()
+    let groups = view::by_workspace(&alive);
+    let names: Vec<String> = groups.iter().map(|w| w.name.to_string()).collect();
+    for (i, workspace) in groups.iter().enumerate() {
+        let open = expanded.iter().any(|w| w == workspace.name);
+        let marker = if open { "▾" } else { "▸" };
+        let header = format!(" {marker} {} · {}", workspace.name, workspace.summary());
+        let style = if i == selected {
+            theme::focused()
         } else {
-            vec![Line::from(Span::styled(WORD, theme::section_title()))]
+            theme::path()
         };
-        frame.render_widget(Paragraph::new(lines), logo);
+        lines.push(Line::styled(header, style));
+        if !open {
+            continue;
+        }
+        for instance in &workspace.instances {
+            let dot = match instance.health {
+                Health::Stale => theme::stale(),
+                _ => theme::alive(),
+            };
+            let [doing, _, elapsed] = view::instance_columns(instance);
+            lines.push(Line::from(vec![
+                Span::styled("   ● ", dot),
+                Span::styled(format!("{doing} "), doing_style(&doing)),
+                Span::styled(elapsed, theme::muted()),
+            ]));
+        }
+    }
+    (lines, names)
+}
 
-        self.input.draw(
-            frame,
-            input,
-            Line::from(Span::styled(" Terraforme ", theme::section_title())),
-            Line::default(),
-        );
+/// Rodando é verde, parado é neutro, e quem saiu é vermelho; uma tarefa (o
+/// que o agente está fazendo) fica na cor de destaque.
+fn doing_style(doing: &str) -> Style {
+    match doing {
+        "rodando" => theme::variant(Variant::Success),
+        "parado" => theme::path(),
+        _ if doing.starts_with("saiu") => theme::variant(Variant::Danger),
+        _ => theme::variant(Variant::Accent),
     }
 }
 
@@ -175,17 +377,226 @@ mod tests {
     use super::*;
 
     #[test]
-    fn logo_cresce_com_a_area() {
-        assert_eq!(logo_scale(Rect::new(0, 0, 200, 7)), 2);
-        assert_eq!(logo_scale(Rect::new(0, 0, 80, 7)), 1);
-        assert_eq!(logo_scale(Rect::new(0, 0, 400, 13)), 5);
+    fn handle_key_navega_e_expande_sessoes() {
+        use crossterm::event::KeyModifiers;
+
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut view = TerraformeView::default();
+        *view.workspaces.borrow_mut() = vec!["a".to_string(), "b".to_string()];
+        assert!(view.handle_key(key(KeyCode::Down)));
+        assert_eq!(view.selected, 1);
+        assert!(view.handle_key(key(KeyCode::Enter)));
+        assert_eq!(view.expanded, vec!["b".to_string()]);
+        assert!(!view.handle_key(key(KeyCode::Char('x'))));
     }
 
     #[test]
-    fn logo_em_meio_bloco_tem_metade_das_linhas() {
-        let lines = logo_lines(2);
-        assert_eq!(lines.len(), 5);
-        assert!(lines.iter().all(|l| l.chars().count() == base_width() * 2));
-        assert!(lines[0].starts_with("██████████"));
+    fn doing_colore_por_estado() {
+        assert_eq!(doing_style("rodando"), theme::variant(Variant::Success));
+        assert_eq!(doing_style("parado"), theme::path());
+        assert_eq!(doing_style("saiu (crash)"), theme::variant(Variant::Danger));
+        assert_eq!(doing_style("uma tarefa"), theme::variant(Variant::Accent));
+    }
+
+    #[test]
+    fn sem_hub_avisa_na_lista_de_sessoes() {
+        let hub = HubView {
+            instances: None,
+            own: None,
+        };
+        let (lines, workspaces) = session_lines(&hub, &[], 0);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.to_string().contains("Sem o orquestrador"))
+        );
+        assert!(workspaces.is_empty());
+    }
+
+    fn instance(workspace: &str, pid: u64) -> Instance {
+        Instance {
+            id: format!("id{pid}"),
+            pid,
+            app: "terra".into(),
+            cwd: String::new(),
+            workspace: workspace.into(),
+            started: 0,
+            last_seen: 0,
+            health: Health::Alive,
+            reason: None,
+            status: crate::hub::protocol::Status {
+                running: true,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn workspace_comeca_fechado_e_abre_com_enter() {
+        let instances = (true, vec![instance("Studio", 1), instance("cli", 2)]);
+        let hub = HubView {
+            instances: Some(&instances),
+            own: None,
+        };
+        let (lines, workspaces) = session_lines(&hub, &[], 0);
+        assert_eq!(workspaces, vec!["Studio".to_string(), "cli".to_string()]);
+        assert!(lines.iter().any(|l| l.to_string().contains("▸ Studio")));
+        assert!(!lines.iter().any(|l| l.to_string().contains("rodando")));
+
+        let (lines, _) = session_lines(&hub, &["Studio".to_string()], 0);
+        assert!(lines.iter().any(|l| l.to_string().contains("▾ Studio")));
+        assert!(lines.iter().any(|l| l.to_string().contains("rodando")));
+    }
+
+    fn run(id: &str, agent: &str, state: RunState, finished: Option<u64>) -> Run {
+        Run {
+            id: id.into(),
+            agent: agent.into(),
+            message: format!("m{id}"),
+            from: "usuario".into(),
+            level: 1,
+            hops: 1,
+            note: PathBuf::from("/n.md"),
+            state,
+            created: finished.unwrap_or(1000),
+            started: None,
+            finished,
+            provider: "claude".into(),
+            model: None,
+            usage: Some(run::Usage {
+                input: 200,
+                output: 1000,
+                cache_read: 90_000,
+                ..Default::default()
+            }),
+            error: None,
+            summary: None,
+        }
+    }
+
+    #[test]
+    fn as_caixas_sao_das_execucoes_rodando_e_das_recentes() {
+        let home = tempfile::tempdir().unwrap();
+        let now = 10_000;
+        let working = run("a1", "busca", RunState::Running, None);
+        working.save(home.path()).unwrap();
+        fs::write(
+            working.dir(home.path()).join(run::OUTPUT),
+            r#"{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":40,"output_tokens":60,"cache_read_input_tokens":5000},"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"subagent"}}]}}"#,
+        )
+        .unwrap();
+        let mut failed = run("b2", "testes", RunState::Failed, Some(now - 30));
+        failed.error = Some("passou do tempo_limite_min".into());
+        failed.save(home.path()).unwrap();
+        let mut done = run("c3", "qa", RunState::Done, Some(now - 60));
+        done.summary = Some("lint ok\nresto".into());
+        done.save(home.path()).unwrap();
+        run("d4", "velho", RunState::Done, Some(now - RECENT_SECS - 1))
+            .save(home.path())
+            .unwrap();
+
+        let boxes = load_boxes(home.path(), now);
+        let names: Vec<&str> = boxes.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["testes", "qa", "busca"]);
+        let busca = &boxes[2];
+        assert_eq!((busca.tier, busca.tokens), (Tier::Working, 100));
+        assert_eq!(busca.description, "Grep: subagent");
+        // Os tokens são entrada e saída, sem o cache.
+        assert_eq!((boxes[1].tier, boxes[1].tokens), (Tier::Done, 1200));
+        assert_eq!(boxes[1].description, "lint ok");
+        assert_eq!(boxes[0].tier, Tier::Error);
+        assert_eq!(boxes[0].description, "passou do tempo_limite_min");
+
+        let waiting = vec![("a1".to_string(), "Bash rm -rf build".to_string())];
+        let shown = with_permissions(&boxes, &waiting);
+        assert_eq!(shown[2].tier, Tier::Permission);
+        assert_eq!(shown[2].description, "Permissão: Bash rm -rf build");
+        assert_eq!(shown[0], boxes[0]);
+    }
+
+    fn screen(width: u16, view: &TerraformeView) -> (Vec<String>, ratatui::buffer::Buffer) {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let instances = (true, vec![instance("Studio", 1)]);
+        let hub = HubView {
+            instances: Some(&instances),
+            own: None,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+        terminal
+            .draw(|f| {
+                view.draw(
+                    f,
+                    f.area(),
+                    &hub,
+                    &Chat::default(),
+                    &SessionUsage::default(),
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rows = (0..30)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        (rows, buffer)
+    }
+
+    #[test]
+    fn cada_sub_agente_tem_uma_caixa_embaixo_das_sessoes_com_a_cor_do_estado() {
+        let (rows, _) = screen(140, &TerraformeView::default());
+        assert!(!rows.iter().any(|r| r.contains(" tokens")));
+
+        let boxes = vec![
+            RunBox {
+                run: "a1".into(),
+                name: "busca".into(),
+                tier: Tier::Working,
+                tokens: 1234,
+                description: "Grep: subagent".into(),
+            },
+            RunBox {
+                run: "b2".into(),
+                name: "testes".into(),
+                tier: Tier::Error,
+                tokens: 0,
+                description: "falhou".into(),
+            },
+        ];
+        let mut view = TerraformeView {
+            boxes,
+            ..Default::default()
+        };
+        let (rows, buffer) = screen(140, &view);
+        let sessions = rows
+            .iter()
+            .position(|r| r.contains("Sessões abertas"))
+            .unwrap();
+        let title = rows
+            .iter()
+            .position(|r| r.contains("● busca · 1.2K tokens"))
+            .unwrap();
+        assert!(title > sessions);
+        assert!(rows[title + 1].contains("Grep: subagent"));
+        assert!(rows[title + 5].contains("● testes · 0 tokens"));
+        // À direita da conversa, com a borda na cor do estado.
+        let x = rows[title - 1].chars().position(|c| c == '╭').unwrap();
+        assert!(x >= 140 * usize::from(CHAT_PERCENT) / 100);
+        let corner = |y: usize| {
+            let col = rows[y].chars().position(|c| c == '╭').unwrap();
+            buffer[(col as u16, y as u16)].fg
+        };
+        assert_eq!(Some(corner(title - 1)), Tier::Working.style().fg);
+        assert_eq!(Some(corner(title + 4)), Tier::Error.style().fg);
+
+        // A bolinha de quem trabalha pulsa.
+        let dot = |view: &TerraformeView| {
+            let (rows, buffer) = screen(140, view);
+            let y = rows.iter().position(|r| r.contains("● busca")).unwrap();
+            let col = rows[y].chars().position(|c| c == '●').unwrap();
+            buffer[(col as u16, y as u16)].style()
+        };
+        let first = dot(&view);
+        view.pulse_ticks = PULSE_TICKS;
+        assert_ne!(first, dot(&view));
     }
 }

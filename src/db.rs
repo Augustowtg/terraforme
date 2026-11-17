@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::agent::UsageWindow;
 use crate::settings::{ExtensionMode, ExtensionSettings};
 
 /// No Windows a comparação de paths não diferencia maiúsculas/minúsculas.
@@ -128,6 +129,13 @@ impl Db {
             );
             CREATE TABLE IF NOT EXISTS extension_accounts (
                 account TEXT PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS session_usage (
+                account   TEXT PRIMARY KEY,
+                label     TEXT    NOT NULL,
+                percent   REAL    NOT NULL,
+                resets_at INTEGER,
+                saved_at  INTEGER NOT NULL
             );"
         ))
         .context("não foi possível criar as tabelas")?;
@@ -332,6 +340,49 @@ impl Db {
         Ok(())
     }
 
+    /// O último consumo da sessão (as 5 h) da conta `account` (ex.:
+    /// `claude:.claude-trabalho`) e quando foi consultado (segundos Unix).
+    pub fn session_usage(&self, account: &str) -> Result<Option<(UsageWindow, i64)>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT label, percent, resets_at, saved_at FROM session_usage WHERE account = ?1",
+                [account],
+                |row| {
+                    let window = UsageWindow {
+                        label: row.get(0)?,
+                        percent: row.get(1)?,
+                        resets_at: row.get(2)?,
+                        detail: None,
+                        session: true,
+                    };
+                    Ok((window, row.get(3)?))
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn save_session_usage(
+        &self,
+        account: &str,
+        window: &UsageWindow,
+        saved_at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO session_usage (account, label, percent, resets_at, saved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                account,
+                window.label,
+                window.percent,
+                window.resets_at,
+                saved_at
+            ],
+        )?;
+        Ok(())
+    }
+
     fn extensions_of(&self, account: &str) -> rusqlite::Result<Vec<String>> {
         let mut stmt = self
             .conn
@@ -388,6 +439,26 @@ mod tests {
         db.conn
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn consumo_da_sessao_fica_um_por_conta() {
+        let db = db();
+        assert_eq!(db.session_usage("claude:").unwrap(), None);
+        let mut window = UsageWindow {
+            label: "Sessão (5 h)".into(),
+            percent: 42.0,
+            resets_at: Some(1_000),
+            detail: None,
+            session: true,
+        };
+        db.save_session_usage("claude:", &window, 10).unwrap();
+        window.percent = 50.0;
+        window.resets_at = None;
+        db.save_session_usage("claude:", &window, 20).unwrap();
+        assert_eq!(count(&db, "session_usage"), 1);
+        assert_eq!(db.session_usage("claude:").unwrap(), Some((window, 20)));
+        assert_eq!(db.session_usage("claude:.outra").unwrap(), None);
     }
 
     #[test]

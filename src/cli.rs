@@ -95,6 +95,10 @@ struct SendArgs {
     /// Uma etiqueta para a mensagem (ex.: testes)
     #[arg(long)]
     tag: Option<String>,
+    /// Espera a execução do agente terminar e imprime o resultado (só para
+    /// os agentes do orchestrator.toml)
+    #[arg(long = "esperar", conflicts_with = "batch")]
+    wait: bool,
     /// Manda várias mensagens de nível 1 de um arquivo (`-` é a entrada),
     /// uma por linha: `agente: texto`. Linhas vazias e com `#` são puladas
     #[arg(long = "lote", value_name = "ARQUIVO", conflicts_with_all = ["agent", "refs", "handoff"])]
@@ -277,6 +281,7 @@ fn send(args: SendArgs) -> Result<()> {
     let endpoint = hub::endpoint::Endpoint::current()?;
     let config = Config::load(&Config::path(&endpoint.home))
         .map_err(|err| anyhow::anyhow!("orchestrator.toml: {err}"))?;
+    let wait = args.wait;
     let Some(batch) = &args.batch else {
         let args = orchestrator::send::Args {
             to: args.agent.unwrap_or_default(),
@@ -285,8 +290,11 @@ fn send(args: SendArgs) -> Result<()> {
             handoff: args.handoff,
             tag: args.tag,
         };
-        let line = send_one(&args, &config, &endpoint)?;
+        let (line, id) = send_one(&args, &config, &endpoint)?;
         println!("{line}");
+        if wait && config.agent(&args.to).is_some() {
+            return wait_run(&endpoint.home, &id);
+        }
         return Ok(());
     };
     // O lote: uma mensagem por linha, sem um LLM no meio. Uma recusada não
@@ -306,7 +314,7 @@ fn send(args: SendArgs) -> Result<()> {
             ..Default::default()
         };
         match send_one(&args, &config, &endpoint) {
-            Ok(line) => println!("{line}"),
+            Ok((line, _)) => println!("{line}"),
             Err(err) => {
                 failed += 1;
                 println!("{}: {err}", args.to);
@@ -319,12 +327,27 @@ fn send(args: SendArgs) -> Result<()> {
     Ok(())
 }
 
-/// Manda uma mensagem e devolve a linha de resposta.
+/// O `--esperar`: espera a execução da mensagem `id` terminar e imprime o
+/// resultado; o comando falha junto com ela.
+fn wait_run(home: &Path, id: &str) -> Result<()> {
+    loop {
+        if let Some((ok, text)) = orchestrator::send::run_result(home, id) {
+            println!("{text}");
+            if !ok {
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+/// Manda uma mensagem e devolve a linha de resposta e o id dela.
 fn send_one(
     args: &orchestrator::send::Args,
     config: &orchestrator::config::Config,
     endpoint: &hub::endpoint::Endpoint,
-) -> Result<String> {
+) -> Result<(String, String)> {
     use orchestrator::message::State;
     let (from, hops) = orchestrator::sender();
     let message =
@@ -333,7 +356,10 @@ fn send_one(
     let reply = hub::client::send_message(endpoint, true, &message.to_json())
         .context("não foi possível falar com o orquestrador")?;
     match reply["state"].as_str().and_then(State::parse) {
-        Some(state) if reply["t"] == "sent" => Ok(orchestrator::send::sent_line(&message, state)),
+        Some(state) if reply["t"] == "sent" => Ok((
+            orchestrator::send::sent_line(&message, state),
+            message.id.clone(),
+        )),
         _ => anyhow::bail!(
             "recusada: {}",
             reply["text"].as_str().unwrap_or("sem motivo")

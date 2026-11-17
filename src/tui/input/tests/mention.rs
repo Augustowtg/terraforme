@@ -53,6 +53,27 @@ fn query_prefers_file_name_then_path_then_letters() {
 }
 
 #[test]
+fn match_count_keeps_shrinking_past_the_cap_on_matches() {
+    // Mais entradas que o limite de `matches` (200), todas batendo com
+    // "file": o título (`match_count`) precisa continuar diminuindo ao
+    // digitar mais, mesmo com `matches` presa no limite e sem mudar.
+    let paths: Vec<String> = (0..111)
+        .map(|i| format!("filea{i}.rs"))
+        .chain((0..139).map(|i| format!("fileb{i}.rs")))
+        .collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let entries = entries(&refs);
+
+    assert_eq!(matches(&entries, "file").len(), 200);
+    assert_eq!(match_count(&entries, "file"), 250);
+
+    // "filea" só bate com o primeiro grupo (111): a letra "b" do segundo
+    // garante que ele não entra nem por subsequência.
+    assert_eq!(matches(&entries, "filea").len(), 111);
+    assert_eq!(match_count(&entries, "filea"), 111);
+}
+
+#[test]
 fn picker_wraps_around() {
     let mut picker = Picker::new(0);
     picker.up(3);

@@ -726,6 +726,7 @@ mod tests {
             subagent_model: None,
             extensions,
             allowed_tools: &[],
+            system_prompt: None,
         }
     }
 

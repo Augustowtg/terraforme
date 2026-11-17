@@ -406,12 +406,14 @@ Com o prompt caching, a maior parte do contexto vem em `cache_read_input_tokens`
 
 ### Barra de consumo (janela de 5 h)
 
-- **`SessionUsage` (`src/tui/usage.rs:602`):** chama só `load_usage` e guarda `usage.session()` (`src/tui/usage.rs:656`). Com erro, mantém a última janela.
-- **Quando recarrega:**
-  - na primeira vez e a cada `STALE` = 60 s (`src/tui/usage.rs:43`);
-  - quando a conta muda;
-  - quando o `resets_at` passa (`reset_since`, `src/tui/usage.rs:680`).
-- **Quem chama:** `App::tick`, só com `settings.usage.visible`; a janela é repassada a todos os chats (`src/tui/app.rs:864-875`).
+- **`SessionUsage` (`src/tui/usage.rs`):** chama só `load_usage` e guarda `usage.session()`. Com erro, mantém a última janela.
+- **Salvo no banco:** a tabela `session_usage` do `terra.sqlite` guarda a janela por conta (`provedor:pasta`, a mesma chave das extensões) e quando foi consultada (`Db::session_usage` / `save_session_usage`, `src/db.rs`). Ao abrir o terra ou trocar de conta, vale o salvo.
+- **Quando consulta:**
+  - quando uma resposta do agente termina, em qualquer chat (`Chat::take_turn_finished`);
+  - quando a conta não tem nada salvo;
+  - depois de login, da interface original ou do terminal (`invalidate`).
+- **Quando zera:** se o `resets_at` passou, a janela vira 0% usado sem consultar, até a próxima consulta.
+- **Quem chama:** `App::tick` (com a barra visível ou não); a janela é repassada a todos os chats e desenhada no topo da coluna da direita da aba Terraforme (`SessionUsage::lines`).
 - **Desenho:** `usage_bar` mostra quanto **resta** (`100 − percent`), com o texto de `session_label`, por exemplo `58% · reseta 15:00` (`src/tui/chat.rs:1313`, `src/tui/usage.rs:688`). Ela fica à esquerda da barra de contexto (`src/tui/chat.rs:1390`).
 - **Sem janela `session`, a barra não aparece.**
 

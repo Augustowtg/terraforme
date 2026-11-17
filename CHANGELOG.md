@@ -4,6 +4,55 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.4] - 2026-11-17
+
+### Alterado
+
+- Na aba **Terraforme**, a coluna da direita ganha margem e as seções ficam separadas: consumo, sessões abertas e **Sub agentes** (com um título), com uma linha vazia entre as caixas.
+
+## [0.14.3] - 2026-11-17
+
+### Adicionado
+
+- Na aba **Terraforme**, o consumo da sessão (5 h) aparece no topo da coluna da direita, com a barra do que resta, quando zera e quando foi consultado.
+
+### Alterado
+
+- O consumo da sessão (5 h) fica salvo no `terra.sqlite`, por conta, e só é consultado no Claude quando uma resposta do agente termina (antes era a cada minuto), ou quando a conta ainda não tem nada salvo. Ao abrir o terra, vale o último salvo; quando a janela zera, ela passa a 0% sem consultar.
+
+## [0.14.2] - 2026-11-17
+
+### Adicionado
+
+- As tabelas em markdown nas respostas do agente viram uma caixa de borda arredondada, como a dos blocos de código, na largura toda do histórico, com as colunas alinhadas e o cabeçalho em destaque. Quando ela não cabe, as células quebram por palavra (cada coluna fica com pelo menos a largura da sua maior palavra); se nem assim couber, cada linha da tabela vira um cartão com `campo │ valor`.
+- A mensagem do usuário no histórico fica numa caixa de borda arredondada cor de vinho, na largura toda, no lugar do `›`.
+- Na aba **Terraforme**, o histórico da conversa fica dentro de uma caixa de borda arredondada.
+- O consumo de tokens muda de cor conforme cresce: verde até 50K, amarelo de 50K a 200K e vermelho a partir de 200K. Vale para o consumo do chat, o consumo geral ao lado do "Sair" e as caixas dos sub agentes na aba Terraforme.
+
+## [0.14.1] - 2026-11-17
+
+### Corrigido
+
+- Na aba **Terraforme**, o painel de entrada ocupa a largura toda embaixo das duas colunas (a conversa e as sessões), em vez de parar na metade da tela.
+
+### Removido
+
+- O macOS sai do CI e da documentação: o terra é testado no Linux e no Windows.
+
+## [0.14.0] - 2026-11-17
+
+### Adicionado
+
+- A aba **Terraforme** ganha a conversa com o agente à esquerda (o mesmo chat principal, com o mesmo histórico e sessão), as sessões do terra abertas na máquina à direita e, embaixo delas, uma caixa por sub agente (as execuções do orquestrador rodando ou que terminaram nos últimos 10 minutos): verde enquanto ele trabalha (com a bolinha pulsando), amarela quando espera uma permissão e vermelha quando falha, com o nome, os tokens usados (sem o cache) e, embaixo, o que ele está fazendo, o pedido de permissão, o resultado ou o erro.
+
+- O chat principal delega aos agentes do `orchestrator.toml` da pasta dele: recebe a lista (com a nova `descricao`) e escolhe o que mandar com `terra send <agente> --esperar`, que espera a execução e imprime o resultado. A `delegacao = false` no `[global]` desliga.
+- A execução sem `Bash(terra:*)` nas ferramentas não recebe mais a instrução do `terra done`, que ela não tinha como rodar.
+- No ambiente mínimo, a execução sobe só com os hooks das `extensoes` do agente (padrão: o ai-memory, para a sessão nova ter o contexto do projeto); `mcp = true` liga também as ferramentas MCP delas e `extensoes = []` desliga todas. Os settings do usuário ficam de fora (`--setting-sources project`). Medido: a mesma tarefa custou uns 5× menos tokens que pelo sub agente do Claude.
+
+### Corrigido
+
+- A contagem no popup de menções (`@`) do input mostra o total real de arquivos que combinam com o que foi digitado, em vez de ficar presa no limite de itens renderizados: ela diminuía visivelmente conforme filtrava, mas parava de diminuir assim que o total ficava abaixo do limite.
+
 ## [0.13.26] - 2026-11-16
 
 ### Adicionado
