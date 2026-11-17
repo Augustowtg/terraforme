@@ -278,6 +278,7 @@ mod tests {
                 subagent_model: None,
                 extensions: &crate::extension::Contribution::default(),
                 allowed_tools: &[],
+                system_prompt: None,
             })
             .err()
             .unwrap();

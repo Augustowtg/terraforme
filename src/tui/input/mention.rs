@@ -197,6 +197,17 @@ pub fn matches<'a>(entries: &'a [FileEntry], query: &str) -> Vec<&'a FileEntry> 
         .collect()
 }
 
+/// Quantas entradas combinam com `query`, sem o limite de [`MAX_RESULTS`]:
+/// o título usa este número, não o de [`matches`] (que fica presa nele), para
+/// a lista continuar visivelmente diminuindo ao digitar mais.
+pub fn match_count(entries: &[FileEntry], query: &str) -> usize {
+    let query = query.to_lowercase();
+    entries
+        .iter()
+        .filter(|entry| score(&entry.path, &query).is_some())
+        .count()
+}
+
 /// Quanto menor, melhor: (tipo de acerto, tamanho). Começo do nome do
 /// arquivo > parte do nome > parte do caminho > letras na ordem.
 fn score(path: &str, query: &str) -> Option<(u8, usize)> {
@@ -224,8 +235,10 @@ fn is_subsequence(needle: &str, haystack: &str) -> bool {
     needle.chars().all(|n| chars.any(|h| h == n))
 }
 
-/// Desenha a lista logo acima de `input` (a caixa de texto).
-pub fn draw(frame: &mut Frame, input: Rect, found: &[&FileEntry], selected: usize) {
+/// Desenha a lista logo acima de `input` (a caixa de texto). `total` é a
+/// contagem real de combinações (ver [`match_count`]); `found` só tem as
+/// renderizadas (até [`MAX_RESULTS`]).
+pub fn draw(frame: &mut Frame, input: Rect, found: &[&FileEntry], selected: usize, total: usize) {
     let items = found
         .iter()
         .enumerate()
@@ -234,7 +247,7 @@ pub fn draw(frame: &mut Frame, input: Rect, found: &[&FileEntry], selected: usiz
     popup::draw_above(
         frame,
         input,
-        format!("Arquivos ({})", found.len()),
+        format!("Arquivos ({total})"),
         items,
         selected,
         "Nenhum arquivo encontrado",

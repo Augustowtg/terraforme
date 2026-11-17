@@ -79,11 +79,20 @@ impl App {
             }
             return false;
         }
-        if self.tab == Tab::Terraforme
-            && self.focus == Focus::Tabs
-            && self.terraforme.handle_key(key)
-        {
-            return false;
+        if self.tab == Tab::Terraforme && self.focus == Focus::Tabs {
+            // A conversa (o chat principal) tem prioridade (modo INSERT,
+            // Shift+Tab); só o que ela não usa (↑/↓/Enter no modo NORMAL)
+            // sobra para a lista de sessões.
+            if self.chat.handle_key(key) {
+                self.take_default_model();
+                if self.chat.take_open_usage() {
+                    self.tab = Tab::Consumo;
+                }
+                return false;
+            }
+            if self.terraforme.handle_key(key) {
+                return false;
+            }
         }
         if self.tab == Tab::Config && self.focus == Focus::Tabs && self.handle_config_key(key) {
             return false;
@@ -158,7 +167,7 @@ impl App {
             self.current_chat_mut().handle_paste(text);
         }
         if self.tab == Tab::Terraforme && self.focus == Focus::Tabs {
-            self.terraforme.handle_paste(text);
+            self.chat.handle_paste(text);
         }
     }
 
@@ -194,7 +203,7 @@ impl App {
         match self.tab {
             Tab::Chat if self.uses_provider() => {}
             Tab::Chat => self.current_chat_mut().handle_mouse(mouse),
-            Tab::Terraforme => self.terraforme.handle_mouse(mouse),
+            Tab::Terraforme => self.chat.handle_mouse(mouse),
             Tab::Consumo => self.usage.handle_mouse(mouse),
             Tab::Extensoes | Tab::Config | Tab::Orquestrador | Tab::Atualizacao => {}
         }

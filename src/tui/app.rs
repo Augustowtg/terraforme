@@ -389,10 +389,11 @@ impl App {
         let caps_lock = keyboard::caps_lock().unwrap_or(false);
         self.chat.set_caps_lock(caps_lock);
         self.chat.tick();
-        self.terraforme.set_caps_lock(caps_lock);
-        self.terraforme.tick();
+        self.terraforme.tick(self.tab == Tab::Terraforme);
+        let mut turn_finished = self.chat.take_turn_finished();
         for tab in &mut self.chats {
             tab.chat.tick();
+            turn_finished |= tab.chat.take_turn_finished();
         }
         // O consumo só é carregado com a aba aberta.
         if self.tab == Tab::Consumo {
@@ -400,12 +401,19 @@ impl App {
                 .refresh_if_stale(self.chat.adapter(), self.settings.account.as_deref());
         }
         self.usage.tick();
-        // A barra de consumo carrega só enquanto está visível.
-        if self.settings.usage.visible {
-            self.session_usage
-                .refresh_if_stale(self.chat.adapter(), self.settings.account.as_deref());
+        // O consumo da sessão só é consultado quando uma resposta termina;
+        // fora isso, vale o salvo no banco.
+        if turn_finished {
+            self.session_usage.invalidate();
         }
-        if self.session_usage.tick() {
+        let key = self.extension_account();
+        self.session_usage.update(
+            self.chat.adapter(),
+            self.settings.account.as_deref(),
+            &key,
+            self.db.as_ref(),
+        );
+        if self.session_usage.tick(self.db.as_ref()) {
             let window = self.session_usage.window().cloned();
             self.chat.set_session_usage(window.clone());
             for tab in &mut self.chats {
@@ -420,12 +428,16 @@ impl App {
         self.update_view.tick();
         self.report_to_hub();
         self.receive_from_hub();
-        // No Orquestrador, a aba relê o arquivo e as execuções e assina a
-        // lista do hub (só com o hub ligado: não nos testes).
+        // No Orquestrador e no Terraforme, a aba assina a lista do hub (só
+        // com o hub ligado: não nos testes); no Orquestrador ela também relê
+        // o arquivo e as execuções.
+        if matches!(self.tab, Tab::Orquestrador | Tab::Terraforme)
+            && self.hub.is_some()
+            && self.hub_monitor.is_none()
+        {
+            self.hub_monitor = Monitor::start();
+        }
         if self.tab == Tab::Orquestrador {
-            if self.hub.is_some() && self.hub_monitor.is_none() {
-                self.hub_monitor = Monitor::start();
-            }
             self.orchestrator_view.data.refresh_if_stale();
         }
     }

@@ -46,6 +46,9 @@ pub struct Request<'a> {
     /// Ferramentas liberadas só nesta mensagem: os `allow` dos
     /// [`AgentEvent::Blocked`] que o usuário permitiu.
     pub allowed_tools: &'a [String],
+    /// Texto somado ao prompt de sistema (ex.: os sub agentes para delegar);
+    /// o provedor que não tem como recebê-lo o ignora.
+    pub system_prompt: Option<&'a str>,
 }
 
 /// Uma conta do provedor que pode ser escolhida na Config.

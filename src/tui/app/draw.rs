@@ -13,7 +13,6 @@ use crate::hub::client::{Monitor, Reporter};
 use crate::theme;
 use crate::tui::extensions;
 use crate::tui::orchestrator as orchestrator_tab;
-use crate::tui::terraforme;
 use crate::tui::update;
 
 const QUIT_LABEL: &str = " Sair ";
@@ -51,7 +50,9 @@ impl App {
             Focus::Tabs if self.tab == Tab::Chat => {
                 format!("{} · {HELP_NEW_CHAT}", self.current_chat().help()).into()
             }
-            Focus::Tabs if self.tab == Tab::Terraforme => terraforme::HELP.into(),
+            Focus::Tabs if self.tab == Tab::Terraforme => {
+                format!("{} · ↑/↓ sessão · Enter abrir/fechar", self.chat.help()).into()
+            }
             Focus::Tabs if self.tab == Tab::Config => self.config_view.help().into(),
             Focus::Tabs if self.tab == Tab::Extensoes => extensions::HELP.into(),
             Focus::Tabs if self.tab == Tab::Orquestrador => self.orchestrator_view.help().into(),
@@ -83,15 +84,12 @@ impl App {
         let total = self.total_label();
         let [tabs_area, total_area, quit_area] = Layout::horizontal([
             Constraint::Min(0),
-            Constraint::Length(total.as_ref().map_or(0, |t| t.chars().count() as u16)),
+            Constraint::Length(total.as_ref().map_or(0, |t| t.width() as u16)),
             Constraint::Length(QUIT_LABEL.len() as u16),
         ])
         .areas(inner);
         if let Some(total) = total {
-            frame.render_widget(
-                Paragraph::new(Span::styled(total, theme::muted())),
-                total_area,
-            );
+            frame.render_widget(Paragraph::new(total), total_area);
         }
 
         let mut spans = Vec::new();
@@ -129,14 +127,17 @@ impl App {
 
     /// O consumo geral, ao lado do "Sair": os tokens de todos os chats deste
     /// terra (entrada e saída, sem os de cache, como no consumo do chat).
-    fn total_label(&self) -> Option<String> {
+    fn total_label(&self) -> Option<Span<'static>> {
         let tokens = self.closed_tokens
             + self.chat.tokens_used()
             + self.chats.iter().map(|c| c.chat.tokens_used()).sum::<u64>();
         (self.settings.usage.total_visible && tokens > 0).then(|| {
-            format!(
-                "Consumo geral: {} Tokens  ",
-                crate::tui::chat::compact_count(tokens)
+            Span::styled(
+                format!(
+                    "Consumo geral: {} Tokens  ",
+                    crate::tui::chat::compact_count(tokens)
+                ),
+                theme::variant(theme::tokens_variant(tokens)),
             )
         })
     }
@@ -196,7 +197,13 @@ impl App {
             return;
         }
         if self.tab == Tab::Terraforme {
-            self.terraforme.draw(frame, area, frame.area());
+            let instances = self.hub_monitor.as_ref().map(Monitor::instances);
+            let hub = orchestrator_tab::HubView {
+                instances: instances.as_ref(),
+                own: self.hub.as_ref().map(Reporter::id),
+            };
+            self.terraforme
+                .draw(frame, area, &hub, &self.chat, &self.session_usage);
             return;
         }
         if self.tab == Tab::Config {

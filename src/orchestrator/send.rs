@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use super::config::{self, Config};
 use super::message::{self, Message, Reject, State};
 use super::note;
+use super::run::{self, RunState};
 use crate::hub::protocol::{new_id, now};
 
 /// Os argumentos do `terra send`.
@@ -163,6 +164,50 @@ pub fn sent_line(message: &Message, state: State) -> String {
     )
 }
 
+/// O resultado da execução que processou a mensagem `message`, quando ela
+/// terminou: se deu certo e o texto que o `terra send --esperar` imprime (a
+/// linha do estado e do uso, o resumo do `terra done` e a última resposta
+/// do agente). `None` enquanto ela não terminou.
+pub fn run_result(home: &Path, message: &str) -> Option<(bool, String)> {
+    let run = run::list(home)
+        .into_iter()
+        .rev()
+        .find(|run| run.message == message)?;
+    if matches!(run.state, RunState::Queued | RunState::Running) {
+        return None;
+    }
+    let mut text = format!(
+        "{} {} · {}",
+        match run.state {
+            RunState::Done => "concluída",
+            RunState::Timeout => "passou do tempo",
+            RunState::Rejected => "recusada",
+            _ => "falhou",
+        },
+        &run.id[..run.id.len().min(8)],
+        run.agent
+    );
+    if let Some(usage) = &run.usage {
+        let new = usage.input + usage.output + usage.cache_creation;
+        text.push_str(&format!(
+            " ({} turnos, {new} tokens novos e {} de cache)",
+            usage.turns, usage.cache_read
+        ));
+    }
+    let output = fs::read_to_string(run.dir(home).join(run::OUTPUT)).unwrap_or_default();
+    let answer = run::final_text(&output);
+    for part in [run.summary.as_ref(), answer.as_ref(), run.error.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        if !text.contains(part.as_str()) {
+            text.push('\n');
+            text.push_str(part);
+        }
+    }
+    Some((run.state == RunState::Done, text))
+}
+
 /// O `terra handoff new <destino>`: grava a nota em branco em
 /// `handoffs/<msg_id>.md` e devolve o caminho.
 pub fn new_handoff(to: &str, from: &str, home: &Path) -> Result<PathBuf, String> {
@@ -303,5 +348,56 @@ mod tests {
         );
         assert!(batch("dev:\n").is_err());
         assert!(batch("# nada\n").is_err());
+    }
+
+    #[test]
+    fn the_result_of_the_run_is_its_state_usage_summary_and_answer() {
+        use crate::orchestrator::run::{Run, Usage};
+
+        let home = tempfile::tempdir().unwrap();
+        let mut run = Run {
+            id: "abcdef0123".into(),
+            agent: "api".into(),
+            message: "m1".into(),
+            from: "usuario".into(),
+            level: 1,
+            hops: 1,
+            note: PathBuf::from("/n.md"),
+            state: RunState::Running,
+            created: 1,
+            started: None,
+            finished: None,
+            provider: "claude".into(),
+            model: None,
+            usage: None,
+            error: None,
+            summary: None,
+        };
+        run.save(home.path()).unwrap();
+        assert_eq!(run_result(home.path(), "m1"), None);
+
+        run.state = RunState::Done;
+        run.summary = Some("feito".into());
+        run.usage = Some(Usage {
+            input: 10,
+            output: 20,
+            cache_read: 4000,
+            cache_creation: 70,
+            cost_usd: 0.0,
+            turns: 2,
+        });
+        run.save(home.path()).unwrap();
+        fs::write(
+            run.dir(home.path()).join(run::OUTPUT),
+            r#"{"type":"result","result":"achei em src/a.rs"}"#,
+        )
+        .unwrap();
+        let (ok, text) = run_result(home.path(), "m1").unwrap();
+        assert!(ok);
+        assert_eq!(
+            text,
+            "concluída abcdef01 · api (2 turnos, 100 tokens novos e 4000 de cache)\nfeito\nachei em src/a.rs"
+        );
+        assert_eq!(run_result(home.path(), "outra"), None);
     }
 }

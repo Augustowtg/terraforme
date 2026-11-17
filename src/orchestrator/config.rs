@@ -11,8 +11,10 @@
 //! tempo_limite_min = 30          # depois disso, a execução é encerrada (timeout); "infinito" não encerra
 //! aba_em_primeiro_plano = false  # a aba de uma execução vai para a frente ao abrir
 //! perguntar_permissoes = true    # fora das ferramentas, a janela pergunta; false nega sem perguntar
+//! delegacao = true               # o chat principal fica sabendo dos agentes da pasta dele e de como delegar
 //!
 //! [agents.backend]
+//! descricao = "API e banco"      # para o chat principal escolher a quem delegar
 //! cwd = "/proj/api"
 //! provedor = "claude"            # "claude" (padrão) ou "antigravity"
 //! modelo = "forte"
@@ -20,6 +22,8 @@
 //! max_turnos = 30
 //! orcamento_diario = 40          # execuções por dia
 //! ambiente = "minimo"            # "minimo" (padrão) ou "completo"
+//! extensoes = ["ai-memory"]      # no ambiente mínimo, as extensões ligadas (padrão: só o ai-memory; [] desliga)
+//! mcp = false                    # liga também as ferramentas MCP dessas extensões (as do ai-memory: ~30 mil tokens)
 //! perguntar_permissoes = false   # vale só para este agente (padrão: o do [global])
 //!
 //! [modelos]
@@ -83,6 +87,9 @@ pub struct Global {
     /// no chat principal de uma janela; sem isso (`false`), é negada sem
     /// perguntar, para as execuções sem ninguém olhando.
     pub ask_permissions: bool,
+    /// O chat principal recebe, no prompt de sistema, os agentes da pasta
+    /// dele e como delegar ([`Config::delegation_prompt`]).
+    pub delegate: bool,
 }
 
 impl Default for Global {
@@ -96,6 +103,7 @@ impl Default for Global {
             timeout_min: Some(30),
             focus_runs: false,
             ask_permissions: true,
+            delegate: true,
         }
     }
 }
@@ -121,9 +129,38 @@ pub struct Agent {
     pub full_env: bool,
     /// O `perguntar_permissoes` do agente; `None` segue o do `[global]`.
     pub ask_permissions: Option<bool>,
+    /// Para que serve, em uma linha: o chat principal escolhe por ela.
+    pub description: Option<String>,
+    /// As extensões do ambiente mínimo (ids); `None` é o padrão
+    /// ([`DEFAULT_EXTENSIONS`]).
+    pub extensions: Option<Vec<String>>,
+    /// As ferramentas MCP das extensões também sobem (só os hooks, sem isso).
+    pub mcp: bool,
 }
 
+/// As extensões de um agente sem o `extensoes`: só a memória, que dá o
+/// contexto do projeto a uma sessão nova.
+pub const DEFAULT_EXTENSIONS: [&str; 1] = ["ai-memory"];
+
 impl Agent {
+    /// As extensões que a execução liga (ids). No ambiente completo e no
+    /// Antigravity, nenhuma: um já tem as do usuário e o `-p` do `agy` não
+    /// as recebe.
+    pub fn extensions(&self) -> Vec<String> {
+        if self.full_env || self.is_antigravity() {
+            return Vec::new();
+        }
+        self.extensions
+            .clone()
+            .unwrap_or_else(|| DEFAULT_EXTENSIONS.map(str::to_string).to_vec())
+    }
+
+    /// O agente pode rodar o `terra` (o `terra done` e o `terra send`): no
+    /// ambiente completo, ou com uma regra `Bash(terra...)` nas ferramentas.
+    pub fn can_run_terra(&self) -> bool {
+        self.full_env || self.tools.iter().any(|t| t.starts_with("Bash(terra"))
+    }
+
     /// O id do provedor: o escolhido ou o Claude.
     pub fn provider(&self) -> &str {
         self.provider.as_deref().unwrap_or(PROVIDERS[0])
@@ -252,6 +289,46 @@ impl Config {
         agent.ask_permissions.unwrap_or(self.global.ask_permissions)
     }
 
+    /// O que o chat aberto em `cwd` recebe no prompt de sistema para delegar:
+    /// os agentes da pasta (os de dentro dela ou os que a contêm) e como
+    /// mandar a tarefa. Uma linha só (o `cmd.exe` do Windows quebra o
+    /// argumento nas quebras de linha). `None` sem agentes ou sem a
+    /// `delegacao`.
+    pub fn delegation_prompt(&self, cwd: &Path) -> Option<String> {
+        if !self.global.delegate {
+            return None;
+        }
+        let agents: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|a| a.cwd.starts_with(cwd) || cwd.starts_with(&a.cwd))
+            .map(|a| {
+                let mut line = format!("`{}`", a.name);
+                if let Some(description) = &a.description {
+                    line.push_str(&format!(" ({description})"));
+                }
+                if let Some(model) = &a.model {
+                    line.push_str(&format!(", modelo {}", self.model_id(model)));
+                }
+                line
+            })
+            .collect();
+        if agents.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "Sub agentes do terra disponíveis: {}. Cada um roda numa sessão nova e enxuta \
+             (só as ferramentas dele e o contexto do projeto pelo ai-memory) e devolve só o \
+             resultado: delegue a eles tarefas independentes e bem delimitadas (buscas amplas, \
+             testes, mudanças num módulo) e faça aqui o que é curto ou depende desta conversa. \
+             Você escolhe o que vai: mande só o necessário (objetivo, arquivos com --ref, \
+             critério de pronto), nunca a conversa inteira. Para delegar: \
+             `terra send <agente> --esperar \"<tarefa>\" [--ref <arquivo>]...`, que imprime o \
+             resultado ao terminar (para vários em paralelo, rode cada um em segundo plano).",
+            agents.join("; ")
+        ))
+    }
+
     /// O id do modelo: o do apelido de `[modelos]` ou, sem apelido, o
     /// próprio nome.
     pub fn model_id<'a>(&'a self, model: &'a str) -> &'a str {
@@ -309,6 +386,7 @@ fn global(table: &dyn TableLike) -> Result<Global, String> {
             }
             "aba_em_primeiro_plano" => global.focus_runs = flag(item, &at)?,
             "perguntar_permissoes" => global.ask_permissions = flag(item, &at)?,
+            "delegacao" => global.delegate = flag(item, &at)?,
             _ => return Err(format!("chave desconhecida: {at}")),
         }
     }
@@ -331,6 +409,9 @@ fn agent(name: &str, table: &dyn TableLike, at: &str) -> Result<Agent, String> {
         daily_budget: None,
         full_env: false,
         ask_permissions: None,
+        description: None,
+        extensions: None,
+        mcp: false,
     };
     for (key, item) in table.iter() {
         let at = format!("{at}.{key}");
@@ -351,6 +432,9 @@ fn agent(name: &str, table: &dyn TableLike, at: &str) -> Result<Agent, String> {
             "max_turnos" => agent.max_turns = Some(positive(item, &at)?),
             "orcamento_diario" => agent.daily_budget = Some(positive(item, &at)?),
             "perguntar_permissoes" => agent.ask_permissions = Some(flag(item, &at)?),
+            "descricao" => agent.description = Some(text_of(item, &at)?),
+            "extensoes" => agent.extensions = Some(texts(item, &at)?),
+            "mcp" => agent.mcp = flag(item, &at)?,
             "ambiente" => {
                 agent.full_env = match text_of(item, &at)?.as_str() {
                     "minimo" => false,
@@ -582,5 +666,47 @@ modelo = "leve"
         ] {
             assert!(!valid_name(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn agents_choose_their_extensions_and_the_chat_sees_those_of_its_folder() {
+        let config = Config::parse(&portable(
+            "[agents.api]\ncwd = \"/proj/api\"\ndescricao = \"API e banco\"\nmodelo = \"leve\"\n\
+             [agents.web]\ncwd = \"/proj/web\"\nextensoes = []\n\
+             [agents.mem]\ncwd = \"/outro\"\nmcp = true\nambiente = \"completo\"\n\
+             [modelos]\nleve = \"haiku\"\n",
+        ))
+        .unwrap();
+        let api = config.agent("api").unwrap();
+        assert_eq!(api.extensions(), vec!["ai-memory".to_string()]);
+        assert!(!api.mcp);
+        assert!(config.agent("web").unwrap().extensions().is_empty());
+        // O ambiente completo já tem as extensões do usuário.
+        let mem = config.agent("mem").unwrap();
+        assert!(mem.mcp && mem.extensions().is_empty());
+
+        let dir = |p: &str| {
+            PathBuf::from(if cfg!(windows) {
+                format!("C:{p}")
+            } else {
+                p.into()
+            })
+        };
+        let prompt = config.delegation_prompt(&dir("/proj")).unwrap();
+        assert!(prompt.contains("`api` (API e banco), modelo haiku"));
+        assert!(prompt.contains("`web`"));
+        assert!(!prompt.contains("`mem`"));
+        assert!(prompt.contains("terra send <agente> --esperar"));
+        assert!(!prompt.contains('\n'));
+        // De dentro da pasta de um agente, ele também aparece.
+        let inside = config.delegation_prompt(&dir("/proj/api/src"));
+        assert!(inside.unwrap().contains("`api`"));
+        assert_eq!(config.delegation_prompt(&dir("/nada")), None);
+
+        let off = Config::parse(&portable(
+            "[global]\ndelegacao = false\n[agents.api]\ncwd = \"/proj/api\"\n",
+        ))
+        .unwrap();
+        assert_eq!(off.delegation_prompt(&dir("/proj")), None);
     }
 }

@@ -136,6 +136,16 @@ pub enum Variant {
     Danger,
 }
 
+/// A cor de um consumo de tokens: verde até 50K, amarelo até 200K e
+/// vermelho a partir daí.
+pub fn tokens_variant(tokens: u64) -> Variant {
+    match tokens {
+        200_000.. => Variant::Danger,
+        50_000.. => Variant::Warning,
+        _ => Variant::Success,
+    }
+}
+
 /// Cor de texto da variante, sem fundo.
 pub fn variant(variant: Variant) -> Style {
     let name = match variant {
@@ -160,6 +170,17 @@ pub fn badge_text(variant: Variant) -> Style {
 /// Borda do badge, na cor da variante.
 pub fn badge_border(variant: Variant) -> Style {
     self::variant(variant)
+}
+
+/// A bolinha de quem está trabalhando agora (ex.: um sub agente): verde,
+/// alternando entre forte e apagada pelo tick da tela.
+pub fn pulse(on: bool) -> Style {
+    let style = Style::new().fg(color(ColorName::Green));
+    if on {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style.add_modifier(Modifier::DIM)
+    }
 }
 
 /// Cor do contexto da sessão: verde, laranja da metade do limite e vermelho
@@ -240,6 +261,12 @@ pub fn input_border(inserting: bool) -> Style {
 /// Bordas de blocos.
 pub fn border() -> Style {
     muted()
+}
+
+/// Borda da mensagem do usuário no histórico: vinho, fora da paleta do
+/// Catppuccin (o `Maroon` dele é rosado).
+pub fn user_border() -> Style {
+    Style::new().fg(Color::Rgb(0x9e, 0x2a, 0x4f))
 }
 
 /// Pinta uma mensagem de confirmação para o terminal (fora da TUI).

@@ -622,7 +622,7 @@ fn confirm_box_shows_question_and_buttons() {
 }
 
 #[test]
-fn aba_terraforme_tem_o_logo_e_o_input() {
+fn aba_terraforme_tem_a_conversa_as_sessoes_e_o_input() {
     use ratatui::{Terminal, backend::TestBackend};
 
     let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
@@ -640,9 +640,22 @@ fn aba_terraforme_tem_o_logo_e_o_input() {
             .map(|x| buffer[(x, y)].symbol())
             .collect::<String>()
     };
-    // 15% de 40 linhas: 6 linhas para o logo, em escala 2, a partir de (1, 4).
-    assert!(row(4).starts_with(" ██████████"), "{}", row(4));
-    assert!((0..40).any(|y| row(y).contains("Terraforme") && row(y + 1).contains("oi")));
+    let rows: Vec<String> = (0..40).map(row).collect();
+    // O chat (o mesmo da aba Chat, com o texto digitado) fica à esquerda,
+    // antes das sessões, que ficam mais para a direita; a árvore de sub
+    // agentes só aparece embaixo delas quando algum está trabalhando (não é
+    // o caso aqui, sem hub).
+    let input_col = rows
+        .iter()
+        .position(|r| r.contains("oi"))
+        .map(|y| rows[y].find("oi").unwrap());
+    let sessions_col = rows
+        .iter()
+        .position(|r| r.contains("Sessões abertas"))
+        .map(|y| rows[y].find("Sessões").unwrap());
+    assert!(input_col.is_some() && sessions_col.is_some());
+    assert!(input_col.unwrap() < sessions_col.unwrap());
+    assert!(!rows.iter().any(|r| r.contains("OPUS 5.5")));
     key(&mut app, KeyCode::Esc);
     assert_eq!(press(&mut app, KeyCode::Tab), Tab::Consumo);
 }
