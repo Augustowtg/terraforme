@@ -389,8 +389,7 @@ impl App {
         let caps_lock = keyboard::caps_lock().unwrap_or(false);
         self.chat.set_caps_lock(caps_lock);
         self.chat.tick();
-        self.terraforme.set_caps_lock(caps_lock);
-        self.terraforme.tick();
+        self.terraforme.tick(self.tab == Tab::Terraforme);
         for tab in &mut self.chats {
             tab.chat.tick();
         }
@@ -420,12 +419,16 @@ impl App {
         self.update_view.tick();
         self.report_to_hub();
         self.receive_from_hub();
-        // No Orquestrador, a aba relê o arquivo e as execuções e assina a
-        // lista do hub (só com o hub ligado: não nos testes).
+        // No Orquestrador e no Terraforme, a aba assina a lista do hub (só
+        // com o hub ligado: não nos testes); no Orquestrador ela também relê
+        // o arquivo e as execuções.
+        if matches!(self.tab, Tab::Orquestrador | Tab::Terraforme)
+            && self.hub.is_some()
+            && self.hub_monitor.is_none()
+        {
+            self.hub_monitor = Monitor::start();
+        }
         if self.tab == Tab::Orquestrador {
-            if self.hub.is_some() && self.hub_monitor.is_none() {
-                self.hub_monitor = Monitor::start();
-            }
             self.orchestrator_view.data.refresh_if_stale();
         }
     }

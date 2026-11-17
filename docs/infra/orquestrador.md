@@ -350,19 +350,46 @@ modo_execucao = "aba"          # "aba" ou "segundo_plano"
 pausado = false
 tempo_limite_min = 30          # depois disso, timeout; "infinito" não encerra
 perguntar_permissoes = true    # fora das ferramentas, a janela pergunta; false nega sem perguntar
+delegacao = true               # o chat principal recebe os agentes da pasta dele e como delegar
 
 [agents.backend]
 cwd = "/proj/api"
+descricao = "API e banco"      # o chat principal escolhe a quem delegar por ela
 modelo = "forte"
 ferramentas = ["Read", "Edit", "Bash(npm test:*)", "Bash(terra:*)"]
 max_turnos = 30
 orcamento_diario = 40          # execuções por dia
 ambiente = "minimo"            # "minimo" (padrão) ou "completo"
 perguntar_permissoes = false   # só para este agente (padrão: o do [global])
+extensoes = ["ai-memory"]      # no ambiente mínimo (padrão: só o ai-memory; [] desliga todas)
+mcp = false                    # true sobe também as ferramentas MCP delas
 
 [modelos]
 forte = "opus"
 ```
+
+### A delegação pelo chat principal (v0.14.0)
+
+Com a `delegacao` ligada (o padrão), cada mensagem do chat vai ao `claude`
+com um `--append-system-prompt` de uma linha: os agentes cuja `cwd` está
+dentro da pasta do chat (ou a contém), com a `descricao` e o modelo, e a
+regra de delegar só tarefas independentes, mandando só o necessário
+(objetivo, `--ref`, critério de pronto). O chat escolhe o que vai e manda
+com `terra send <agente> --esperar "<tarefa>"`, que espera a execução e
+imprime o estado, o uso, o resumo do `terra done` e a última resposta do
+agente (o `result`); falhando, sai com código 1.
+
+Medido no `claude` 2.1.322 com o Haiku, a mesma pergunta sobre este
+repositório (achar onde o modelo dos sub agentes vai ao `claude`), as duas
+com a resposta certa:
+
+| Caminho | Tokens novos | Cache lido | Custo |
+| --- | --- | --- | --- |
+| Sub agente do Claude (chat com o ambiente do usuário + ferramenta Agent) | 51,8 mil | 83,1 mil | US$ 0,0098 |
+| Execução do terra (ambiente mínimo + hooks do ai-memory) | 7,8 mil | 9,5 mil | US$ 0,0018 |
+
+A linha do Claude inclui o começo da sessão principal (uns 18 mil tokens);
+a do terra não inclui o turno do chat que manda o `terra send`.
 
 ### A fila
 
@@ -385,7 +412,7 @@ Com `perguntar_permissoes = false`, a segunda linha vira
 `--permission-mode dontAsk --permission-prompts none`, e o prompt vai como
 texto, não em stream-json.
 
-- **Ambiente mínimo** (o padrão): o `--tools` carrega só as ferramentas da lista (`Bash(npm test:*)` vira `Bash`), sem servidores MCP, skills nem hooks do usuário. Sem isso, cada execução levava uns 20 mil tokens de definições antes de começar. O `--bare` faria o mesmo, mas não aceita o login OAuth (o plano). Com `ambiente = "completo"`, a execução sobe com a configuração inteira do usuário.
+- **Ambiente mínimo** (o padrão): o `--tools` carrega só as ferramentas da lista (`Bash(npm test:*)` vira `Bash`), sem servidores MCP, skills nem hooks do usuário, e o `--setting-sources project` deixa de fora os settings do usuário (os hooks dele repetiriam os das extensões; o CLAUDE.md do projeto continua). Das `extensoes` (padrão: o ai-memory) entram só os hooks, que dão o contexto do projeto à sessão nova e gravam o que ela fez; com `mcp = true`, também os servidores MCP, liberados no `--allowedTools` (`mcp__<nome>`). Medido: os hooks do ai-memory quase não custam, e as ferramentas MCP dele somam uns 30 mil tokens por execução. Sem isso, cada execução levava uns 20 mil tokens de definições antes de começar. O `--bare` faria o mesmo, mas não aceita o login OAuth (o plano). Com `ambiente = "completo"`, a execução sobe com a configuração inteira do usuário.
 
 - O **prompt vai pela entrada** (sem passar pelo `cmd.exe` do Windows) e é sempre o mesmo:
 

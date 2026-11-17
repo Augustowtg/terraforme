@@ -100,6 +100,23 @@ impl Prompts {
         })
     }
 
+    /// Os pedidos das execuções esperando resposta: o id da execução e o
+    /// texto do pedido (a ferramenta e o detalhe).
+    pub fn remote(&self) -> Vec<(String, String)> {
+        self.queue
+            .iter()
+            .filter_map(|request| match &request.kind {
+                Kind::Remote { run, .. } => Some((
+                    run.clone(),
+                    format!("{} {}", request.name, request.detail)
+                        .trim()
+                        .to_string(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Há pedido deste chat (os das execuções não contam): a sessão ainda
     /// precisa dele.
     pub fn has_local(&self) -> bool {
