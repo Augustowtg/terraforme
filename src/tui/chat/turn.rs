@@ -83,6 +83,7 @@ impl Chat {
             return false;
         };
         let extensions = self.agent_extensions();
+        let delegation = crate::orchestrator::delegation_prompt();
         let started = adapter.start(Request {
             prompt,
             mode: self.permission_mode,
@@ -99,6 +100,7 @@ impl Chat {
             subagent_model: self.subagent_model.as_deref(),
             extensions: &extensions,
             allowed_tools: &self.allowed,
+            system_prompt: delegation.as_deref(),
         });
         drop(extensions);
         self.allowed.clear();

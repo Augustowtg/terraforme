@@ -388,7 +388,7 @@ fn cli_args<'a>(
 /// ficam desligados (`disableAllHooks`, que vale até para os do
 /// `--settings`); com eles, os hooks ficam ligados — inclusive os do
 /// usuário — e os das extensões entram por aqui.
-fn hook_settings(hooks: &[Hook]) -> String {
+pub(crate) fn hook_settings(hooks: &[Hook]) -> String {
     if hooks.is_empty() {
         return r#"{"disableAllHooks":true}"#.to_string();
     }
@@ -409,7 +409,7 @@ fn hook_settings(hooks: &[Hook]) -> String {
 
 /// `--mcp-config` com os servidores MCP das extensões (vazio sem nenhum),
 /// somados aos do usuário.
-fn mcp_args(extensions: &Contribution) -> Vec<String> {
+pub(crate) fn mcp_args(extensions: &Contribution) -> Vec<String> {
     if extensions.mcp_servers.is_empty() {
         return Vec::new();
     }
@@ -593,6 +593,9 @@ impl Run {
         cmd.envs(request.extensions.env.iter().map(|(k, v)| (k, v)));
         if let Some(model) = request.subagent_model {
             cmd.env(SUBAGENT_MODEL_ENV, model);
+        }
+        if let Some(prompt) = request.system_prompt {
+            cmd.args(["--append-system-prompt", prompt]);
         }
         // As ferramentas que o usuário liberou depois de o modo bloquear: uma
         // regra por argumento, porque a do Bash tem espaços.
@@ -995,6 +998,7 @@ mod tests {
             subagent_model: None,
             extensions: &Contribution::default(),
             allowed_tools: &[],
+            system_prompt: None,
         };
         assert_eq!(adapter.start(request).err().as_deref(), Some(NOT_FOUND));
         assert!(adapter.accounts().is_empty());

@@ -641,6 +641,12 @@ impl Chat {
         });
     }
 
+    /// As execuções esperando a resposta a um pedido de permissão (ver
+    /// [`permission::Prompts::remote`]).
+    pub fn waiting_runs(&self) -> Vec<(String, String)> {
+        self.prompts.remote()
+    }
+
     /// A execução `run` terminou: os pedidos dela sem resposta saem.
     pub fn run_finished(&mut self, run: &str) {
         self.prompts.clear_run(run);

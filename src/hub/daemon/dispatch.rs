@@ -256,7 +256,16 @@ impl Hub {
             Ok(files) => files,
             Err(err) => return self.fail(run, &format!("{}: {err}", dir.display())),
         };
-        cmd.args(run::args(agent, config))
+        let (extensions, warnings) = run::extensions(agent);
+        for warning in warnings {
+            self.log.line(&format!(
+                "execução {} de {}: {warning}",
+                short(&run.id),
+                run.agent
+            ));
+        }
+        cmd.args(run::args(agent, config, &extensions))
+            .envs(extensions.env.iter().map(|(k, v)| (k, v)))
             .current_dir(&agent.cwd)
             .env(AGENT_ENV, &run.agent)
             .env(HOPS_ENV, run.hops.to_string())
@@ -285,7 +294,12 @@ impl Hub {
             }
         };
         let note = fs::read_to_string(&run.note).ok();
-        let prompt = run::prompt(&run.agent, &run.note, note.as_deref());
+        let prompt = run::prompt(
+            &run.agent,
+            &run.note,
+            note.as_deref(),
+            agent.can_run_terra(),
+        );
         let input = run::input(agent, config, &prompt);
         let asks = match (output, child.stdout.take()) {
             // O stdin fica aberto, para as respostas; fecha no `result`.

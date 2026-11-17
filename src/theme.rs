@@ -162,6 +162,17 @@ pub fn badge_border(variant: Variant) -> Style {
     self::variant(variant)
 }
 
+/// A bolinha de quem está trabalhando agora (ex.: um sub agente): verde,
+/// alternando entre forte e apagada pelo tick da tela.
+pub fn pulse(on: bool) -> Style {
+    let style = Style::new().fg(color(ColorName::Green));
+    if on {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style.add_modifier(Modifier::DIM)
+    }
+}
+
 /// Cor do contexto da sessão: verde, laranja da metade do limite e vermelho
 /// a partir de 75% dele (`ratio` é a parte do limite ocupada).
 fn context_color(ratio: f64) -> Color {

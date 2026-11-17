@@ -4,6 +4,20 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.0] - 2026-11-17
+
+### Adicionado
+
+- A aba **Terraforme** ganha a conversa com o agente à esquerda (o mesmo chat principal, com o mesmo histórico e sessão), as sessões do terra abertas na máquina à direita e, embaixo delas, uma caixa por sub agente (as execuções do orquestrador rodando ou que terminaram nos últimos 10 minutos): verde enquanto ele trabalha (com a bolinha pulsando), amarela quando espera uma permissão e vermelha quando falha, com o nome, os tokens usados (sem o cache) e, embaixo, o que ele está fazendo, o pedido de permissão, o resultado ou o erro.
+
+- O chat principal delega aos agentes do `orchestrator.toml` da pasta dele: recebe a lista (com a nova `descricao`) e escolhe o que mandar com `terra send <agente> --esperar`, que espera a execução e imprime o resultado. A `delegacao = false` no `[global]` desliga.
+- A execução sem `Bash(terra:*)` nas ferramentas não recebe mais a instrução do `terra done`, que ela não tinha como rodar.
+- No ambiente mínimo, a execução sobe só com os hooks das `extensoes` do agente (padrão: o ai-memory, para a sessão nova ter o contexto do projeto); `mcp = true` liga também as ferramentas MCP delas e `extensoes = []` desliga todas. Os settings do usuário ficam de fora (`--setting-sources project`). Medido: a mesma tarefa custou uns 5× menos tokens que pelo sub agente do Claude.
+
+### Corrigido
+
+- A contagem no popup de menções (`@`) do input mostra o total real de arquivos que combinam com o que foi digitado, em vez de ficar presa no limite de itens renderizados: ela diminuía visivelmente conforme filtrava, mas parava de diminuir assim que o total ficava abaixo do limite.
+
 ## [0.13.26] - 2026-11-16
 
 ### Adicionado

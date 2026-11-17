@@ -44,3 +44,12 @@ pub fn sender() -> (String, u32) {
         .unwrap_or(0);
     (from, hops)
 }
+
+/// O prompt de delegação ([`config::Config::delegation_prompt`]) do chat
+/// aberto na pasta atual, pelo `orchestrator.toml`. `None` sem ele, sem
+/// agentes da pasta ou com o arquivo inválido.
+pub fn delegation_prompt() -> Option<String> {
+    let home = crate::hub::endpoint::Endpoint::current().ok()?.home;
+    let config = config::Config::load(&config::Config::path(&home)).ok()?;
+    config.delegation_prompt(&std::env::current_dir().ok()?)
+}
