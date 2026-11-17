@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.6] - 2026-11-17
+
+### Adicionado
+
+- O `CLAUDE.md` com as regras do projeto para cada alteração: issue, branch nova com Conventional Commits, testes com o mínimo de regras, e commit, deploy (tag da versão) e merge.
+
 ## [0.14.5] - 2026-11-17
 
 ### Corrigido
