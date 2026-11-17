@@ -265,6 +265,12 @@ impl History {
         let rows = self.rows.borrow();
         let mut out = String::new();
         for (r, row) in rows.iter().enumerate().take(end.0 + 1).skip(start.0) {
+            // As bordas das caixas (mensagem, código, tabela) não viram linha.
+            let border = !row.glyphs.iter().any(|g| g.text)
+                && row.glyphs.iter().any(|g| matches!(g.ch, '╭' | '╰' | '├'));
+            if border {
+                continue;
+            }
             if r > start.0 && !row.wrapped {
                 out.push('\n');
             }
@@ -398,11 +404,64 @@ impl History {
                 rows.extend(markdown::layout(text.trim(), width, Some(i)));
                 continue;
             }
+            if let Entry::User(text) = entry {
+                rows.extend(user_box(text, width, Some(i)));
+                continue;
+            }
             for (prefix, body) in logical_lines(entry) {
                 rows.extend(wrap(prefix, body, width, Some(i)));
             }
         }
     }
+}
+
+/// A mensagem do usuário numa caixa de borda arredondada (cor vinho), na
+/// largura toda.
+fn user_box(text: &str, width: u16, entry: Option<usize>) -> Vec<Row> {
+    let border = theme::user_border();
+    // Borda + espaço de cada lado.
+    let outer = (width as usize).max(5);
+    let inner = outer - 4;
+    let edge = |left: char, right: char| Row {
+        glyphs: glyphs(
+            &format!("{left}{}{right}", "─".repeat(outer - 2)),
+            border,
+            false,
+        ),
+        wrapped: false,
+        entry,
+    };
+    let mut rows = vec![edge('╭', '╮')];
+    for line in text.split('\n') {
+        for row in wrap(
+            Vec::new(),
+            glyphs(line, theme::text(), true),
+            inner as u16,
+            entry,
+        ) {
+            let used = measure(&row.glyphs);
+            let mut gs = glyphs("│ ", border, false);
+            gs.extend(row.glyphs);
+            gs.extend(glyphs(
+                &" ".repeat(inner.saturating_sub(used)),
+                Style::new(),
+                false,
+            ));
+            gs.extend(glyphs(" │", border, false));
+            rows.push(Row {
+                glyphs: gs,
+                wrapped: row.wrapped,
+                entry,
+            });
+        }
+    }
+    rows.push(edge('╰', '╯'));
+    rows
+}
+
+/// A largura de um trecho na tela.
+fn measure(gs: &[Glyph]) -> usize {
+    gs.iter().map(|g| g.ch.width().unwrap_or(0)).sum()
 }
 
 /// As linhas de uma entrada (uma por `\n`), como (prefixo, texto).
@@ -610,10 +669,12 @@ mod tests {
         history.push(Entry::Error("falhou".into()));
         let lines = screen(&history, 30, 12);
         assert_eq!(
-            &lines[1..10],
+            &lines[1..12],
             [
-                "  › lista",
-                "    arquivos",
+                "  ╭────────────────────────╮",
+                "  │ lista                  │",
+                "  │ arquivos               │",
+                "  ╰────────────────────────╯",
                 "",
                 "  ⏺ Vou listar.",
                 "",
@@ -685,11 +746,12 @@ mod tests {
         history.push(Entry::User("oi".into()));
         history.push(Entry::Assistant("um dois tres quatro".into()));
         screen(&history, 14, 8);
-        // Texto começa em x = 2, y = 1. "⏺ um dois" fica em y = 3, e as
-        // continuações "tres" e "quatro" em y = 4 e 5.
-        assert_eq!(history.mouse_down(4, 3), None);
-        history.mouse_drag(7, 4);
-        assert_eq!(history.mouse_up(7, 4).as_deref(), Some("um dois tres"));
+        // Texto começa em x = 2, y = 1; a caixa do "oi" vai de y = 1 a 3.
+        // "⏺ um dois" fica em y = 5, e as continuações "tres" e "quatro" em
+        // y = 6 e 7.
+        assert_eq!(history.mouse_down(4, 5), None);
+        history.mouse_drag(7, 6);
+        assert_eq!(history.mouse_up(7, 6).as_deref(), Some("um dois tres"));
     }
 
     #[test]
@@ -700,7 +762,7 @@ mod tests {
         screen(&history, 30, 8);
         history.mouse_down(0, 1);
         assert_eq!(
-            history.mouse_up(29, 3).as_deref(),
+            history.mouse_up(29, 5).as_deref(),
             Some("pergunta\n\nresposta")
         );
     }
@@ -721,11 +783,11 @@ mod tests {
         history.push(Entry::User("oi".into()));
         history.push(Entry::Assistant("um dois tres quatro\nfim".into()));
         screen(&history, 14, 10);
-        history.mouse_down(6, 4);
-        history.mouse_up(6, 4);
+        history.mouse_down(6, 6);
+        history.mouse_up(6, 6);
         history.tick();
         assert_eq!(
-            history.mouse_down(6, 4).as_deref(),
+            history.mouse_down(6, 6).as_deref(),
             Some("um dois tres quatro\nfim")
         );
         // A seleção aparece destacada.
@@ -734,8 +796,8 @@ mod tests {
             .draw(|frame| history.draw(frame, frame.area(), Vec::new()))
             .unwrap();
         let bg = theme::selection().bg.unwrap();
-        assert_eq!(terminal.backend().buffer()[(4, 3)].bg, bg);
-        assert_ne!(terminal.backend().buffer()[(2, 3)].bg, bg, "o prefixo não");
+        assert_eq!(terminal.backend().buffer()[(4, 5)].bg, bg);
+        assert_ne!(terminal.backend().buffer()[(2, 5)].bg, bg, "o prefixo não");
     }
 
     #[test]
@@ -763,11 +825,11 @@ mod tests {
         history.push(Entry::User("a\tb\r".into()));
         history.push(Entry::Assistant("```go\n\tx := 1\n```".into()));
         let lines = screen(&history, 30, 8);
-        assert_eq!(lines[1], "  › a   b");
-        assert!(lines[4].starts_with("    │     x := 1"), "{:?}", lines[4]);
+        assert!(lines[2].starts_with("  │ a   b "), "{:?}", lines[2]);
+        assert!(lines[6].starts_with("    │     x := 1"), "{:?}", lines[6]);
         // Na cópia, o `\r` não vai.
-        history.mouse_down(0, 1);
-        assert_eq!(history.mouse_up(29, 1).as_deref(), Some("a   b"));
+        history.mouse_down(0, 2);
+        assert_eq!(history.mouse_up(29, 2).as_deref(), Some("a   b"));
     }
 
     #[test]
@@ -775,7 +837,11 @@ mod tests {
         let mut history = History::default();
         history.push(Entry::User("cafe\u{301} ok".into()));
         let lines = screen(&history, 30, 4);
-        assert_eq!(lines[1], "  › cafe\u{301} ok");
+        assert!(
+            lines[2].starts_with("  │ cafe\u{301} ok "),
+            "{:?}",
+            lines[2]
+        );
     }
 
     #[test]
@@ -802,16 +868,22 @@ mod tests {
         history.start_text();
         history.append_text("um dois");
         assert_eq!(
-            &screen(&history, 30, 6)[1..4],
-            ["  › oi", "", "  ⏺ um dois"]
+            &screen(&history, 30, 6)[1..6],
+            [
+                "  ╭────────────────────────╮",
+                "  │ oi                     │",
+                "  ╰────────────────────────╯",
+                "",
+                "  ⏺ um dois"
+            ]
         );
         history.append_text(" tres quatro");
-        assert_eq!(screen(&history, 30, 6)[3], "  ⏺ um dois tres quatro");
+        assert_eq!(screen(&history, 30, 6)[5], "  ⏺ um dois tres quatro");
         assert_eq!(
-            &screen(&history, 14, 8)[3..6],
+            &screen(&history, 14, 8)[5..8],
             ["  ⏺ um dois", "    tres", "    quatro"]
         );
         history.push(Entry::Info("fim".into()));
-        assert_eq!(screen(&history, 30, 8)[5], "  · fim");
+        assert_eq!(screen(&history, 30, 8)[7], "  · fim");
     }
 }

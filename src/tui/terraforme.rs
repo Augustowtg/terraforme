@@ -1,7 +1,8 @@
 //! Aba Terraforme: a conversa com o agente à esquerda (o mesmo chat
-//! principal da aba Chat, com o mesmo histórico e sessão), as sessões do
-//! terra abertas na máquina à direita e, embaixo delas, uma caixa por sub
-//! agente (as execuções do orquestrador) rodando ou que terminou há pouco:
+//! principal da aba Chat, com o mesmo histórico e sessão) e, à direita, o
+//! consumo da sessão (5 h), as sessões do terra abertas na máquina e uma
+//! caixa por sub agente (as execuções do orquestrador) rodando ou que
+//! terminou há pouco:
 //!
 //! ```text
 //! ╭──────────────────────────────╮
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
@@ -24,6 +25,7 @@ use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use super::chat::Chat;
 use super::chat::compact_count;
 use super::orchestrator::HubView;
+use super::usage::SessionUsage;
 use crate::hub::protocol::{Health, Instance, now};
 use crate::hub::view;
 use crate::orchestrator::run::{self, Run, RunState};
@@ -43,6 +45,10 @@ const RELOAD_TICKS: u32 = 10;
 const RECENT_SECS: u64 = 10 * 60;
 /// A altura de uma caixa: a borda e as duas linhas.
 const BOX_HEIGHT: u16 = 4;
+/// As linhas vazias entre uma caixa e a próxima.
+const BOX_GAP: u16 = 1;
+/// As colunas vazias de cada lado da coluna da direita.
+const SIDE_MARGIN: u16 = 1;
 
 /// O estado de um sub agente na caixa: cada um tem a sua cor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,7 +168,7 @@ fn draw_boxes(frame: &mut Frame, area: Rect, boxes: &[RunBox], pulse_on: bool) {
                 Span::styled(b.name.clone(), theme::text()),
                 Span::styled(
                     format!(" · {} tokens", compact_count(b.tokens)),
-                    theme::muted(),
+                    theme::variant(theme::tokens_variant(b.tokens)),
                 ),
             ]),
             Line::styled(b.description.clone(), theme::path()),
@@ -172,7 +178,7 @@ fn draw_boxes(frame: &mut Frame, area: Rect, boxes: &[RunBox], pulse_on: bool) {
             .border_style(b.tier.style())
             .padding(Padding::horizontal(1));
         frame.render_widget(Paragraph::new(lines).block(block), rect);
-        y += BOX_HEIGHT;
+        y += BOX_HEIGHT + BOX_GAP;
     }
 }
 
@@ -248,35 +254,48 @@ impl TerraformeView {
         }
     }
 
-    /// Desenha a aba em `area`: a conversa (o `chat` principal) à esquerda,
-    /// com histórico e painel de entrada, e as sessões abertas (do `hub`) à
-    /// direita.
-    pub fn draw(&self, frame: &mut Frame, area: Rect, hub: &HubView, chat: &Chat) {
-        let [chat_col, sessions] =
+    /// Desenha a aba em `area`: o histórico da conversa (o `chat` principal)
+    /// à esquerda, o painel de entrada embaixo, na largura toda, e à direita,
+    /// uma seção embaixo da outra: o consumo da sessão (`usage`), as sessões
+    /// abertas (do `hub`) e os sub agentes.
+    pub fn draw(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        hub: &HubView,
+        chat: &Chat,
+        usage: &SessionUsage,
+    ) {
+        let [top, panel] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(chat.height())]).areas(area);
+        let [history, side] =
             Layout::horizontal([Constraint::Percentage(CHAT_PERCENT), Constraint::Fill(1)])
-                .areas(area);
-
-        let [history, panel] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(chat.height())])
-                .areas(chat_col);
-        chat.draw_history(frame, history);
+                .areas(top);
+        let frame_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(theme::border());
+        chat.draw_history(frame, frame_block.inner(history));
+        frame.render_widget(frame_block, history);
         chat.draw(frame, panel);
 
-        let [_, sessions] =
-            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(sessions);
-        let pulse_on = (self.pulse_ticks / PULSE_TICKS).is_multiple_of(2);
-        let (lines, workspaces) = session_lines(hub, &self.expanded, self.selected);
+        // Uma margem em volta, para a coluna não colar no histórico.
+        let side = side.inner(Margin::new(SIDE_MARGIN, 1));
+        let mut lines = usage.lines(usize::from(side.width));
+        lines.push(Line::default());
+        let (sessions, workspaces) = session_lines(hub, &self.expanded, self.selected);
         *self.workspaces.borrow_mut() = workspaces;
-        let height = u16::try_from(lines.len() + 1).unwrap_or(u16::MAX);
-        let [list, boxes] =
-            Layout::vertical([Constraint::Length(height), Constraint::Fill(1)]).areas(sessions);
-        frame.render_widget(Paragraph::new(lines), list);
-        let boxes_area = Rect {
-            width: boxes.width.saturating_sub(1),
-            ..boxes
-        };
+        lines.extend(sessions);
         let shown = with_permissions(&self.boxes, &chat.waiting_runs());
-        draw_boxes(frame, boxes_area, &shown, pulse_on);
+        if !shown.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::styled(" Sub agentes", theme::section_title()));
+        }
+        let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let [text, boxes] =
+            Layout::vertical([Constraint::Length(height), Constraint::Fill(1)]).areas(side);
+        frame.render_widget(Paragraph::new(lines), text);
+        let pulse_on = (self.pulse_ticks / PULSE_TICKS).is_multiple_of(2);
+        draw_boxes(frame, boxes, &shown, pulse_on);
     }
 }
 
@@ -505,7 +524,15 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
         terminal
-            .draw(|f| view.draw(f, f.area(), &hub, &Chat::default()))
+            .draw(|f| {
+                view.draw(
+                    f,
+                    f.area(),
+                    &hub,
+                    &Chat::default(),
+                    &SessionUsage::default(),
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let rows = (0..30)
@@ -550,7 +577,7 @@ mod tests {
             .unwrap();
         assert!(title > sessions);
         assert!(rows[title + 1].contains("Grep: subagent"));
-        assert!(rows[title + 4].contains("● testes · 0 tokens"));
+        assert!(rows[title + 5].contains("● testes · 0 tokens"));
         // À direita da conversa, com a borda na cor do estado.
         let x = rows[title - 1].chars().position(|c| c == '╭').unwrap();
         assert!(x >= 140 * usize::from(CHAT_PERCENT) / 100);
@@ -559,7 +586,7 @@ mod tests {
             buffer[(col as u16, y as u16)].fg
         };
         assert_eq!(Some(corner(title - 1)), Tier::Working.style().fg);
-        assert_eq!(Some(corner(title + 3)), Tier::Error.style().fg);
+        assert_eq!(Some(corner(title + 4)), Tier::Error.style().fg);
 
         // A bolinha de quem trabalha pulsa.
         let dot = |view: &TerraformeView| {

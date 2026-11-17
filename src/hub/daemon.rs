@@ -43,7 +43,7 @@ const SWEEP: Duration = Duration::from_secs(1);
 /// A espera entre um `accept` vazio e o próximo.
 const POLL: Duration = Duration::from_millis(50);
 /// O tempo sem conexões dos hubs dos testes: folgado para a máquina lenta
-/// (o runner do macOS) não fechar o hub entre duas conexões do teste.
+/// (o runner do CI) não fechar o hub entre duas conexões do teste.
 #[cfg(test)]
 pub(crate) const TEST_IDLE: Duration = Duration::from_secs(2);
 
@@ -130,7 +130,7 @@ pub fn serve(endpoint: &Endpoint, idle_exit: Duration) -> Result<()> {
 
 /// Atende a conexão aceita numa thread própria.
 fn client(hub: &Arc<Hub>, stream: Stream) {
-    // No macOS (e nos BSDs), a conexão aceita herda o `O_NONBLOCK` do
+    // Em alguns sistemas Unix, a conexão aceita herda o `O_NONBLOCK` do
     // listener; o hub lê bloqueando.
     #[cfg(unix)]
     if let Err(err) = stream.set_nonblocking(false) {

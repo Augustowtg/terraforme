@@ -129,6 +129,9 @@ pub struct Chat {
     /// O consumo da sessão (a janela da barra de consumo), quando o provedor
     /// informa.
     session_usage: Option<UsageWindow>,
+    /// Uma resposta do agente terminou desde o último
+    /// [`Chat::take_turn_finished`].
+    turn_finished: bool,
     /// A resposta em andamento é a de uma mensagem do usuário que ainda pode
     /// ser auto compactada: a auto compactação roda no máximo uma vez por
     /// mensagem enviada (nunca no fim de um `/compact`, mesmo se ele falhou).
@@ -199,6 +202,7 @@ impl Default for Chat {
             context_settings: ContextSettings::default(),
             usage_settings: UsageSettings::default(),
             session_usage: None,
+            turn_finished: false,
             auto_compact_armed: false,
             catalog: None,
             catalog_loading: None,
@@ -324,6 +328,12 @@ impl Chat {
 
     /// O consumo da sessão (a janela do provedor que tem `session`) para a
     /// barra de consumo.
+    /// Uma resposta do agente terminou desde a última chamada (o consumo
+    /// da sessão é consultado de novo).
+    pub fn take_turn_finished(&mut self) -> bool {
+        std::mem::take(&mut self.turn_finished)
+    }
+
     pub fn set_session_usage(&mut self, window: Option<UsageWindow>) {
         self.session_usage = window;
     }
