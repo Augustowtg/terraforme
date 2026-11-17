@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.5] - 2026-11-17
+
+### Corrigido
+
+- O terra volta a avisar quando há versão nova: as releases estavam paradas na v0.13.23, porque as tags das versões seguintes não foram publicadas. A partir desta versão, cada entrega publica a release (tag `vX.Y.Z`), e a aba **Atualização** aparece ao abrir o terra quando há uma mais nova.
+
 ## [0.14.4] - 2026-11-17
 
 ### Alterado
