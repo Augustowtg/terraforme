@@ -349,6 +349,7 @@ impl Chat {
 
     fn finish(&mut self, is_error: bool) {
         self.run = None;
+        self.turn_finished = true;
         self.turn_spent = (0, 0);
         self.prompts.clear_asks();
         self.auto_compact_armed = false;

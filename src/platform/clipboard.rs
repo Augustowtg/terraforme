@@ -1,14 +1,13 @@
 //! Copia texto para a área de transferência do sistema e lê dela.
 //!
 //! No Linux usa `wl-copy` (Wayland), `xclip` ou `xsel`. Sem nenhum deles, e
-//! no macOS e no Windows, usa a área de transferência do sistema direto (o
+//! no Windows, usa a área de transferência do sistema direto (o
 //! `arboard`; no Linux, pelo X11, que no Wayland é o XWayland). Se nem isso
 //! der, manda a sequência OSC 52, que o próprio terminal transforma em cópia
 //! (Windows Terminal, kitty, WezTerm, iTerm2...); o GNOME Terminal e o
 //! Ptyxis a ignoram.
 //!
-//! Para colar ([`paste`]): `wl-paste`, `xclip` ou `xsel` no Linux e `pbpaste`
-//! no macOS; sem eles, o `arboard`. No Windows é o contrário: o `arboard`
+//! Para colar ([`paste`]): `wl-paste`, `xclip` ou `xsel` no Linux; sem eles, o `arboard`. No Windows é o contrário: o `arboard`
 //! primeiro (abrir o PowerShell demora) e o `Get-Clipboard` se ele falhar.
 
 use std::env;
@@ -104,9 +103,6 @@ fn tool_paste(bin: &str, args: &[&str]) -> Option<String> {
 }
 
 fn paste_tool() -> Option<(&'static str, &'static [&'static str])> {
-    if cfg!(target_os = "macos") {
-        return Some(("pbpaste", &[]));
-    }
     if cfg!(windows) {
         return Some((
             "powershell",

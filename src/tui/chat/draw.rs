@@ -100,7 +100,7 @@ impl Chat {
         if self.tokens_used > 0 {
             badges.push((
                 format!("Consumo: {} Tokens", compact_count(self.tokens_used)),
-                Variant::Secondary,
+                theme::tokens_variant(self.tokens_used),
             ));
         }
         badges

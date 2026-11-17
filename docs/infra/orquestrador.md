@@ -68,7 +68,6 @@ Todos os papéis usam o mesmo `Endpoint::current()`:
 | SO | Socket/pipe | Lockfile |
 | --- | --- | --- |
 | Linux | `$XDG_RUNTIME_DIR/terraforme/hub.sock` (sem ele: `/tmp/terraforme-<uid>/hub.sock`) | `~/.terraforme/hub.lock` |
-| macOS | `/tmp/terraforme-<uid>/hub.sock` (caminho curto de propósito: o limite do `sun_path` é de 104 bytes) | `~/.terraforme/hub.lock` |
 | Windows | `\\.\pipe\terraforme-<usuario>-hub` | `%LOCALAPPDATA%\terraforme\hub.lock` |
 
 O `<uid>` ou o `<usuario>` no nome garante que dois usuários na mesma máquina
@@ -86,7 +85,7 @@ todos nessa pasta. O hub iniciado por um cliente com ela a recebe também.
 É assim que os testes sobem hubs de verdade sem tocar no do usuário.
 
 O transporte é o crate [`interprocess`](https://crates.io/crates/interprocess)
-(`local_socket`): socket Unix no Linux e no macOS, named pipe no Windows, com
+(`local_socket`): socket Unix no Linux, named pipe no Windows, com
 a mesma API síncrona.
 
 ## 2. Ciclo de vida do hub
@@ -495,7 +494,7 @@ tem `"kind":"execucao"` e o `"run"`. Com `segundo_plano`, nenhuma aba abre.
 - `orchestrator::*::tests`: o `orchestrator.toml` (o exemplo da especificação, o padrão sem arquivo e os erros com o lugar), a nota (o modelo, a mini nota e as recusas) e o `terra send` (o nível pelos argumentos, as recusas antes do hub e a linha de saída).
 - `tui::chat::tests`: o `/agente` (o nome, o `TERRA_AGENT` no ambiente, o nome recusado) e a mensagem recebida, que fica na caixa e nunca vai ao agente.
 
-O CI roda os testes no Linux, no Windows e no macOS.
+O CI roda os testes no Linux e no Windows.
 
 Para ver no terminal:
 

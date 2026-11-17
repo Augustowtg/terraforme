@@ -41,6 +41,7 @@ mod models;
 
 use super::chat::compact_count;
 use crate::agent::{ChatAdapter, DailyTokens, ModelTokens, TokenReport, Usage, UsageWindow};
+use crate::db::Db;
 use crate::theme::{self, Variant};
 use context::SkillCost;
 
@@ -820,51 +821,68 @@ pub(super) fn draw_bars(frame: &mut Frame, area: Rect, bars: &[ChartBar]) -> Vec
 }
 
 /// O consumo da sessão (a janela com `session`, ex.: as 5 horas do Claude)
-/// para a barra de consumo do chat. Provedor sem essa janela (ex.: o
-/// Antigravity, só com cotas semanais) fica sem a barra. Carrega
-/// só o consumo (sem os tokens por dia da aba), enquanto a barra está
-/// visível, e recarrega como a aba: a cada [`STALE`], ao trocar de conta ou
-/// depois de a janela zerar.
+/// para a barra de consumo do chat e o topo da aba Terraforme. Provedor sem
+/// essa janela (ex.: o Antigravity, só com cotas semanais) fica sem ela.
+///
+/// Fica salvo no `terra.sqlite`, por conta: ao abrir o terra ou trocar de
+/// conta, vale o salvo, e o endpoint só é consultado quando uma atividade do
+/// agente termina ([`SessionUsage::invalidate`]) ou quando a conta ainda não
+/// tem nada salvo. Quando a janela zera, ela passa a 0% sem consultar.
 #[derive(Default)]
 pub struct SessionUsage {
     window: Option<UsageWindow>,
+    /// Quando o consumo mostrado foi consultado (segundos Unix).
+    saved_at: Option<i64>,
+    /// A conta (`provedor:pasta`) do consumo mostrado.
+    key: Option<String>,
     loading: Option<Receiver<Result<Usage, String>>>,
-    /// Quando o consumo foi pedido, e de qual conta.
-    fetched: Option<(Instant, Option<String>)>,
+    /// Consultar assim que o agente estiver disponível.
+    pending: bool,
     /// A janela mudou desde o último [`SessionUsage::tick`].
     changed: bool,
 }
 
 impl SessionUsage {
-    pub fn refresh_if_stale(&mut self, adapter: Option<&dyn ChatAdapter>, account: Option<&str>) {
-        if self.loading.is_some() {
-            return;
+    /// Com a conta `key` (o `account` é a pasta dela, para a consulta): ao
+    /// trocar de conta, mostra o consumo salvo dela no `db`; consulta só se
+    /// foi pedido ou se ela não tem nada salvo.
+    pub fn update(
+        &mut self,
+        adapter: Option<&dyn ChatAdapter>,
+        account: Option<&str>,
+        key: &str,
+        db: Option<&Db>,
+    ) {
+        if self.key.as_deref() != Some(key) {
+            let saved = db.and_then(|db| db.session_usage(key).ok().flatten());
+            self.pending |= saved.is_none();
+            let (window, saved_at) = saved.unzip();
+            self.set_window(window);
+            self.saved_at = saved_at;
+            self.key = Some(key.to_string());
+            // A resposta em andamento era da outra conta.
+            self.loading = None;
         }
-        let resets_at = self.window.as_ref().and_then(|w| w.resets_at);
-        let stale = match &self.fetched {
-            None => true,
-            Some((at, loaded)) => {
-                at.elapsed() >= STALE || loaded.as_deref() != account || reset_since(resets_at, *at)
-            }
-        };
-        if !stale {
-            return;
-        }
-        if self
-            .fetched
-            .as_ref()
-            .is_some_and(|(_, loaded)| loaded.as_deref() != account)
+        let now = Timestamp::now().as_second();
+        if let Some(window) = &self.window
+            && window.resets_at.is_some_and(|at| at <= now)
         {
-            // Era da outra conta.
-            self.set_window(None);
+            // A janela zerou: nada usado até a próxima consulta.
+            let zeroed = UsageWindow {
+                percent: 0.0,
+                resets_at: None,
+                ..window.clone()
+            };
+            self.set_window(Some(zeroed));
         }
-        self.fetched = Some((Instant::now(), account.map(str::to_string)));
-        self.loading = adapter
-            .filter(|a| a.is_available())
-            .and_then(|a| a.load_usage(account));
-        if self.loading.is_none() {
-            self.set_window(None);
+        if !self.pending || self.loading.is_some() {
+            return;
         }
+        let Some(adapter) = adapter.filter(|a| a.is_available()) else {
+            return;
+        };
+        self.pending = false;
+        self.loading = adapter.load_usage(account);
     }
 
     fn set_window(&mut self, window: Option<UsageWindow>) {
@@ -872,21 +890,28 @@ impl SessionUsage {
         self.window = window;
     }
 
-    /// O consumo não vale mais (ex.: depois de um login): recarrega na
-    /// próxima vez.
+    /// Consulta de novo na próxima vez (ex.: uma atividade terminou ou
+    /// depois de um login).
     pub fn invalidate(&mut self) {
-        self.fetched = None;
+        self.pending = true;
     }
 
-    /// Recebe o consumo, se já chegou. Retorna `true` quando a janela mudou
-    /// desde a última chamada. Com erro, fica a última janela carregada.
-    pub fn tick(&mut self) -> bool {
+    /// Recebe o consumo, se já chegou, e o salva no `db`. Retorna `true`
+    /// quando a janela mudou desde a última chamada. Com erro, fica a última
+    /// janela.
+    pub fn tick(&mut self, db: Option<&Db>) -> bool {
         if let Some(loading) = &self.loading {
             match loading.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Ok(Ok(usage)) => {
                     self.loading = None;
-                    self.set_window(usage.session().cloned());
+                    let window = usage.session().cloned();
+                    let now = Timestamp::now().as_second();
+                    if let (Some(db), Some(key), Some(window)) = (db, &self.key, &window) {
+                        let _ = db.save_session_usage(key, window, now);
+                    }
+                    self.saved_at = window.is_some().then_some(now);
+                    self.set_window(window);
                 }
                 Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.loading = None;
@@ -898,6 +923,34 @@ impl SessionUsage {
 
     pub fn window(&self) -> Option<&UsageWindow> {
         self.window.as_ref()
+    }
+
+    /// As linhas do consumo no topo da aba Terraforme: o nome, a barra com o
+    /// que resta e quando zera, e quando foi consultado.
+    pub fn lines(&self, width: usize) -> Vec<Line<'static>> {
+        let tz = TimeZone::system();
+        let Some(window) = &self.window else {
+            let text = if self.loading.is_some() {
+                "Carregando..."
+            } else {
+                "Sem dados: atualiza ao fim da próxima resposta."
+            };
+            return vec![
+                Line::styled(" Sessão (5 h)", theme::section_title()),
+                Line::styled(format!(" {text}"), theme::muted()),
+            ];
+        };
+        // A barra cabe com o "  100% restantes" ao lado.
+        let bar = width.saturating_sub(18).clamp(4, usize::from(BAR_MAX));
+        let mut lines = window_lines(window, bar, &tz, Timestamp::now().as_second());
+        lines[0] = Line::styled(format!(" {}", window.label), theme::section_title());
+        if let Some(at) = self.saved_at {
+            lines.push(indent(Span::styled(
+                format!("Atualizado {}", format_date(at, &tz)),
+                theme::muted(),
+            )));
+        }
+        lines
     }
 }
 
@@ -1261,5 +1314,46 @@ mod tests {
         let lines = view.lines(None, "", 80, &TimeZone::UTC, 0);
         assert_eq!(text(&lines[1]).trim_end(), "  Route           Nenhum");
         assert_eq!(text(&lines[3]), "  Este provedor não informa consumo.");
+    }
+
+    #[test]
+    fn consumo_da_sessao_vem_do_banco_e_zera_sem_consultar() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let now = Timestamp::now().as_second();
+        let window = |percent, resets_at| UsageWindow {
+            label: "Sessão (5 h)".into(),
+            percent,
+            resets_at,
+            detail: None,
+            session: true,
+        };
+        db.save_session_usage("claude:", &window(42.0, Some(now + 3600)), now - 60)
+            .unwrap();
+        db.save_session_usage("claude:.velha", &window(90.0, Some(now - 1)), now - 9000)
+            .unwrap();
+
+        let mut usage = SessionUsage::default();
+        usage.update(None, None, "claude:", Some(&db));
+        assert!(usage.tick(Some(&db)));
+        assert_eq!(usage.window(), Some(&window(42.0, Some(now + 3600))));
+        // Com consumo salvo, não pede outra consulta.
+        assert!(!usage.pending);
+        let text: Vec<String> = usage.lines(60).iter().map(|l| l.to_string()).collect();
+        assert!(text[1].contains("58% restantes"));
+        assert!(text[3].contains("Atualizado"));
+
+        // A janela já zerou: fica 0% usado, sem consultar.
+        usage.update(None, None, "claude:.velha", Some(&db));
+        assert_eq!(usage.window(), Some(&window(0.0, None)));
+        assert!(!usage.pending);
+
+        // Conta sem nada salvo, ou uma atividade que terminou: consulta.
+        usage.update(None, None, "claude:.nova", Some(&db));
+        assert_eq!(usage.window(), None);
+        assert!(usage.pending);
+        let mut usage = SessionUsage::default();
+        usage.update(None, None, "claude:", Some(&db));
+        usage.invalidate();
+        assert!(usage.pending);
     }
 }

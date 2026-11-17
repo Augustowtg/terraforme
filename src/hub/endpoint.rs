@@ -5,7 +5,6 @@
 //! | SO      | Socket/pipe                                                                 | Lockfile                             |
 //! | ------- | --------------------------------------------------------------------------- | ------------------------------------ |
 //! | Linux   | `$XDG_RUNTIME_DIR/terraforme/hub.sock` (sem ele, `/tmp/terraforme-<uid>/`)  | `~/.terraforme/hub.lock`             |
-//! | macOS   | `/tmp/terraforme-<uid>/hub.sock` (curto de propósito)                       | `~/.terraforme/hub.lock`             |
 //! | Windows | `\\.\pipe\terraforme-<usuario>-hub`                                         | `%LOCALAPPDATA%\terraforme\hub.lock` |
 //!
 //! No Windows, o pipe só abre para o usuário e para o sistema
