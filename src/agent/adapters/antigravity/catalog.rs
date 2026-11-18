@@ -56,7 +56,20 @@ pub fn load(bin: PathBuf, labels: Labels, families: Families) -> Receiver<Result
 }
 
 fn catalog(bin: &Path, labels: &Labels, families: &Families) -> Result<Catalog, String> {
-    let all = parse_models(&run(bin, &["models"])?);
+    // Cada `agy` leva uns 3 s; rodam juntos em vez de um depois do outro.
+    let (all, help, skills, current) = thread::scope(|scope| {
+        let help = scope.spawn(|| slash(bin, "/help").unwrap_or_default());
+        let skills = scope.spawn(|| slash(bin, "/skills").unwrap_or_default());
+        let current = scope.spawn(|| slash(bin, "/model").ok());
+        let all = run(bin, &["models"]).map(|text| parse_models(&text));
+        (
+            all,
+            help.join().unwrap_or_default(),
+            skills.join().unwrap_or_default(),
+            current.join().ok().flatten(),
+        )
+    });
+    let all = all?;
     let (models, grouped) = group_models(&all);
     {
         // Os ids de cada nível seguem com o nome deles: a conversa informa
@@ -67,9 +80,9 @@ fn catalog(bin: &Path, labels: &Labels, families: &Families) -> Result<Catalog, 
         }
     }
     *families.lock().unwrap() = grouped;
-    let mut commands = parse_commands(&slash(bin, "/help").unwrap_or_default());
-    commands.extend(parse_skills(&slash(bin, "/skills").unwrap_or_default()));
-    let default_model = slash(bin, "/model").ok().and_then(|json| {
+    let mut commands = parse_commands(&help);
+    commands.extend(parse_skills(&skills));
+    let default_model = current.and_then(|json| {
         let id = json["command"]["data"]["id"].as_str()?;
         Some(group_id(&models, id))
     });
