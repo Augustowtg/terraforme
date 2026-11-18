@@ -2,6 +2,9 @@
 //! aba Config e o modelo padrão escolhido no chat.
 
 use super::App;
+use crate::agent::adapters;
+use crate::orchestrator::config::Config;
+use crate::orchestrator::edit::Editor;
 use crate::settings::{AgentSettings, ExtensionSettings};
 use crate::tui::config;
 
@@ -70,7 +73,20 @@ impl App {
     /// Opções da Config: contas do provedor, modelos do catálogo do chat e
     /// as extensões do registro.
     pub(super) fn choices(&self) -> config::Choices {
+        // Os modelos do provedor dos sub agentes, lidos na hora da escolha.
+        let subagent_other = self
+            .settings
+            .subagent_provider
+            .as_deref()
+            .is_some_and(|id| Some(id) != self.chat.provider_id());
+        let subagent_models = if subagent_other {
+            adapters::select(self.settings.subagent_provider.as_deref()).models()
+        } else {
+            Vec::new()
+        };
         config::Choices {
+            subagent_other,
+            subagent_models,
             providers: self.providers.clone(),
             provider: self.chat.provider_id().map(str::to_string),
             accounts: self
@@ -136,6 +152,13 @@ impl App {
             // Sem conseguir salvar, a mudança vale só nesta execução.
             let _ = self.settings.save_file(config);
         }
+        if (
+            &self.settings.subagent_provider,
+            &self.settings.subagent_model,
+        ) != (&previous.subagent_provider, &previous.subagent_model)
+        {
+            self.save_subagent_defaults();
+        }
         self.chat.apply_settings(&self.settings, Some(previous));
         for tab in &mut self.chats {
             tab.chat.apply_settings(&self.settings, Some(previous));
@@ -145,6 +168,38 @@ impl App {
             || self.chat.provider_id() != provider.as_deref()
         {
             self.load_extensions();
+        }
+    }
+
+    /// Grava no `orchestrator.toml` o provedor e o modelo dos sub agentes,
+    /// que o hub usa nos agentes sem os seus.
+    fn save_subagent_defaults(&mut self) {
+        let Ok(home) = crate::hub::endpoint::Endpoint::current().map(|e| e.home) else {
+            return;
+        };
+        let path = Config::path(&home);
+        // O modelo é de um provedor: com ele, o provedor também fica gravado.
+        let chosen =
+            self.settings.subagent_model.is_some() || self.settings.subagent_provider.is_some();
+        let provider = self.settings.subagent_provider.clone().or_else(|| {
+            chosen
+                .then(|| self.chat.provider_id().map(str::to_string))
+                .flatten()
+        });
+        let result = Editor::open(&path).and_then(|mut editor| {
+            for (key, value) in [
+                ("provedor_subagentes", &provider),
+                ("modelo_subagentes", &self.settings.subagent_model),
+            ] {
+                match value {
+                    Some(value) => editor.set_global(key, value.as_str()),
+                    None => editor.unset_global(key),
+                }
+            }
+            editor.save().map(drop)
+        });
+        if let Err(err) = result {
+            self.chat.warn(format!("Sub agentes: {err}"));
         }
     }
 

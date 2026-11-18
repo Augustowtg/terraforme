@@ -74,6 +74,11 @@ impl Editor {
         item.as_table_mut().expect("é uma tabela")
     }
 
+    /// Tira `[global] key`.
+    pub fn unset_global(&mut self, key: &str) {
+        self.table("global").remove(key);
+    }
+
     /// `[global] key = value`.
     pub fn set_global(&mut self, key: &str, value: impl Into<Value>) {
         put(self.table("global"), key, value.into());

@@ -84,7 +84,7 @@ impl App {
             account: settings.account.as_deref(),
             model: settings.model.as_deref(),
             effort: settings.effort.as_deref(),
-            subagent_model: settings.subagent_model.as_deref(),
+            subagent_model: settings.own_subagent_model(self.chat.provider_id()),
             mode: match settings.start_mode {
                 StartMode::Provider => None,
                 StartMode::Fixed(mode) => Some(mode),
