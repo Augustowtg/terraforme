@@ -296,7 +296,9 @@ impl Chat {
         }
         self.chosen_model = settings.model.clone();
         self.default_effort = settings.effort.clone();
-        self.subagent_model = settings.subagent_model.clone();
+        self.subagent_model = settings
+            .own_subagent_model(self.provider_id())
+            .map(str::to_string);
         self.context_settings = settings.context;
         self.usage_settings = settings.usage;
     }

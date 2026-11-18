@@ -261,6 +261,7 @@ fn settings_choose_start_mode_and_model() {
         account: None,
         effort: None,
         subagent_model: None,
+        subagent_provider: None,
         interface: Default::default(),
         context: Default::default(),
         usage: Default::default(),
