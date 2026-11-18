@@ -22,7 +22,9 @@
 //!   `rtk hook claude`), e o `agy` manda outro payload. Não vão; o usuário
 //!   instala os do ai-memory no `hooks.json` com o `ai-memory install-hooks
 //!   --agent antigravity-cli --apply`;
-//! - sub agentes por processo;
+//! - prompt de sistema por processo: o `agy` não tem flag para isso. A
+//!   instrução dos sub agentes (`terra send`) vai na frente da primeira
+//!   mensagem da conversa (veja [`with_system_prompt`]);
 //! - contas: um login só (o do Google), guardado no chaveiro do sistema. A
 //!   pasta `~/.gemini` (ou outro `HOME`) separa só as conversas e a
 //!   configuração: o `agy` entra na mesma conta do chaveiro de qualquer
@@ -390,6 +392,15 @@ pub fn run_args(model: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// Põe `system` na frente do prompt só na primeira mensagem da conversa
+/// (`first`); nas seguintes o `agy` já o tem no histórico.
+fn with_system_prompt(prompt: &str, system: Option<&str>, first: bool) -> String {
+    match system {
+        Some(system) if first => format!("{system}\n\n{prompt}"),
+        _ => prompt.to_string(),
+    }
+}
+
 /// O prompt de uma execução despachada, como o `agy` lê na entrada.
 pub fn run_input(prompt: &str) -> String {
     format!("{}\n", user_message(prompt))
@@ -473,7 +484,11 @@ impl Run {
         // O stdin fica aberto até o fim do turno: fechar é o que encerra o
         // `agy` (ele roda um turno por mensagem do stdin).
         let stdin: Stdin = Arc::new(Mutex::new(child.stdin.take()));
-        let message = user_message(request.prompt);
+        let message = user_message(&with_system_prompt(
+            request.prompt,
+            request.system_prompt,
+            request.session_id.is_none(),
+        ));
         let model = request.model.map(str::to_string);
 
         let mut stderr = child.stderr.take().expect("stderr configurado como pipe");
@@ -591,6 +606,13 @@ mod tests {
                 .iter()
                 .any(|w| "you are not logged into antigravity".contains(w))
         );
+    }
+
+    #[test]
+    fn the_system_prompt_goes_only_in_front_of_the_first_message() {
+        assert_eq!(with_system_prompt("oi", Some("sub"), true), "sub\n\noi");
+        assert_eq!(with_system_prompt("oi", Some("sub"), false), "oi");
+        assert_eq!(with_system_prompt("oi", None, true), "oi");
     }
 
     #[test]
