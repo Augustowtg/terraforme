@@ -598,10 +598,10 @@ modelo = "leve"
 
     #[test]
     fn subagent_defaults_fill_only_what_the_agent_leaves_out() {
-        let config = Config::parse(
+        let config = Config::parse(&portable(
             "[global]\nprovedor_subagentes = \"antigravity\"\nmodelo_subagentes = \"m\"\n\
              [agents.a]\ncwd = \"/a\"\n[agents.b]\ncwd = \"/b\"\nprovedor = \"claude\"\n",
-        )
+        ))
         .unwrap();
         let (a, b) = (config.agent("a").unwrap(), config.agent("b").unwrap());
         assert_eq!(
