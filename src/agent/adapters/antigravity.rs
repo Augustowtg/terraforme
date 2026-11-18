@@ -154,12 +154,17 @@ impl ChatAdapter for AntigravityAdapter {
         &["not logged in"]
     }
 
-    /// O `agy` não tem comando de login: o `/login` fica na interface dele.
+    /// O `agy` não tem `agy login`: o `/login` fica na interface dele, que
+    /// abre já com ele.
+    fn login(&self, _account: Option<&str>) -> Option<Command> {
+        let mut cmd = command(self.bin.as_ref()?);
+        cmd.arg("--prompt-interactive=/login");
+        Some(cmd)
+    }
+
+    /// Sem o `agy` instalado, o login não tem onde rodar.
     fn login_help(&self) -> Option<String> {
-        Some(
-            "O Antigravity não tem login pelo terra: rode `agy` num terminal e use /login lá."
-                .to_string(),
-        )
+        Some("O Antigravity não está instalado: instale o `agy` para entrar.".to_string())
     }
 
     /// O `agentMode` salvo no `/config` do `agy` (é um só, sem conta).
@@ -599,8 +604,8 @@ mod tests {
             families: Arc::default(),
         };
         assert!(agy.accounts().is_empty(), "um login só, no chaveiro");
-        assert!(agy.login(None).is_none(), "o agy não tem `agy login`");
-        assert!(agy.login_help().unwrap().contains("/login"));
+        assert!(agy.login(None).is_none(), "sem o agy, não há login a rodar");
+        assert!(agy.login_help().is_some());
         assert!(
             agy.login_error_words()
                 .iter()

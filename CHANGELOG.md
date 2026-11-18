@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.10] - 2026-11-18
+
+### Corrigido
+
+- Sub agentes no Antigravity: o agente que não escolhe o `provedor` usa o provedor **e o modelo** dos sub agentes. Antes o `modelo` do Claude (ex.: `sonnet`) ia para o `agy`, que recusava a execução.
+- O `/login` no chat do Antigravity abre o `agy` já no `/login`, em vez de só avisar.
+
 ## [0.14.9] - 2026-11-18
 
 ### Corrigido
