@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.9] - 2026-11-18
+
+### Corrigido
+
+- No Antigravity, os comandos da `/` e os modelos carregam bem mais rápido: o catálogo roda os quatro comandos do `agy` juntos, em vez de um depois do outro.
+
 ## [0.14.8] - 2026-11-18
 
 ### Adicionado
