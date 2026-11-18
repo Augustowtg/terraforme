@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.8] - 2026-11-18
+
+### Adicionado
+
+- Na Config, a seção **Sub agentes**, embaixo de Agente, com o **Provedor** e o **Modelo** dos sub agentes. Ao trocar o provedor, a lista de modelos passa a ser a dele na hora. Os agentes do `orchestrator.toml` que não escolhem `provedor` ou `modelo` usam essa preferência (`provedor_subagentes` e `modelo_subagentes` no `[global]`).
+
 ## [0.14.7] - 2026-11-18
 
 ### Adicionado

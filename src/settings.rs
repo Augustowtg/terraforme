@@ -247,12 +247,24 @@ pub struct AgentSettings {
     /// Modelo dos sub agentes (escolhido no menu do `/model` da Config);
     /// `None` deixa o agente decidir.
     pub subagent_model: Option<String>,
+    /// Provedor dos sub agentes (um id de adapter); `None` é o do chat.
+    pub subagent_provider: Option<String>,
     pub interface: Interface,
     pub context: ContextSettings,
     pub usage: UsageSettings,
 }
 
 impl AgentSettings {
+    /// O modelo dos sub agentes do próprio provedor do chat (`chat`): vazio
+    /// quando os sub agentes são de outro provedor, de que o id não vale.
+    pub fn own_subagent_model(&self, chat: Option<&str>) -> Option<&str> {
+        let other = self
+            .subagent_provider
+            .as_deref()
+            .is_some_and(|p| Some(p) != chat);
+        self.subagent_model.as_deref().filter(|_| !other)
+    }
+
     /// Lê o `config.json` de um workspace. `None` quando ele não existe ou
     /// não é JSON; o que faltar (ou não for reconhecido) fica no padrão.
     pub fn load_file(path: &Path) -> Option<Self> {
@@ -268,6 +280,7 @@ impl AgentSettings {
             account: text("account"),
             effort: text("effort"),
             subagent_model: text("subagent_model"),
+            subagent_provider: text("subagent_provider"),
             interface: text("interface")
                 .and_then(|key| Interface::from_key(&key))
                 .unwrap_or_default(),
@@ -287,6 +300,7 @@ impl AgentSettings {
                 "account": self.account,
                 "effort": self.effort,
                 "subagent_model": self.subagent_model,
+                "subagent_provider": self.subagent_provider,
                 "interface": self.interface.key(),
                 "context": self.context.to_json(),
                 "usage": self.usage.to_json(),
@@ -506,6 +520,7 @@ mod tests {
             account: Some(".claude-trabalho".into()),
             effort: None,
             subagent_model: Some("haiku".into()),
+            subagent_provider: None,
             interface: Interface::Provider,
             context: ContextSettings {
                 visible: false,

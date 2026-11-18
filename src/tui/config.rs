@@ -1,7 +1,8 @@
 //! Aba Config: as configurações do terra, em seções (como as seções Recentes
 //! e Salvos do navegador de workspaces). Há a seção Agente e, dentro dela,
 //! separadas por uma linha, a do Contexto e a do Consumo; embaixo, separada
-//! do Agente, a seção Skills (as skills instaladas no agente); à direita
+//! do Agente, a seção Sub agentes (o provedor e o modelo deles, com os modelos
+//! do provedor escolhido na hora) e a seção Skills (as skills instaladas no agente); à direita
 //! (embaixo, em telas estreitas), a seção Extensões.
 //!
 //! `↑`/`↓` escolhem a configuração e `←`/`→` ou `Enter` trocam o valor (nas
@@ -54,7 +55,6 @@ enum Field {
     AddAccount,
     StartMode,
     Model,
-    SubagentModel,
     Interface,
     ContextDisplay,
     AutoCompact,
@@ -62,16 +62,17 @@ enum Field {
     CompactAt,
     UsageDisplay,
     TotalUsageDisplay,
+    SubagentProvider,
+    SubagentModel,
     Skills,
 }
 
-const FIELDS: [Field; 14] = [
+const FIELDS: [Field; 15] = [
     Field::Provider,
     Field::Account,
     Field::AddAccount,
     Field::StartMode,
     Field::Model,
-    Field::SubagentModel,
     Field::Interface,
     Field::ContextDisplay,
     Field::AutoCompact,
@@ -79,14 +80,18 @@ const FIELDS: [Field; 14] = [
     Field::CompactAt,
     Field::UsageDisplay,
     Field::TotalUsageDisplay,
+    Field::SubagentProvider,
+    Field::SubagentModel,
     Field::Skills,
 ];
 /// Onde começa a seção Contexto em [`FIELDS`].
-const CONTEXT_START: usize = 7;
+const CONTEXT_START: usize = 6;
 /// Onde começa a seção Consumo em [`FIELDS`].
-const USAGE_START: usize = 11;
+const USAGE_START: usize = 10;
+/// Onde começa a seção Sub agentes em [`FIELDS`].
+const SUBAGENTS_START: usize = 12;
 /// Onde começa a seção Skills em [`FIELDS`].
-const SKILLS_START: usize = 13;
+const SKILLS_START: usize = 14;
 
 /// As opções que vêm do provedor: os provedores conhecidos (e o `id` do que
 /// o chat usa), contas e modelos (e o catálogo, para o menu do `/model`), e
@@ -98,6 +103,10 @@ pub struct Choices {
     pub provider: Option<String>,
     pub accounts: Vec<AccountOption>,
     pub models: Vec<ModelOption>,
+    /// O provedor dos sub agentes não é o do chat: `subagent_models` são os
+    /// modelos dele (senão valem os `models` e o catálogo do chat).
+    pub subagent_other: bool,
+    pub subagent_models: Vec<ModelOption>,
     pub catalog: Option<Catalog>,
     pub context_window: u64,
     pub extensions: Vec<ExtensionOption>,
@@ -244,7 +253,10 @@ impl ConfigView {
                 Outcome::Moved
             };
         }
-        if FIELDS[self.focus] == Field::SubagentModel && key.code == KeyCode::Enter {
+        if FIELDS[self.focus] == Field::SubagentModel
+            && key.code == KeyCode::Enter
+            && !choices.subagent_other
+        {
             let mut menu =
                 ModelMenu::subagents(settings.subagent_model.clone(), choices.catalog.as_ref());
             menu.sync(choices.catalog.as_ref());
@@ -325,12 +337,14 @@ impl ConfigView {
         };
         lines.extend(rows(0..CONTEXT_START));
         let context = rows(CONTEXT_START..USAGE_START);
-        let usage = rows(USAGE_START..SKILLS_START);
+        let usage = rows(USAGE_START..SUBAGENTS_START);
+        let subagents = rows(SUBAGENTS_START..SKILLS_START);
         // A linha vai só até onde vai a seção, e não a tela inteira.
         let width = lines
             .iter()
             .chain(&context)
             .chain(&usage)
+            .chain(&subagents)
             .map(Line::width)
             .max();
         lines.push(separator(width.unwrap_or(0)));
@@ -339,6 +353,9 @@ impl ConfigView {
         lines.push(separator(width.unwrap_or(0)));
         lines.push(Line::styled(" Consumo", theme::section_title()));
         lines.extend(usage);
+        lines.push(separator(width.unwrap_or(0)));
+        lines.push(Line::styled(" Sub agentes", theme::section_title()));
+        lines.extend(subagents);
 
         let skill_lines = self.skill_lines(
             &choices.skills,
@@ -554,7 +571,8 @@ fn field_label(field: Field) -> &'static str {
         Field::AddAccount => "Nova conta",
         Field::StartMode => "Modo inicial",
         Field::Model => "Modelo",
-        Field::SubagentModel => "Sub agentes",
+        Field::SubagentProvider => "Provedor",
+        Field::SubagentModel => "Modelo",
         Field::Interface => "Interface",
         Field::ContextDisplay => "Display",
         Field::AutoCompact => "Auto compactação",
@@ -633,7 +651,27 @@ fn value_label(field: Field, settings: &AgentSettings, choices: &Choices) -> Str
         }
         Field::Skills => String::new(),
         Field::Model => model_label(&settings.model, models),
-        Field::SubagentModel => model_label(&settings.subagent_model, models),
+        Field::SubagentProvider => {
+            let id = settings
+                .subagent_provider
+                .as_ref()
+                .or(choices.provider.as_ref());
+            choices
+                .providers
+                .iter()
+                .find(|p| Some(&p.id) == id)
+                .map_or_else(|| "Padrão".to_string(), |p| p.name.clone())
+        }
+        Field::SubagentModel => model_label(&settings.subagent_model, subagent_models(choices)),
+    }
+}
+
+/// Os modelos que os sub agentes podem usar: os do provedor deles.
+fn subagent_models(choices: &Choices) -> &[ModelOption] {
+    if choices.subagent_other {
+        &choices.subagent_models
+    } else {
+        &choices.models
     }
 }
 
@@ -674,6 +712,23 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
                 settings.subagent_model = None;
             }
             settings.provider = Some(next);
+        }
+        Field::SubagentProvider => {
+            let ids: Vec<&String> = choices.providers.iter().map(|p| &p.id).collect();
+            if ids.is_empty() {
+                return;
+            }
+            let current = settings
+                .subagent_provider
+                .as_ref()
+                .or(choices.provider.as_ref());
+            let i = ids.iter().position(|id| Some(*id) == current).unwrap_or(0);
+            let next = ids[cycle(i, ids.len(), step)].clone();
+            if Some(&next) != current {
+                // O modelo é um id do provedor anterior.
+                settings.subagent_model = None;
+            }
+            settings.subagent_provider = Some(next);
         }
         Field::Account => {
             // Sem contas do provedor, só a Default.
@@ -728,7 +783,9 @@ fn change(field: Field, settings: &mut AgentSettings, choices: &Choices, step: i
             *at = all[cycle(i, all.len(), step)];
         }
         Field::Model => cycle_model(&mut settings.model, models, step),
-        Field::SubagentModel => cycle_model(&mut settings.subagent_model, models, step),
+        Field::SubagentModel => {
+            cycle_model(&mut settings.subagent_model, subagent_models(choices), step);
+        }
         // Fica com a Config, que passa de uma skill para outra.
         Field::Skills => {}
     }
@@ -815,6 +872,8 @@ mod tests {
 
     fn choices() -> Choices {
         Choices {
+            subagent_other: false,
+            subagent_models: Vec::new(),
             providers: vec![
                 ProviderOption {
                     id: "claude".into(),
@@ -1048,6 +1107,28 @@ mod tests {
     }
 
     #[test]
+    fn subagent_provider_reloads_its_models_and_drops_the_old_model() {
+        let choices = Choices {
+            subagent_other: true,
+            subagent_models: vec![ModelOption {
+                id: "gemini".into(),
+                label: "Gemini".into(),
+            }],
+            ..choices()
+        };
+        let mut settings = AgentSettings {
+            subagent_provider: Some("claude".into()),
+            subagent_model: Some("haiku".into()),
+            ..AgentSettings::default()
+        };
+        change(Field::SubagentProvider, &mut settings, &choices, 1);
+        assert_eq!(settings.subagent_provider.as_deref(), Some("antigravity"));
+        assert_eq!(settings.subagent_model, None);
+        change(Field::SubagentModel, &mut settings, &choices, 1);
+        assert_eq!(settings.subagent_model.as_deref(), Some("gemini"));
+    }
+
+    #[test]
     fn switching_provider_drops_the_ids_of_the_previous_one() {
         let mut settings = AgentSettings {
             account: Some(".claude-empresa".into()),
@@ -1163,13 +1244,6 @@ mod tests {
         press(&mut view, &mut settings, KeyCode::Right);
         assert_eq!(settings.model, None, "depois do último, volta ao Padrão");
 
-        press(&mut view, &mut settings, KeyCode::Down);
-        press(&mut view, &mut settings, KeyCode::Left);
-        assert_eq!(
-            settings.subagent_model.as_deref(),
-            Some("haiku"),
-            "volta do Padrão ao último"
-        );
         assert_eq!(settings.model, None);
 
         press(&mut view, &mut settings, KeyCode::Down);
@@ -1259,7 +1333,7 @@ mod tests {
                 &choices,
             )
         };
-        for _ in 0..5 {
+        for _ in 0..13 {
             press(&mut view, &mut settings, KeyCode::Down);
         }
         assert_eq!(FIELDS[view.focus], Field::SubagentModel);
@@ -1313,11 +1387,12 @@ mod tests {
             account: None,
             effort: None,
             subagent_model: None,
+            subagent_provider: None,
             interface: Interface::Provider,
             context: ContextSettings::default(),
             usage: Default::default(),
         };
-        let mut terminal = Terminal::new(TestBackend::new(60, 23)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 26)).unwrap();
         terminal
             .draw(|frame| {
                 let extensions = ExtensionSettings::default();
@@ -1338,24 +1413,27 @@ mod tests {
         assert_eq!(row(4), "   Nova conta          + Adicionar conta (Enter)");
         assert_eq!(row(5), "   Modo inicial        Do provedor");
         assert_eq!(row(6), "   Modelo              HAIKU");
-        assert_eq!(row(7), "   Sub agentes         Padrão");
-        assert_eq!(row(8), "   Interface           Original do provedor");
+        assert_eq!(row(7), "   Interface           Original do provedor");
         assert_eq!(buffer[(3, 2)].bg, theme::focused().bg.unwrap());
         // A linha que separa o Contexto vai até onde vai a seção.
-        assert!(row(9).starts_with("  ─"));
-        assert_eq!(row(9).chars().count(), row(4).chars().count());
-        assert_eq!(row(10), "  Contexto");
-        assert_eq!(row(11), "   Display             Oculto");
-        assert_eq!(row(12), "   Auto compactação    Não");
-        assert_eq!(row(13), "   Limite de tokens    200K");
-        assert_eq!(row(14), "   Compactar em        75% · 150K tokens");
-        assert!(row(15).starts_with("  ─"));
-        assert_eq!(row(16), "  Consumo");
-        assert_eq!(row(17), "   Display             Oculto");
-        assert_eq!(row(18), "   Consumo geral       Visível");
-        // As Skills, separadas.
-        assert_eq!(row(19), "");
-        assert_eq!(row(20), "  Skills");
+        assert!(row(8).starts_with("  ─"));
+        assert_eq!(row(8).chars().count(), row(4).chars().count());
+        assert_eq!(row(9), "  Contexto");
+        assert_eq!(row(10), "   Display             Oculto");
+        assert_eq!(row(11), "   Auto compactação    Não");
+        assert_eq!(row(12), "   Limite de tokens    200K");
+        assert_eq!(row(13), "   Compactar em        75% · 150K tokens");
+        assert!(row(14).starts_with("  ─"));
+        assert_eq!(row(15), "  Consumo");
+        assert_eq!(row(16), "   Display             Oculto");
+        assert_eq!(row(17), "   Consumo geral       Visível");
+        // Os Sub agentes, abaixo do Consumo, e as Skills, separadas.
+        assert!(row(18).starts_with("  ─"));
+        assert_eq!(row(19), "  Sub agentes");
+        assert_eq!(row(20), "   Provedor            Claude");
+        assert_eq!(row(21), "   Modelo              Padrão");
+        assert_eq!(row(22), "");
+        assert_eq!(row(23), "  Skills");
     }
 
     #[test]
@@ -1375,7 +1453,7 @@ mod tests {
         assert_eq!(view.focus, SKILLS_START, "a última fica");
         assert_eq!(FIELDS[view.focus], Field::Skills);
         assert_eq!(press(&mut view, KeyCode::Up), Outcome::Moved);
-        assert_eq!(FIELDS[view.focus], Field::TotalUsageDisplay);
+        assert_eq!(FIELDS[view.focus], Field::SubagentModel);
     }
 
     #[test]
