@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.7] - 2026-11-18
+
+### Adicionado
+
+- Sub agentes no Antigravity (`agy`): a instrução de delegação (`terra send`) vai na frente da primeira mensagem da conversa, já que o `agy` não tem prompt de sistema. Dá para começar no Claude e passar para o `agy` com os mesmos sub agentes.
+
 ## [0.14.6] - 2026-11-17
 
 ### Adicionado
