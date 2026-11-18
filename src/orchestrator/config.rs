@@ -12,6 +12,8 @@
 //! aba_em_primeiro_plano = false  # a aba de uma execução vai para a frente ao abrir
 //! perguntar_permissoes = true    # fora das ferramentas, a janela pergunta; false nega sem perguntar
 //! delegacao = true               # o chat principal fica sabendo dos agentes da pasta dele e de como delegar
+//! provedor_subagentes = "claude" # o provedor dos agentes sem `provedor` (a Config grava)
+//! modelo_subagentes = "haiku"    # o modelo dos agentes sem `modelo` (a Config grava)
 //!
 //! [agents.backend]
 //! descricao = "API e banco"      # para o chat principal escolher a quem delegar
@@ -90,6 +92,9 @@ pub struct Global {
     /// O chat principal recebe, no prompt de sistema, os agentes da pasta
     /// dele e como delegar ([`Config::delegation_prompt`]).
     pub delegate: bool,
+    /// O provedor e o modelo dos agentes que não escolhem os seus.
+    pub subagent_provider: Option<String>,
+    pub subagent_model: Option<String>,
 }
 
 impl Default for Global {
@@ -104,6 +109,8 @@ impl Default for Global {
             focus_runs: false,
             ask_permissions: true,
             delegate: true,
+            subagent_provider: None,
+            subagent_model: None,
         }
     }
 }
@@ -253,6 +260,18 @@ impl Config {
                 other => return Err(format!("seção desconhecida: [{other}]")),
             }
         }
+        for agent in &mut config.agents {
+            agent.provider = agent
+                .provider
+                .take()
+                .or(config.global.subagent_provider.clone());
+            // O modelo é de um provedor: só vale para o agente que roda nele.
+            if agent.model.is_none()
+                && agent.provider.as_deref() == config.global.subagent_provider.as_deref()
+            {
+                agent.model = config.global.subagent_model.clone();
+            }
+        }
         config.check()?;
         Ok(config)
     }
@@ -387,6 +406,14 @@ fn global(table: &dyn TableLike) -> Result<Global, String> {
             "aba_em_primeiro_plano" => global.focus_runs = flag(item, &at)?,
             "perguntar_permissoes" => global.ask_permissions = flag(item, &at)?,
             "delegacao" => global.delegate = flag(item, &at)?,
+            "provedor_subagentes" => {
+                let provider = text_of(item, &at)?;
+                if !PROVIDERS.contains(&provider.as_str()) {
+                    return Err(format!("{at}: \"{provider}\" não é um provedor"));
+                }
+                global.subagent_provider = Some(provider);
+            }
+            "modelo_subagentes" => global.subagent_model = Some(text_of(item, &at)?),
             _ => return Err(format!("chave desconhecida: {at}")),
         }
     }
@@ -568,6 +595,21 @@ escalonar_falhas = true
 tag = "testes"
 modelo = "leve"
 "#;
+
+    #[test]
+    fn subagent_defaults_fill_only_what_the_agent_leaves_out() {
+        let config = Config::parse(
+            "[global]\nprovedor_subagentes = \"antigravity\"\nmodelo_subagentes = \"m\"\n\
+             [agents.a]\ncwd = \"/a\"\n[agents.b]\ncwd = \"/b\"\nprovedor = \"claude\"\n",
+        )
+        .unwrap();
+        let (a, b) = (config.agent("a").unwrap(), config.agent("b").unwrap());
+        assert_eq!(
+            (a.provider(), a.model.as_deref()),
+            ("antigravity", Some("m"))
+        );
+        assert_eq!((b.provider(), b.model.as_deref()), ("claude", None));
+    }
 
     #[test]
     fn the_example_of_the_spec_parses() {
