@@ -261,14 +261,11 @@ impl Config {
             }
         }
         for agent in &mut config.agents {
-            agent.provider = agent
-                .provider
-                .take()
-                .or(config.global.subagent_provider.clone());
-            // O modelo é de um provedor: só vale para o agente que roda nele.
-            if agent.model.is_none()
-                && agent.provider.as_deref() == config.global.subagent_provider.as_deref()
-            {
+            // O modelo é de um provedor: o agente que não escolhe o dele usa
+            // o provedor e o modelo dos sub agentes, e o `modelo` próprio
+            // (ex.: `sonnet`, do Claude) não vai para o outro provedor.
+            if agent.provider.is_none() && config.global.subagent_provider.is_some() {
+                agent.provider = config.global.subagent_provider.clone();
                 agent.model = config.global.subagent_model.clone();
             }
         }
@@ -600,7 +597,7 @@ modelo = "leve"
     fn subagent_defaults_fill_only_what_the_agent_leaves_out() {
         let config = Config::parse(&portable(
             "[global]\nprovedor_subagentes = \"antigravity\"\nmodelo_subagentes = \"m\"\n\
-             [agents.a]\ncwd = \"/a\"\n[agents.b]\ncwd = \"/b\"\nprovedor = \"claude\"\n",
+             [agents.a]\ncwd = \"/a\"\nmodelo = \"sonnet\"\n[agents.b]\ncwd = \"/b\"\nprovedor = \"claude\"\n",
         ))
         .unwrap();
         let (a, b) = (config.agent("a").unwrap(), config.agent("b").unwrap());
