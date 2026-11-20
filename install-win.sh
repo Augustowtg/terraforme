@@ -153,12 +153,19 @@ install_rtk() {
     ui_note "RTK já instalado: $(rtk --version)"
     return
   fi
-  if ! command -v cargo >/dev/null 2>&1; then
-    ui_note "${C_YELLOW}aviso: o RTK não foi instalado: ele é compilado com o cargo. Instale o Rust em https://rustup.rs e rode o instalador de novo.${C_RESET}"
+  # O zip da última release; o rtk.exe vai para o BIN_DIR, que já está no PATH.
+  local tmp
+  tmp="$(mktemp -d)"
+  if ! curl -fsSL -o "$tmp/rtk.zip"     "https://github.com/rtk-ai/rtk/releases/latest/download/rtk-x86_64-pc-windows-msvc.zip" ||
+    ! unzip -oq "$tmp/rtk.zip" rtk.exe -d "$tmp"; then
+    rm -rf "$tmp"
+    ui_note "${C_YELLOW}aviso: o RTK não foi instalado: não foi possível baixar a release de github.com/rtk-ai/rtk.${C_RESET}"
     return
   fi
-  cargo install --locked --git https://github.com/rtk-ai/rtk rtk
-  ui_note "RTK instalado em ~/.cargo/bin/rtk.exe"
+  mkdir -p "$BIN_DIR"
+  mv -f "$tmp/rtk.exe" "$BIN_DIR/rtk.exe"
+  rm -rf "$tmp"
+  ui_note "RTK instalado em $BIN_DIR/rtk.exe"
 }
 
 install_ai_memory() {
@@ -302,7 +309,7 @@ elif ui_ask "Instalar as extensões (RTK, ai-memory e Graphify)?"; then
     "ai-memory - memória de longo prazo entre sessões e agentes" \
     "Graphify - grafo de conhecimento do projeto, que o agente consulta antes de ler os arquivos"
   if [ "${UI_SELECTED[0]}" -eq 1 ]; then
-    ui_add_step "Instalar o RTK" "cargo install --git https://github.com/rtk-ai/rtk rtk"
+    ui_add_step "Instalar o RTK" "baixa o rtk.exe da release do GitHub"
   fi
   if [ "${UI_SELECTED[1]}" -eq 1 ]; then
     ui_add_step "Instalar e configurar o ai-memory" "install.ps1 do GitHub e ai-memory setup"

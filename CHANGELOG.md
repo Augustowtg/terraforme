@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.11] - 2026-11-20
+
+### Corrigido
+
+- No Windows, o RTK volta a ser instalado sozinho (pelo instalador e pela aba Extensões): o `rtk.exe` vem do zip da última release e vai para o `~/.terraforme/bin`, que já está no `PATH`. Antes ele era compilado com o `cargo`, que falhava sem o Rust configurado ou sem o Visual Studio Build Tools, e o instalador seguia sem avisar.
+
 ## [0.14.10] - 2026-11-18
 
 ### Corrigido
