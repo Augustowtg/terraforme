@@ -79,10 +79,18 @@ impl Extension for Rtk {
     }
 
     /// O instalador oficial, que baixa o binário da release; no Windows, que
-    /// ele não cobre, compila com o cargo.
+    /// ele não cobre, o `rtk.exe` do zip da release vai para o
+    /// `~\.terraforme\bin`, que já está no PATH do terra.
     fn setup(&self) -> Option<String> {
         let script = if cfg!(windows) {
-            "cargo install --locked --git https://github.com/rtk-ai/rtk rtk"
+            r#"$ErrorActionPreference = 'Stop'
+$dir = Join-Path $HOME '.terraforme\bin'
+$tmp = Join-Path ([IO.Path]::GetTempPath()) ('rtk-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Force $dir, $tmp | Out-Null
+Invoke-WebRequest -UseBasicParsing 'https://github.com/rtk-ai/rtk/releases/latest/download/rtk-x86_64-pc-windows-msvc.zip' -OutFile (Join-Path $tmp 'rtk.zip')
+Expand-Archive -Force (Join-Path $tmp 'rtk.zip') $tmp
+Copy-Item -Force (Join-Path $tmp 'rtk.exe') $dir
+Remove-Item -Recurse -Force $tmp"#
         } else {
             r#"curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | RTK_INSTALL_DIR="$HOME/.local/bin" sh"#
         };
