@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.14] - 2026-11-21
+
+### Corrigido
+
+- O `/btw` abre a interface original também enquanto o agente responde; antes o terra ignorava o comando (#72).
+
 ## [0.14.13] - 2026-11-21
 
 ### Corrigido

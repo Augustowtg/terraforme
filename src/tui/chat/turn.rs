@@ -24,6 +24,15 @@ impl Chat {
             self.history.follow();
             return;
         }
+        // O /btw é a pergunta lateral: abre a interface original mesmo com o
+        // agente respondendo.
+        let side = prompt.starts_with("/btw") && self.run.is_some();
+        if side && self.route_to_provider(&prompt) {
+            self.remember_sent(&prompt);
+            self.input.clear();
+            self.history.follow();
+            return;
+        }
         if prompt.is_empty() || self.run.is_some() {
             return;
         }
