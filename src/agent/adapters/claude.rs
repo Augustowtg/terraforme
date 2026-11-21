@@ -31,8 +31,8 @@ use serde_json::Value;
 use self::stream::{StreamParser, text, tool_detail};
 use crate::agent::{
     AccountOption, AgentEvent, Catalog, ChatAdapter, CommandRoute, Interactive, ModelOption,
-    PermissionMode, ProviderSkill, Request, Session, TokenReport, Usage, kill_tree, launch,
-    own_group,
+    PermissionMode, ProviderSkill, Question, Request, Session, TokenReport, Usage, kill_tree,
+    launch, own_group,
 };
 use crate::extension::{Contribution, Hook};
 
@@ -471,6 +471,32 @@ pub(crate) fn tool_request(line: &str) -> Option<(String, String, Value)> {
     ))
 }
 
+/// As perguntas de um `AskUserQuestion`; `None` em outra ferramenta ou sem
+/// perguntas válidas (aí vale o pedido de permissão comum).
+// shortcut: a pergunta de múltipla escolha vira de escolha única; trocar se pedirem.
+fn ask_questions(name: &str, input: &Value) -> Option<Vec<Question>> {
+    if name != "AskUserQuestion" {
+        return None;
+    }
+    let questions: Vec<Question> = input["questions"]
+        .as_array()?
+        .iter()
+        .filter_map(|q| {
+            Some(Question {
+                text: q["question"].as_str()?.to_string(),
+                options: q["options"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|o| {
+                        Some((o["label"].as_str()?.to_string(), text(&o["description"])))
+                    })
+                    .collect(),
+            })
+        })
+        .collect();
+    (!questions.is_empty()).then_some(questions)
+}
+
 /// A resposta a um pedido de permissão: aprovado com a entrada como veio, ou
 /// negado.
 pub(crate) fn permission_response(request_id: &str, allow: bool, input: &Value) -> String {
@@ -639,6 +665,14 @@ impl Run {
             let mut done = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Some((id, name, input)) = tool_request(&line) {
+                    // A pergunta do agente precisa do usuário até no Yolo.
+                    if let Some(questions) = ask_questions(&name, &input) {
+                        pending.lock().unwrap().insert(id.clone(), input);
+                        if tx.send(AgentEvent::Question { id, questions }).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     if auto_allow {
                         send_line(&stdin, &permission_response(&id, true, &input));
                         continue;
@@ -694,6 +728,17 @@ impl Session for Run {
             return;
         };
         send_line(&self.stdin, &permission_response(id, allow, &input));
+    }
+
+    fn answer(&mut self, id: &str, answers: &[(String, String)]) {
+        let Some(mut input) = self.pending.lock().unwrap().remove(id) else {
+            return;
+        };
+        input["answers"] = answers
+            .iter()
+            .map(|(q, a)| (q.clone(), Value::from(a.as_str())))
+            .collect();
+        send_line(&self.stdin, &permission_response(id, true, &input));
     }
 }
 

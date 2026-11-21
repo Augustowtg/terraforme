@@ -24,6 +24,7 @@ const HELP_INSERT: &str = "Enter enviar · Esc parar · \\+Enter nova linha · @
 const HELP_PICKER: &str = "↑/↓ escolher · Tab/Enter inserir · Esc fechar · digite para filtrar";
 pub(super) const HELP_MODEL: &str =
     "↑/↓ escolher · ←/→ esforço · Enter selecionar · Esc voltar/fechar";
+const HELP_QUESTION: &str = "↑/↓ escolher · Enter confirmar · Esc recusar";
 pub(super) const HELP_PERMISSION: &str =
     "←/→ escolher · Enter confirmar · s permitir · n/Esc negar";
 const HELP_COMMANDS: &str = "↑/↓ escolher · Tab/Enter executar · Esc fechar · digite para filtrar";
@@ -42,6 +43,7 @@ impl Chat {
         }
         Cow::Borrowed(match self.input.mode() {
             _ if self.model_menu.is_some() => HELP_MODEL,
+            _ if self.prompts.is_question() => HELP_QUESTION,
             _ if self.prompts.is_open() => HELP_PERMISSION,
             _ if self.input.command_picker_open() => HELP_COMMANDS,
             _ if self.input.picker_open() => HELP_PICKER,
