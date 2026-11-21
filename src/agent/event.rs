@@ -32,6 +32,9 @@ pub enum AgentEvent {
     TextDelta(String),
     /// Bloco de texto inteiro, quando o CLI não mandou os trechos.
     Text(String),
+    /// Um passo do agente sem evento próprio (pensando, nova tentativa da
+    /// API, subagente...): vai para o histórico para ele nunca parecer parado.
+    Step(String),
     /// O agente chamou uma ferramenta (ex.: `Bash` com `ls -la`).
     ToolUse { name: String, detail: String },
     /// O agente pede permissão para usar uma ferramenta: o chat pergunta ao
