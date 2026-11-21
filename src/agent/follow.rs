@@ -59,7 +59,9 @@ pub fn follow(
                     for event in parse(line.trim_end()) {
                         if matches!(
                             event,
-                            AgentEvent::PermissionRequest { .. } | AgentEvent::Blocked { .. }
+                            AgentEvent::PermissionRequest { .. }
+                                | AgentEvent::Question { .. }
+                                | AgentEvent::Blocked { .. }
                         ) {
                             continue;
                         }
