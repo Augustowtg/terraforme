@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.11] - 2026-11-21
+
+### Adicionado
+
+- O histórico do chat mostra cada passo do agente: pensando, preparando a ferramenta, nova tentativa da API, subagentes e os passos do Antigravity que antes sumiam. Ele não parece mais parado.
+
 ## [0.14.10] - 2026-11-18
 
 ### Corrigido

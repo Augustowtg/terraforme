@@ -185,6 +185,10 @@ impl StreamParser {
             "checkpoint" | "compaction" if done => {
                 events.push(AgentEvent::Compacted { tokens: None })
             }
+            // Um passo sem tradução (ex.: o plano): aparece uma vez no histórico.
+            other if !other.is_empty() && other != "user_input" && self.tools.insert(index) => {
+                events.push(AgentEvent::Step(format!("Passo: {other}")));
+            }
             _ => {}
         }
         events
@@ -271,6 +275,17 @@ fn summary(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_step_is_shown_once() {
+        let mut parser = StreamParser::new(None);
+        let line = r#"{"event":"step_update","step_update":{"step_index":4,"state":"ACTIVE","step_type":"planner"}}"#;
+        assert_eq!(
+            parser.parse(line),
+            [AgentEvent::Step("Passo: planner".into())]
+        );
+        assert!(parser.parse(line).is_empty());
+    }
 
     #[test]
     fn usage_grows_while_the_text_is_generated() {
