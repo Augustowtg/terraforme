@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.15] - 2026-11-21
+
+### Alterado
+
+- O `Esc` com o agente respondendo abre uma confirmação (Enter/`s` interrompe, `Esc`/`n` continua) em vez de interromper na hora (#74).
+
 ## [0.14.14] - 2026-11-21
 
 ### Corrigido

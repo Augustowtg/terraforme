@@ -70,6 +70,8 @@ pub struct Chat {
     subagent_model: Option<String>,
     /// Menu do `/model`, quando aberto.
     model_menu: Option<ModelMenu>,
+    /// O Esc pediu para interromper e a confirmação está aberta.
+    confirm_interrupt: bool,
     /// Comando do `/login`, para a tela principal rodar fora da tela.
     pending_login: Option<Command>,
     /// O login pendente (ou em curso) é o de uma conta nova (`/new-login`).
@@ -172,6 +174,7 @@ impl Default for Chat {
             session_effort: None,
             subagent_model: None,
             model_menu: None,
+            confirm_interrupt: false,
             pending_login: None,
             new_login: false,
             pending_original: None,
@@ -428,6 +431,21 @@ impl Chat {
             self.copy_selection();
             return true;
         }
+        // A confirmação de interromper fica com as teclas, menos o Tab.
+        if self.confirm_interrupt {
+            if key.code == KeyCode::Tab {
+                return false;
+            }
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('s') => {
+                    self.confirm_interrupt = false;
+                    self.cancel();
+                }
+                KeyCode::Esc | KeyCode::Char('n') => self.confirm_interrupt = false,
+                _ => {}
+            }
+            return true;
+        }
         // O menu do `/model`, aberto, fica com todas as teclas.
         if let Some(menu) = &mut self.model_menu {
             let outcome = menu.handle_key(key, self.catalog.as_ref());
@@ -458,10 +476,10 @@ impl Chat {
                 self.history.scroll_down(PAGE_LINES);
                 return true;
             }
-            // No modo NORMAL, com o agente respondendo, o Esc interrompe (em
-            // vez de ir para "Sair").
+            // No modo NORMAL, com o agente respondendo, o Esc pede para
+            // interromper (em vez de ir para "Sair"), com confirmação.
             KeyCode::Esc if self.input.mode() == InputMode::Normal && self.run.is_some() => {
-                self.cancel();
+                self.confirm_interrupt = true;
                 return true;
             }
             _ => {}
