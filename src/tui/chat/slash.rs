@@ -32,6 +32,9 @@ impl Chat {
             }
             // Sem interface no terra, fica o padrão do router: o comando vai
             // para o agente, que responde no chat.
+            "btw" if self.run.is_some() => {
+                self.route_to_provider("/btw");
+            }
             _ if self.run.is_some() => self.history.push(Entry::Info(format!(
                 "Espere o agente terminar para rodar /{name}."
             ))),
