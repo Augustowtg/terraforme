@@ -17,6 +17,6 @@ pub use adapter::{
     ModelInfo, ModelOption, ModelTokens, ProviderSkill, Request, Session, TokenReport, Usage,
     UsageWindow, kill_tree, launch, own_group,
 };
-pub use event::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
+pub use event::{AgentEvent, CHARS_PER_TOKEN, Question, ReportedMode};
 pub use follow::follow;
 pub use mode::PermissionMode;

@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.12] - 2026-11-21
+
+### Adicionado
+
+- Quando o agente (Claude) faz uma pergunta com opções (`AskUserQuestion`), o chat mostra o menu com as opções e o "Outro…" para digitar a resposta, e ela volta ao agente. Antes só aparecia Permitir/Negar e a resposta se perdia.
+
+### Observação
+
+- Os sub agentes no Antigravity (`provedor_subagentes = "antigravity"`) rodam no modo auto do `agy -p`, que não pergunta permissões. Para ver os pedidos deles, use o Claude nos sub agentes.
+
 ## [0.14.11] - 2026-11-21
 
 ### Adicionado
