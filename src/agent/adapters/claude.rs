@@ -365,6 +365,10 @@ fn cli_args<'a>(
         "stream-json",
         "--verbose",
         "--include-partial-messages",
+        "--forward-subagent-text",
+        // Sem isso o `-p` manda o pensamento vazio: só o resumo dele vem.
+        "--thinking-display",
+        "summarized",
         "--permission-mode",
         mode,
         "--settings",

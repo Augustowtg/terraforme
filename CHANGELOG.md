@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.13] - 2026-11-21
+
+### Corrigido
+
+- O histórico mostra o resumo do pensamento do Claude (antes só "Pensando...", porque o `claude -p` manda o pensamento vazio sem `--thinking-display summarized`) e o texto dos subagentes, como passos (#70).
+
 ## [0.14.12] - 2026-11-21
 
 ### Adicionado

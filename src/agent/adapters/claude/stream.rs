@@ -167,8 +167,14 @@ impl StreamParser {
                     .into_iter()
                     .collect()
             }
+            // O texto de um subagente (`--forward-subagent-text`) vira passo,
+            // não resposta: só a mensagem inteira, sem os trechos do stream.
+            Some("stream_event") if !value["parent_tool_use_id"].is_null() => Vec::new(),
             Some("stream_event") => self.stream_event(&value["event"]),
-            Some("assistant") => self.assistant(&value["message"]),
+            Some("assistant") if !value["parent_tool_use_id"].is_null() => {
+                self.assistant(&value["message"], true)
+            }
+            Some("assistant") => self.assistant(&value["message"], false),
             Some("user") => tool_results(&value["message"]),
             Some("result") => self.result(value),
             _ => Vec::new(),
@@ -203,19 +209,30 @@ impl StreamParser {
         }
     }
 
-    fn assistant(&mut self, message: &Value) -> Vec<AgentEvent> {
+    /// `sub`: a mensagem é de um subagente; o texto dela vira passo, e o
+    /// contexto dela não é o do agente principal.
+    fn assistant(&mut self, message: &Value, sub: bool) -> Vec<AgentEvent> {
         let streamed = message["id"]
             .as_str()
             .is_some_and(|id| self.streamed.contains(id));
-        let context = context_tokens(&message["usage"]).map(|tokens| AgentEvent::Context {
-            tokens,
-            window: None,
-        });
+        let context = context_tokens(&message["usage"])
+            .filter(|_| !sub)
+            .map(|tokens| AgentEvent::Context {
+                tokens,
+                window: None,
+            });
+        let who = if sub { "Subagente" } else { "Pensamento" };
         context
             .into_iter()
-            .chain(
-                blocks(&message["content"]).filter_map(|block| match block["type"].as_str() {
+            .chain(blocks(&message["content"]).filter_map(|block| {
+                match block["type"].as_str() {
+                    Some("text") if sub => Some(text(&block["text"]))
+                        .filter(|t| !t.trim().is_empty())
+                        .map(|t| AgentEvent::Step(format!("Subagente: {}", t.trim()))),
                     Some("text") if !streamed => Some(AgentEvent::Text(text(&block["text"]))),
+                    Some("thinking") => Some(text(&block["thinking"]))
+                        .filter(|t| !t.trim().is_empty())
+                        .map(|t| AgentEvent::Step(format!("{who}: {}", t.trim()))),
                     Some("tool_use") => {
                         let name = text(&block["name"]);
                         self.tools
@@ -226,8 +243,8 @@ impl StreamParser {
                         })
                     }
                     _ => None,
-                }),
-            )
+                }
+            }))
             .collect()
     }
 
@@ -449,6 +466,26 @@ mod tests {
                 AgentEvent::Step("Tentando de novo a API (tentativa 2)...".into())
             ]
         );
+    }
+
+    #[test]
+    fn shows_the_thinking_text() {
+        let events = parse_all(&[
+            r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"thinking","thinking":"vou ler o arquivo"}]}}"#,
+        ]);
+        assert_eq!(
+            events,
+            [AgentEvent::Step("Pensamento: vou ler o arquivo".into())]
+        );
+    }
+
+    #[test]
+    fn subagent_text_is_a_step() {
+        let events = parse_all(&[
+            r#"{"type":"stream_event","parent_tool_use_id":"t1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"achei"}}}"#,
+            r#"{"type":"assistant","parent_tool_use_id":"t1","message":{"id":"s1","content":[{"type":"text","text":"achei"}]}}"#,
+        ]);
+        assert_eq!(events, [AgentEvent::Step("Subagente: achei".into())]);
     }
 
     #[test]
