@@ -217,6 +217,10 @@ impl Chat {
             }
             AgentEvent::TextDelta(text) => self.history.append_text(&text),
             AgentEvent::Text(text) => self.history.push(Entry::Assistant(text)),
+            AgentEvent::Step(text) => {
+                self.agent_activity = Some(text.clone());
+                self.history.push(Entry::Info(text));
+            }
             AgentEvent::ToolUse { name, detail } => {
                 self.agent_activity = Some(format!("Usando {name}..."));
                 self.history.push(Entry::Tool { name, detail });

@@ -150,6 +150,23 @@ impl StreamParser {
             Some("system") if value["subtype"] == "permission_denied" => {
                 self.blocked(value).into_iter().collect()
             }
+            Some("system") if value["subtype"] == "api_retry" => vec![AgentEvent::Step(format!(
+                "Tentando de novo a API (tentativa {})...",
+                value["attempt"].as_u64().unwrap_or(1)
+            ))],
+            Some("system")
+                if matches!(
+                    value["subtype"].as_str(),
+                    Some("task_started" | "task_progress" | "task_notification")
+                ) =>
+            {
+                let note = ["description", "summary"]
+                    .iter()
+                    .find_map(|k| value[*k].as_str().filter(|s| !s.is_empty()));
+                note.map(|n| AgentEvent::Step(format!("Subagente: {n}")))
+                    .into_iter()
+                    .collect()
+            }
             Some("stream_event") => self.stream_event(&value["event"]),
             Some("assistant") => self.assistant(&value["message"]),
             Some("user") => tool_results(&value["message"]),
@@ -166,6 +183,15 @@ impl StreamParser {
             }
             Some("content_block_start") if event["content_block"]["type"] == "text" => {
                 vec![AgentEvent::TextStart]
+            }
+            Some("content_block_start") if event["content_block"]["type"] == "thinking" => {
+                vec![AgentEvent::Step("Pensando...".into())]
+            }
+            Some("content_block_start") if event["content_block"]["type"] == "tool_use" => {
+                vec![AgentEvent::Step(format!(
+                    "Preparando {}...",
+                    text(&event["content_block"]["name"])
+                ))]
             }
             Some("content_block_delta") if event["delta"]["type"] == "text_delta" => {
                 if let Some(id) = &self.current_message {
@@ -408,6 +434,21 @@ mod tests {
     fn parse_all(lines: &[&str]) -> Vec<AgentEvent> {
         let mut parser = StreamParser::default();
         lines.iter().flat_map(|l| parser.parse(l)).collect()
+    }
+
+    #[test]
+    fn shows_thinking_and_retry_steps() {
+        let events = parse_all(&[
+            r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}}"#,
+            r#"{"type":"system","subtype":"api_retry","attempt":2}"#,
+        ]);
+        assert_eq!(
+            events,
+            [
+                AgentEvent::Step("Pensando...".into()),
+                AgentEvent::Step("Tentando de novo a API (tentativa 2)...".into())
+            ]
+        );
     }
 
     #[test]
