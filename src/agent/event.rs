@@ -17,6 +17,13 @@ pub enum ReportedMode {
 /// escrevendo: o uso de verdade só vem no fim de cada chamada.
 pub const CHARS_PER_TOKEN: u64 = 4;
 
+/// Uma pergunta do agente: o texto e as opções (rótulo e descrição).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    pub text: String,
+    pub options: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
     /// Sessão iniciada: id, modelo (ex.: `claude-opus-5-5`) e modo de
@@ -44,6 +51,12 @@ pub enum AgentEvent {
         id: String,
         name: String,
         detail: String,
+    },
+    /// O agente faz perguntas ao usuário (`AskUserQuestion`): o chat mostra as
+    /// opções e responde com [`Session::answer`](super::Session::answer) e o `id`.
+    Question {
+        id: String,
+        questions: Vec<Question>,
     },
     /// O modo do agente bloqueou uma ferramenta sem perguntar (ex.: o
     /// classificador do modo Agente). O agente segue sem ela; se o usuário

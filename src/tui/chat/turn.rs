@@ -131,6 +131,24 @@ impl Chat {
                     run.respond(id, allow);
                 }
             }
+            Kind::Question { id, .. } => {
+                if let Some(run) = &mut self.run {
+                    if allow {
+                        let answers = self.prompts.take_answers();
+                        let text: Vec<String> =
+                            answers.iter().map(|(q, a)| format!("{q} → {a}")).collect();
+                        run.answer(id, &answers);
+                        self.history
+                            .push(Entry::Info(format!("Respondido: {}", text.join(" · "))));
+                    } else {
+                        run.respond(id, false);
+                        self.history
+                            .push(Entry::Info("Pergunta recusada.".to_string()));
+                    }
+                }
+                self.history.follow();
+                return;
+            }
             Kind::Blocked { allow: rule, .. } => {
                 if allow {
                     self.allowed.push(rule.clone());
@@ -231,6 +249,14 @@ impl Chat {
                     name,
                     detail,
                     kind: Kind::Ask { id },
+                });
+            }
+            AgentEvent::Question { id, questions } => {
+                self.agent_activity = Some("Aguardando sua resposta...".to_string());
+                self.prompts.push(permission::Request {
+                    name: "AskUserQuestion".to_string(),
+                    detail: String::new(),
+                    kind: Kind::Question { id, questions },
                 });
             }
             AgentEvent::Blocked {

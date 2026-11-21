@@ -14,6 +14,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
 
+use crate::agent::Question;
 use crate::theme::{self, Variant};
 
 const ALLOW_LABEL: &str = " Permitir ";
@@ -34,6 +35,12 @@ pub enum Kind {
     /// O modo bloqueou a ferramenta sem perguntar, pelo motivo `reason`; o
     /// agente seguiu sem ela. `allow` libera ela numa mensagem nova.
     Blocked { reason: String, allow: String },
+    /// O agente pergunta ao usuário: as respostas saem em
+    /// [`Prompts::take_answers`] (Esc recusa).
+    Question {
+        id: String,
+        questions: Vec<Question>,
+    },
     /// O agente `agent` da execução despachada `run` espera a resposta: o id
     /// do pedido no hub. Não depende da resposta deste chat: fica quando
     /// ela acaba ou é interrompida, e sai quando a execução termina.
@@ -49,7 +56,14 @@ pub enum Kind {
 pub struct Prompts {
     queue: VecDeque<Request>,
     allow: bool,
+    /// Na pergunta da frente: a opção escolhida (a última é "Outro"), o texto
+    /// do "Outro" sendo digitado e as respostas já dadas.
+    choice: usize,
+    typing: Option<String>,
+    answers: Vec<(String, String)>,
 }
+
+const OTHER_LABEL: &str = "Outro…";
 
 impl Prompts {
     pub fn push(&mut self, request: Request) {
@@ -78,7 +92,9 @@ impl Prompts {
     /// bloqueados e os das execuções ficam, porque não dependem dela.
     pub fn clear_asks(&mut self) {
         self.queue
-            .retain(|request| !matches!(request.kind, Kind::Ask { .. }));
+            .retain(|request| !matches!(request.kind, Kind::Ask { .. } | Kind::Question { .. }));
+        self.reset_question();
+        self.answers.clear();
     }
 
     /// Esquece os pedidos da execução `run` (ela terminou).
@@ -125,10 +141,88 @@ impl Prompts {
             .any(|request| !matches!(request.kind, Kind::Remote { .. }))
     }
 
+    /// A pergunta da frente com a vez de responder.
+    fn question(&self) -> Option<&Question> {
+        match &self.current()?.kind {
+            Kind::Question { questions, .. } => questions.get(self.answers.len()),
+            _ => None,
+        }
+    }
+
+    pub fn is_question(&self) -> bool {
+        self.question().is_some()
+    }
+
+    /// As respostas da pergunta que acabou de ser respondida.
+    pub fn take_answers(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.answers)
+    }
+
+    /// Teclas de uma pergunta: `↑`/`↓` escolhem, `Enter` confirma (no
+    /// "Outro", abre o texto) e `Esc` recusa.
+    fn question_key(&mut self, key: KeyEvent) -> Option<(Request, bool)> {
+        let question = self.question()?;
+        let count = question.options.len() + 1;
+        let text = question.text.clone();
+        let picked = question.options.get(self.choice).map(|o| o.0.clone());
+        let answer = match (&mut self.typing, key.code) {
+            (Some(_), KeyCode::Esc) => {
+                self.typing = None;
+                return None;
+            }
+            (Some(typed), KeyCode::Char(c)) => {
+                typed.push(c);
+                return None;
+            }
+            (Some(typed), KeyCode::Backspace) => {
+                typed.pop();
+                return None;
+            }
+            (Some(typed), KeyCode::Enter) if !typed.trim().is_empty() => typed.trim().to_string(),
+            (Some(_), _) => return None,
+            (None, KeyCode::Up) => {
+                self.choice = (self.choice + count - 1) % count;
+                return None;
+            }
+            (None, KeyCode::Down) => {
+                self.choice = (self.choice + 1) % count;
+                return None;
+            }
+            (None, KeyCode::Enter) => match picked {
+                Some(label) => label,
+                None => {
+                    self.typing = Some(String::new());
+                    return None;
+                }
+            },
+            (None, KeyCode::Esc) => {
+                let request = self.queue.pop_front()?;
+                self.reset_question();
+                self.answers.clear();
+                return Some((request, false));
+            }
+            (None, _) => return None,
+        };
+        self.answers.push((text, answer));
+        self.reset_question();
+        if self.question().is_some() {
+            return None;
+        }
+        Some((self.queue.pop_front()?, true))
+    }
+
+    fn reset_question(&mut self) {
+        self.choice = 0;
+        self.typing = None;
+    }
+
     /// Trata uma tecla com um pedido aberto: `←`/`→` trocam o botão, `Enter`
     /// confirma, `s`/`y` permitem e `n`/`Esc` negam. Retorna o pedido
     /// respondido e se foi permitido; as outras teclas não fazem nada.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<(Request, bool)> {
+        if self.is_question() {
+            return self.question_key(key);
+        }
         let allow = match key.code {
             KeyCode::Left | KeyCode::Right => {
                 self.allow = !self.allow;
@@ -156,6 +250,7 @@ impl Prompts {
                 "O agente tentou usar ",
             ),
             Kind::Remote { agent, .. } => (format!("Permissão · ▶ {agent}"), "O agente quer usar "),
+            Kind::Question { .. } => ("Pergunta do agente".to_string(), ""),
         };
         let mut lines = vec![
             Line::styled(
@@ -190,11 +285,37 @@ impl Prompts {
             ));
         }
         lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(ALLOW_LABEL, theme::confirm_yes(self.allow)),
-            Span::raw("   "),
-            Span::styled(DENY_LABEL, theme::confirm_no(!self.allow)),
-        ]));
+        if let Some(question) = self.question() {
+            lines.truncate(1);
+            lines.push(Line::styled(
+                question.text.clone(),
+                theme::text().add_modifier(Modifier::BOLD),
+            ));
+            let labels = question
+                .options
+                .iter()
+                .map(|(label, description)| (label.as_str(), description.as_str()))
+                .chain([(OTHER_LABEL, "")]);
+            for (i, (label, description)) in labels.enumerate() {
+                let on = i == self.choice;
+                let mut text = format!("{} {label}", if on { "›" } else { " " });
+                if let (true, Some(typed)) = (on, &self.typing) {
+                    text = format!("› Outro: {typed}▌");
+                } else if !description.is_empty() {
+                    text.push_str(&format!(" — {description}"));
+                }
+                lines.push(Line::styled(
+                    text,
+                    if on { theme::text() } else { theme::muted() },
+                ));
+            }
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(ALLOW_LABEL, theme::confirm_yes(self.allow)),
+                Span::raw("   "),
+                Span::styled(DENY_LABEL, theme::confirm_no(!self.allow)),
+            ]));
+        }
 
         let height = (lines.len() as u16 + 2).min(input.y);
         if height < 3 {
@@ -306,6 +427,37 @@ mod tests {
         );
         assert!(!prompts.is_open());
         assert_eq!(prompts.handle_key(key(KeyCode::Enter)), None);
+    }
+
+    #[test]
+    fn a_question_is_answered_with_an_option_or_typed_text() {
+        let ask = |text: &str| Question {
+            text: text.to_string(),
+            options: vec![("A".to_string(), String::new())],
+        };
+        let mut prompts = Prompts::default();
+        prompts.push(Request {
+            name: "AskUserQuestion".to_string(),
+            detail: String::new(),
+            kind: Kind::Question {
+                id: "q".to_string(),
+                questions: vec![ask("um?"), ask("dois?")],
+            },
+        });
+        assert_eq!(prompts.handle_key(key(KeyCode::Enter)), None);
+        // "Outro" abre o texto, e a resposta é o que foi digitado.
+        assert_eq!(prompts.handle_key(key(KeyCode::Down)), None);
+        assert_eq!(prompts.handle_key(key(KeyCode::Enter)), None);
+        prompts.handle_key(key(KeyCode::Char('x')));
+        let (_, allow) = prompts.handle_key(key(KeyCode::Enter)).unwrap();
+        assert!(allow);
+        assert_eq!(
+            prompts.take_answers(),
+            vec![
+                ("um?".to_string(), "A".to_string()),
+                ("dois?".to_string(), "x".to_string())
+            ]
+        );
     }
 
     #[test]
