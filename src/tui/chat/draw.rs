@@ -7,7 +7,7 @@ use jiff::tz::TimeZone;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Gauge, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Gauge, Paragraph};
 
 use super::{Chat, HEIGHT, SPINNER, compact_count};
 use crate::agent::{self, PermissionMode};
@@ -19,6 +19,7 @@ use crate::tui::widgets::badge;
 
 pub(super) const HELP_NORMAL: &str =
     "i escrever · Shift+Tab modo · PgUp/PgDn rolar · Tab trocar aba · Esc ir para Sair";
+const HELP_INTERRUPT: &str = "Enter/s interromper · Esc/n continuar";
 const HELP_RUNNING: &str = "Esc interromper · i escrever · Shift+Tab modo · PgUp/PgDn rolar";
 const HELP_INSERT: &str = "Enter enviar · Esc parar · \\+Enter nova linha · @ arquivo · / comando";
 const HELP_PICKER: &str = "↑/↓ escolher · Tab/Enter inserir · Esc fechar · digite para filtrar";
@@ -42,6 +43,7 @@ impl Chat {
             return Cow::Owned(message.clone());
         }
         Cow::Borrowed(match self.input.mode() {
+            _ if self.confirm_interrupt => HELP_INTERRUPT,
             _ if self.model_menu.is_some() => HELP_MODEL,
             _ if self.prompts.is_question() => HELP_QUESTION,
             _ if self.prompts.is_open() => HELP_PERMISSION,
@@ -164,6 +166,22 @@ impl Chat {
             menu.draw(frame, input, self.catalog.as_ref(), &label);
         }
         self.prompts.draw(frame, input);
+        if self.confirm_interrupt && input.y >= 3 {
+            let area = Rect {
+                y: input.y - 3,
+                height: 3,
+                ..input
+            };
+            let block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(theme::variant(Variant::Warning))
+                .style(theme::screen());
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(" Interromper o agente? (Enter/s sim · Esc/n não)").block(block),
+                area,
+            );
+        }
         self.draw_badges(frame, badges);
     }
 

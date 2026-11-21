@@ -650,7 +650,12 @@ fn esc_cancels_reply_in_progress() {
     type_text(&mut chat, "olá");
     press(&mut chat, KeyCode::Enter);
     press(&mut chat, KeyCode::Esc); // sai do modo de escrita
-    assert!(press(&mut chat, KeyCode::Esc)); // interrompe
+    assert!(press(&mut chat, KeyCode::Esc)); // pede confirmação
+    assert!(chat.run.is_some());
+    press(&mut chat, KeyCode::Esc); // continua
+    assert!(chat.run.is_some());
+    press(&mut chat, KeyCode::Esc);
+    assert!(press(&mut chat, KeyCode::Enter)); // interrompe
     assert!(chat.run.is_none());
     assert_eq!(chat.agent_status, AgentStatus::Ocioso);
     assert_eq!(
