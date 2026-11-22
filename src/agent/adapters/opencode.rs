@@ -40,6 +40,11 @@ use crate::agent::{
 
 const NOT_FOUND: &str = "OpenCode CLI não encontrado no PATH. Instale em https://opencode.ai";
 
+/// Desliga as skills do Claude Code (`~/.claude/skills`) no OpenCode: a lista
+/// delas ia no prompt de cada chamada ao modelo (~3k tokens) e elas são do
+/// Claude. As skills do próprio OpenCode continuam.
+const NO_CLAUDE_SKILLS: (&str, &str) = ("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "1");
+
 /// O OpenCode CLI do `PATH` como provedor do chat.
 pub struct OpenCodeAdapter {
     /// Executável; `None` quando não está instalado.
@@ -102,6 +107,7 @@ impl ChatAdapter for OpenCodeAdapter {
             None => command(bin),
         };
         cmd.current_dir(cwd);
+        cmd.env(NO_CLAUDE_SKILLS.0, NO_CLAUDE_SKILLS.1);
         if let Some(model) = options.model {
             cmd.args(["-m", model]);
         }
@@ -148,7 +154,9 @@ impl ChatAdapter for OpenCodeAdapter {
 }
 
 /// Argumentos do `opencode run` para uma mensagem. O prompt vai pela entrada.
-/// No Yolo, `--auto` aprova o que o OpenCode pediria.
+/// No Yolo, `--auto` aprova o que o OpenCode pediria. Numa conversa nova, o
+/// `--title` sem valor faz o título ser o começo do prompt, sem a chamada
+/// extra ao modelo que o OpenCode faria para gerá-lo.
 fn cli_args<'a>(
     mode: PermissionMode,
     session: Option<&'a str>,
@@ -161,8 +169,9 @@ fn cli_args<'a>(
     if let Some(model) = model {
         args.extend(["-m", model]);
     }
-    if let Some(id) = session {
-        args.extend(["-s", id]);
+    match session {
+        Some(id) => args.extend(["-s", id]),
+        None => args.push("--title"),
     }
     args
 }
@@ -223,6 +232,7 @@ impl Run {
         );
         cmd.args(cli_args(request.mode, request.session_id, request.model));
         cmd.envs(request.extensions.env.iter().map(|(k, v)| (k, v)));
+        cmd.env(NO_CLAUDE_SKILLS.0, NO_CLAUDE_SKILLS.1);
         // Num grupo próprio, para o fim do turno levar junto o que os
         // lançadores abrem.
         own_group(&mut cmd);
@@ -332,7 +342,30 @@ mod tests {
         assert!(!args.contains(&"--auto"));
 
         let args = cli_args(PermissionMode::Yolo, None, None);
-        assert_eq!(args, ["run", "--format", "json", "--auto"]);
+        assert_eq!(args, ["run", "--format", "json", "--auto", "--title"]);
+    }
+
+    #[test]
+    fn opencode_runs_without_the_claude_code_skills() {
+        let adapter = OpenCodeAdapter {
+            bin: Some(PathBuf::from("opencode")),
+        };
+        let options = Interactive {
+            account: None,
+            model: None,
+            effort: None,
+            subagent_model: None,
+            mode: None,
+            extensions: None,
+            session_id: None,
+            command: None,
+        };
+        let cmd = adapter.interactive(Path::new("."), options).unwrap();
+        let value = cmd
+            .get_envs()
+            .find(|(key, _)| *key == NO_CLAUDE_SKILLS.0)
+            .and_then(|(_, value)| value);
+        assert_eq!(value, Some(std::ffi::OsStr::new("1")));
     }
 
     #[test]
