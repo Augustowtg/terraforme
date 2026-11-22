@@ -386,12 +386,17 @@ pub fn run_command() -> Option<Command> {
     find_agy().map(|agy| command(&agy))
 }
 
-/// Os argumentos do `agy` de uma execução despachada: o modo auto (o `-p`
-/// não tem lista de ferramentas nem limite de turnos) e o modelo. O prompt
-/// vai pela entrada, com [`run_input`], e fechar a entrada encerra o `agy`
-/// depois do turno.
-pub fn run_args(model: Option<&str>) -> Vec<String> {
-    cli_args(PermissionMode::Agente, None, model, None)
+/// Os argumentos do `agy` de uma execução despachada: o modo auto (ou
+/// dangerously-skip-permissions com `yolo`) e o modelo. O prompt vai pela
+/// entrada, com [`run_input`], e fechar a entrada encerra o `agy` depois
+/// do turno.
+pub fn run_args(model: Option<&str>, yolo: bool) -> Vec<String> {
+    let mode = if yolo {
+        PermissionMode::Yolo
+    } else {
+        PermissionMode::Agente
+    };
+    cli_args(mode, None, model, None)
         .into_iter()
         .map(str::to_string)
         .collect()
@@ -435,6 +440,7 @@ fn command(agy: &Path) -> Command {
 struct Run {
     child: Child,
     events: Receiver<AgentEvent>,
+    stdin: Stdin,
     /// O plugin com o MCP das extensões; o `child` morre antes (os campos
     /// caem na ordem), e a pasta some depois.
     _overlay: Option<Overlay>,
@@ -505,6 +511,7 @@ impl Run {
 
         let stdout = child.stdout.take().expect("stdout configurado como pipe");
         let (tx, events) = mpsc::channel();
+        let run_stdin = Arc::clone(&stdin);
         thread::spawn(move || {
             send_line(&stdin, &message);
             let mut parser = StreamParser::new(model.as_deref());
@@ -539,6 +546,7 @@ impl Run {
         Ok(Run {
             child,
             events,
+            stdin: run_stdin,
             _overlay: overlay,
             gate,
         })
@@ -563,6 +571,15 @@ impl Session for Run {
         if let Some(gate) = &self.gate {
             gate.respond(id, allow);
         }
+    }
+
+    fn answer(&mut self, _id: &str, answers: &[(String, String)]) {
+        let text = answers
+            .iter()
+            .map(|(q, a)| format!("{q}: {a}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        send_line(&self.stdin, &user_message(&text));
     }
 }
 
@@ -591,8 +608,10 @@ fn last_lines(text: &str, n: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::channel::ask as channel_ask;
     use super::*;
+    #[cfg(unix)]
     use std::fs;
 
     #[test]

@@ -4,6 +4,14 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.16] - 2026-11-21
+
+### Adicionado
+
+- Orquestração híbrida com subagentes Antigravity (`agy`) para serviço pesado, acompanhamento de tokens e atividade em tempo real no `live()`, e exemplo de configuração em `docs/examples/orchestrator-heavy-lifting.toml` (#76).
+- Suporte a perguntas do agente (`ask_question` e variações) no Antigravity e Claude com opções interativas e resposta direta pelo chat (#77).
+- Guarda de segurança Smart Yolo no gancho de permissão do Antigravity: comandos rotineiros de teste e edição rodam automaticamente, enquanto instalações de pacotes e comandos arriscados pedem confirmação ao usuário (#76, #77).
+
 ## [0.14.15] - 2026-11-21
 
 ### Alterado

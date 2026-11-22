@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use super::daily::Spend;
-use crate::agent::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
+use crate::agent::{AgentEvent, CHARS_PER_TOKEN, Question, ReportedMode};
 
 /// Até quantos caracteres vão no resumo de uma ferramenta.
 const SUMMARY_MAX: usize = 80;
@@ -157,11 +157,16 @@ impl StreamParser {
             }
             "tool" => {
                 let info = &step["tool_info"];
-                if self.tools.insert(index) {
-                    let name = step["tool_name"]
-                        .as_str()
-                        .or_else(|| info["name"].as_str())
-                        .unwrap_or("ferramenta");
+                let name = step["tool_name"]
+                    .as_str()
+                    .or_else(|| info["name"].as_str())
+                    .unwrap_or("ferramenta");
+                if let Some(questions) = ask_questions(name, &info["parameters"]) {
+                    if self.tools.insert(index) {
+                        let id = format!("agy-q-{index}");
+                        events.push(AgentEvent::Question { id, questions });
+                    }
+                } else if self.tools.insert(index) {
                     events.push(AgentEvent::ToolUse {
                         name: name.to_string(),
                         detail: tool_detail(&info["parameters"]),
@@ -184,6 +189,14 @@ impl StreamParser {
             // automática) e guardou o resumo num `checkpoint`.
             "checkpoint" | "compaction" if done => {
                 events.push(AgentEvent::Compacted { tokens: None })
+            }
+            "user_input" => {
+                if let Some(questions) = ask_questions("user_input", step) {
+                    if self.tools.insert(index) {
+                        let id = format!("agy-q-{index}");
+                        events.push(AgentEvent::Question { id, questions });
+                    }
+                }
             }
             // Um passo sem tradução (ex.: o plano): aparece uma vez no histórico.
             other if !other.is_empty() && other != "user_input" && self.tools.insert(index) => {
@@ -270,6 +283,77 @@ fn summary(output: &str) -> String {
     let mut short: String = line.chars().take(SUMMARY_MAX - 1).collect();
     short.push('…');
     short
+}
+
+/// Extrai perguntas de uma ferramenta (`ask_question`, etc.) ou passo do `agy`.
+fn ask_questions(name: &str, params: &Value) -> Option<Vec<Question>> {
+    let lower = name.to_ascii_lowercase();
+    let is_ask = lower.contains("question")
+        || lower.contains("ask")
+        || params.get("questions").is_some()
+        || params.get("question").is_some();
+    if !is_ask {
+        return None;
+    }
+
+    let parse_options = |raw: &Value| -> Vec<(String, String)> {
+        if let Some(arr) = raw.as_array() {
+            arr.iter()
+                .filter_map(|o| {
+                    if let Some(s) = o.as_str() {
+                        Some((s.to_string(), String::new()))
+                    } else if o.is_object() {
+                        let label = o["label"]
+                            .as_str()
+                            .or_else(|| o["text"].as_str())
+                            .or_else(|| o["value"].as_str())?;
+                        let desc = text(&o["description"]);
+                        Some((label.to_string(), desc))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+
+    if let Some(arr) = params["questions"].as_array() {
+        let list: Vec<Question> = arr
+            .iter()
+            .filter_map(|q| {
+                if let Some(t) = q["question"].as_str().or_else(|| q["text"].as_str()) {
+                    Some(Question {
+                        text: t.to_string(),
+                        options: parse_options(&q["options"]),
+                    })
+                } else if let Some(s) = q.as_str() {
+                    Some(Question {
+                        text: s.to_string(),
+                        options: Vec::new(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !list.is_empty() {
+            return Some(list);
+        }
+    }
+
+    if let Some(t) = params["question"]
+        .as_str()
+        .or_else(|| params["prompt"].as_str())
+    {
+        return Some(vec![Question {
+            text: t.to_string(),
+            options: parse_options(&params["options"]),
+        }]);
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -518,5 +602,24 @@ mod tests {
         let detail = tool_detail(&serde_json::json!({ "Other": long }));
         assert_eq!(detail.chars().count(), SUMMARY_MAX);
         assert!(detail.ends_with('…'));
+    }
+
+    #[test]
+    fn ask_question_tool_emits_question_event() {
+        let line = r#"{"event":"step_update","step_update":{"step_index":4,"state":"ACTIVE","step_type":"tool","tool_name":"ask_question","tool_info":{"parameters":{"questions":[{"question":"Qual cor?","options":["Azul","Verde"]}]}}}}"#;
+        let events = parse_all(&[line]);
+        assert_eq!(
+            events,
+            vec![AgentEvent::Question {
+                id: "agy-q-4".into(),
+                questions: vec![Question {
+                    text: "Qual cor?".into(),
+                    options: vec![
+                        ("Azul".into(), String::new()),
+                        ("Verde".into(), String::new())
+                    ],
+                }],
+            }]
+        );
     }
 }

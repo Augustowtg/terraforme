@@ -76,6 +76,10 @@ struct AgyHookArgs {
     /// Edições de arquivo passam sem perguntar (modo Accept Edits)
     #[arg(long)]
     accept_edits: bool,
+
+    /// Modo smart yolo: leituras, edições e comandos seguros passam sem perguntar
+    #[arg(long)]
+    smart: bool,
 }
 
 #[derive(Args)]
@@ -194,7 +198,7 @@ pub fn run() -> Result<()> {
         Command::Hub => hub::daemon::run()?,
         Command::AgyPermissionHook(args) => {
             use crate::agent::adapters::antigravity::permission;
-            permission::hook(&args.channel, args.accept_edits);
+            permission::hook(&args.channel, args.accept_edits, args.smart);
         }
     }
     Ok(())

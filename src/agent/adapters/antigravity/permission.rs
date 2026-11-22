@@ -93,7 +93,9 @@ impl Gate {
             Channel::open(&gate.dir).map_err(|err| format!("canal de permissão do agy: {err}"))?,
         );
         let file = gate.dir.join(channel::FILE);
-        let hooks = hooks_json(&exe, &file, mode == PermissionMode::AcceptEdits);
+        let accept_edits = matches!(mode, PermissionMode::AcceptEdits | PermissionMode::Agente);
+        let smart = mode == PermissionMode::Agente;
+        let hooks = hooks_json(&exe, &file, accept_edits, smart);
         gate.write(&hooks)
             .map_err(|err| format!("gancho de permissão do agy: {err}"))?;
         Ok(gate)
@@ -134,10 +136,11 @@ impl Drop for Gate {
 }
 
 /// O `hooks.json` do plugin: antes de qualquer ferramenta, o terra decide.
-fn hooks_json(exe: &Path, channel: &Path, accept_edits: bool) -> Value {
+fn hooks_json(exe: &Path, channel: &Path, accept_edits: bool, smart: bool) -> Value {
     let accept = if accept_edits { " --accept-edits" } else { "" };
+    let smart_flag = if smart { " --smart" } else { "" };
     let command = format!(
-        "{} agy-permission-hook --channel {}{accept}",
+        "{} agy-permission-hook --channel {}{accept}{smart_flag}",
         quote(exe),
         quote(channel)
     );
@@ -162,6 +165,62 @@ fn quote(path: &Path) -> String {
     }
 }
 
+/// Comandos com risco de segurança ou alteração externa (instalação de pacotes, etc.).
+fn is_risky_command(args: &Value) -> bool {
+    let cmd = args["CommandLine"]
+        .as_str()
+        .or_else(|| args["command"].as_str())
+        .or_else(|| args["cmd"].as_str())
+        .unwrap_or_default();
+    let lower = cmd.to_ascii_lowercase();
+    let trimmed = lower.trim();
+
+    let install_patterns = [
+        "npm i ",
+        "npm i\t",
+        "npm install",
+        "npm add",
+        "pnpm add",
+        "pnpm i ",
+        "pnpm i\t",
+        "pnpm install",
+        "yarn add",
+        "pip install",
+        "pip3 install",
+        "uv pip install",
+        "uv add",
+        "cargo add",
+        "cargo install",
+        "apt ",
+        "apt-get",
+        "pacman",
+        "dnf",
+        "yum",
+        "brew install",
+    ];
+    for pattern in install_patterns {
+        if trimmed.contains(pattern) {
+            return true;
+        }
+    }
+
+    let risky_patterns = [
+        "git push",
+        "git reset --hard",
+        "rm -rf",
+        "rmdir /s",
+        "del /s",
+        "del /f",
+    ];
+    for pattern in risky_patterns {
+        if trimmed.contains(pattern) {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// O que o gancho faz com uma ferramenta.
 #[derive(Debug, PartialEq, Eq)]
 enum Policy {
@@ -171,21 +230,28 @@ enum Policy {
     Ask,
 }
 
-fn policy(tool: &str, accept_edits: bool) -> Policy {
-    if READ_ONLY.contains(&tool) || (accept_edits && EDITS.contains(&tool)) {
-        Policy::Allow
-    } else {
-        Policy::Ask
+fn policy(tool: &str, accept_edits: bool, smart: bool, args: &Value) -> Policy {
+    if READ_ONLY.contains(&tool) {
+        return Policy::Allow;
     }
+    if accept_edits && EDITS.contains(&tool) {
+        return Policy::Allow;
+    }
+    if smart && (tool == "execute_command" || tool == "run_command" || tool == "Bash") {
+        if !is_risky_command(args) {
+            return Policy::Allow;
+        }
+    }
+    Policy::Ask
 }
 
 /// O comando `terra agy-permission-hook`: o gancho `PreToolUse` do `agy`.
 /// Lê a chamada no stdin e escreve a decisão no stdout. Sempre sai com 0:
 /// qualquer problema vira uma negativa com o motivo.
-pub fn hook(channel: &Path, accept_edits: bool) {
+pub fn hook(channel: &Path, accept_edits: bool, smart: bool) {
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
-    let decision = decide(&stdin, accept_edits, |tool, input| {
+    let decision = decide(&stdin, accept_edits, smart, |tool, input| {
         channel::ask(channel, tool, input)
     });
     println!("{decision}");
@@ -196,6 +262,7 @@ pub fn hook(channel: &Path, accept_edits: bool) {
 fn decide(
     stdin: &str,
     accept_edits: bool,
+    smart: bool,
     ask: impl FnOnce(&str, &Value) -> Result<Result<(), String>, String>,
 ) -> Value {
     let deny = |reason: String| json!({ "decision": "deny", "reason": reason });
@@ -205,10 +272,11 @@ fn decide(
     let Some(tool) = call["toolCall"]["name"].as_str() else {
         return deny("a chamada não diz a ferramenta".into());
     };
-    if policy(tool, accept_edits) == Policy::Allow {
+    let args = &call["toolCall"]["args"];
+    if policy(tool, accept_edits, smart, args) == Policy::Allow {
         return json!({ "decision": "allow" });
     }
-    match ask(tool, &call["toolCall"]["args"]) {
+    match ask(tool, args) {
         Ok(Ok(())) => json!({ "decision": "allow" }),
         Ok(Err(reason)) => deny(reason),
         Err(err) => deny(format!("o terra não conseguiu perguntar: {err}")),
@@ -230,40 +298,60 @@ mod tests {
     #[test]
     fn reads_pass_and_the_rest_asks_the_user() {
         assert_eq!(
-            decide(&call("read_file"), false, never)["decision"],
+            decide(&call("read_file"), false, false, never)["decision"],
             "allow"
         );
-        let asked = decide(&call("run_command"), false, |tool, input| {
+        let asked = decide(&call("run_command"), false, false, |tool, input| {
             assert_eq!(tool, "run_command");
             assert_eq!(input["CommandLine"], "ls");
             Ok(Ok(()))
         });
         assert_eq!(asked["decision"], "allow");
-        let denied = decide(&call("run_command"), false, |_, _| Ok(Err("não".into())));
+        let denied = decide(&call("run_command"), false, false, |_, _| {
+            Ok(Err("não".into()))
+        });
         assert_eq!(denied, json!({ "decision": "deny", "reason": "não" }));
     }
 
     #[test]
     fn edits_pass_only_in_accept_edits() {
         assert_eq!(
-            decide(&call("write_file"), true, never)["decision"],
+            decide(&call("write_file"), true, false, never)["decision"],
             "allow"
         );
-        let manual = decide(&call("write_file"), false, |_, _| Ok(Err("não".into())));
+        let manual = decide(&call("write_file"), false, false, |_, _| {
+            Ok(Err("não".into()))
+        });
         assert_eq!(manual["decision"], "deny");
-        // Rodar um comando continua perguntando.
-        let command = decide(&call("run_command"), true, |_, _| Ok(Err("não".into())));
+        // Rodar um comando continua perguntando sem o smart.
+        let command = decide(&call("run_command"), true, false, |_, _| {
+            Ok(Err("não".into()))
+        });
         assert_eq!(command["decision"], "deny");
+        // Com smart, comando seguro como ls passa direto.
+        assert_eq!(
+            decide(&call("run_command"), true, true, never)["decision"],
+            "allow"
+        );
+        // Com smart, comando de risco pergunta.
+        let risky = json!({ "toolCall": { "name": "run_command", "args": { "CommandLine": "npm install pkg" } } }).to_string();
+        let asked_risky = decide(&risky, true, true, |tool, _| {
+            assert_eq!(tool, "run_command");
+            Ok(Ok(()))
+        });
+        assert_eq!(asked_risky["decision"], "allow");
     }
 
     #[test]
     fn a_problem_denies() {
-        let broken = decide("isto não é json", false, never);
+        let broken = decide("isto não é json", false, false, never);
         assert_eq!(broken["decision"], "deny");
-        let offline = decide(&call("run_command"), false, |_, _| Err("sem o chat".into()));
+        let offline = decide(&call("run_command"), false, false, |_, _| {
+            Err("sem o chat".into())
+        });
         assert_eq!(offline["decision"], "deny");
         assert!(offline["reason"].as_str().unwrap().contains("sem o chat"));
-        assert_eq!(decide("{}", false, never)["decision"], "deny");
+        assert_eq!(decide("{}", false, false, never)["decision"], "deny");
     }
 
     #[test]

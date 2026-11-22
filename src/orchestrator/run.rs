@@ -268,7 +268,8 @@ pub fn prompt(agent: &str, note: &Path, text: Option<&str>, can_run_terra: bool)
 pub fn args(agent: &Agent, config: &Config, extensions: &Contribution) -> Vec<String> {
     if agent.is_antigravity() {
         let model = agent.model.as_deref().map(|m| config.model_id(m));
-        return antigravity::run_args(model);
+        let yolo = !config.asks_permissions(agent);
+        return antigravity::run_args(model, yolo);
     }
     claude_args(agent, config, extensions)
 }
@@ -491,41 +492,74 @@ pub struct Live {
     pub activity: Option<String>,
 }
 
-/// O [`Live`] da saída. O `claude` repete a mensagem (com o mesmo uso) a
-/// cada bloco dela, por isso o uso conta uma vez por id de mensagem.
-/// shortcut: só lê a saída do `claude`; a do `agy` fica sem andamento até
-/// alguém despachar no Antigravity.
+/// O [`Live`] da saída: suporta tanto a saída em stream-json do `claude`
+/// quanto a do `agy` (Antigravity).
 pub fn live(output: &str) -> Live {
     let mut usage = std::collections::BTreeMap::new();
     let mut activity = None;
+    let mut agy_tokens: u64 = 0;
+
     for line in output.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if value["type"] != "assistant" {
+
+        if value["type"] == "assistant" {
+            let message = &value["message"];
+            let tokens = |key: &str| message["usage"][key].as_u64().unwrap_or(0);
+            if let Some(id) = message["id"].as_str() {
+                usage.insert(
+                    id.to_string(),
+                    tokens("input_tokens") + tokens("output_tokens"),
+                );
+            }
+            for item in message["content"].as_array().into_iter().flatten() {
+                match item["type"].as_str() {
+                    Some("tool_use") => {
+                        let name = item["name"].as_str().unwrap_or("ferramenta");
+                        let detail = claude::permission_detail(&item["input"]);
+                        activity = Some(if detail.is_empty() {
+                            name.to_string()
+                        } else {
+                            format!("{name}: {detail}")
+                        });
+                    }
+                    Some("text") => {
+                        if let Some(text) = item["text"]
+                            .as_str()
+                            .and_then(|t| t.lines().find(|l| !l.trim().is_empty()))
+                        {
+                            activity = Some(text.trim().to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
             continue;
         }
-        let message = &value["message"];
-        let tokens = |key: &str| message["usage"][key].as_u64().unwrap_or(0);
-        if let Some(id) = message["id"].as_str() {
-            usage.insert(
-                id.to_string(),
-                tokens("input_tokens") + tokens("output_tokens"),
-            );
-        }
-        for item in message["content"].as_array().into_iter().flatten() {
-            match item["type"].as_str() {
-                Some("tool_use") => {
-                    let name = item["name"].as_str().unwrap_or("ferramenta");
-                    let detail = claude::permission_detail(&item["input"]);
+
+        if value["event"] == "step_update" {
+            let step = &value["step_update"];
+            if let Some(u) = step.get("usage").filter(|u| u.is_object()) {
+                let count = |key: &str| u[key].as_u64().unwrap_or(0);
+                agy_tokens += count("input_tokens") + count("output_tokens");
+            }
+            match step["step_type"].as_str() {
+                Some("tool") => {
+                    let info = &step["tool_info"];
+                    let name = step["tool_name"]
+                        .as_str()
+                        .or_else(|| info["name"].as_str())
+                        .unwrap_or("ferramenta");
+                    let detail = claude::permission_detail(&info["parameters"]);
                     activity = Some(if detail.is_empty() {
                         name.to_string()
                     } else {
                         format!("{name}: {detail}")
                     });
                 }
-                Some("text") => {
-                    if let Some(text) = item["text"]
+                Some("agent_response") => {
+                    if let Some(text) = step["text_delta"]
                         .as_str()
                         .and_then(|t| t.lines().find(|l| !l.trim().is_empty()))
                     {
@@ -536,10 +570,14 @@ pub fn live(output: &str) -> Live {
             }
         }
     }
-    Live {
-        tokens: usage.values().sum(),
-        activity,
-    }
+
+    let tokens = if agy_tokens > 0 {
+        agy_tokens
+    } else {
+        usage.values().sum()
+    };
+
+    Live { tokens, activity }
 }
 
 /// O [`outcome`] do `agy`: o `result` tem `status` e `error`, e o uso da
@@ -883,9 +921,18 @@ mod tests {
 {"type":"assistant","message":{"id":"m1","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"subagent"}}]}}
 {"type":"user","message":{"content":[]}}
 {"type":"assistant","message":{"id":"m2","usage":{"input_tokens":3,"output_tokens":7},"content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/a.rs"}}]}}"#;
-        let live = live(output);
-        assert_eq!(live.tokens, 25);
-        assert_eq!(live.activity.as_deref(), Some("Read: src/a.rs"));
+        let c_live = live(output);
+        assert_eq!(c_live.tokens, 25);
+        assert_eq!(c_live.activity.as_deref(), Some("Read: src/a.rs"));
         assert_eq!(super::live("").activity, None);
+
+        let agy_output = r#"{"event":"step_update","step_update":{"step_index":1,"step_type":"agent_response","text_delta":"Executando...","usage":{"input_tokens":12,"output_tokens":8}}}
+{"event":"step_update","step_update":{"step_index":2,"step_type":"tool","tool_name":"run_command","tool_info":{"parameters":{"CommandLine":"cargo test"}}}}"#;
+        let agy_live = live(agy_output);
+        assert_eq!(agy_live.tokens, 20);
+        assert_eq!(
+            agy_live.activity.as_deref(),
+            Some("run_command: cargo test")
+        );
     }
 }

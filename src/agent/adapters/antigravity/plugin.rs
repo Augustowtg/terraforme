@@ -155,6 +155,7 @@ pub(super) fn make_dir() -> io::Result<PathBuf> {
         std::process::id(),
         COUNT.fetch_add(1, Ordering::Relaxed)
     ));
+    #[allow(unused_mut)]
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

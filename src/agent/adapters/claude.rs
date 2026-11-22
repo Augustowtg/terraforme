@@ -464,41 +464,105 @@ pub(crate) fn user_message(prompt: &str) -> String {
 /// ferramenta e a entrada dela. `None` se a linha não é um.
 pub(crate) fn tool_request(line: &str) -> Option<(String, String, Value)> {
     let value: Value = serde_json::from_str(line).ok()?;
-    let request = &value["request"];
-    if value["type"] != "control_request" || request["subtype"] != "can_use_tool" {
+    if value["type"] != "control_request" {
         return None;
     }
-    Some((
-        text(&value["request_id"]),
-        text(&request["tool_name"]),
-        request["input"].clone(),
-    ))
+    let request = &value["request"];
+    let id = text(&value["request_id"]);
+    if id.is_empty() {
+        return None;
+    }
+    if request["subtype"] == "can_use_tool" {
+        return Some((id, text(&request["tool_name"]), request["input"].clone()));
+    }
+    if let Some(tool_name) = request["tool_name"].as_str().filter(|s| !s.is_empty()) {
+        return Some((id, tool_name.to_string(), request["input"].clone()));
+    }
+    if let Some(subtype) = request["subtype"].as_str() {
+        if subtype.contains("question") || subtype.contains("ask") {
+            let input = if request["input"].is_object() {
+                request["input"].clone()
+            } else {
+                request.clone()
+            };
+            return Some((id, subtype.to_string(), input));
+        }
+    }
+    None
 }
 
-/// As perguntas de um `AskUserQuestion`; `None` em outra ferramenta ou sem
-/// perguntas válidas (aí vale o pedido de permissão comum).
-// shortcut: a pergunta de múltipla escolha vira de escolha única; trocar se pedirem.
+/// As perguntas de um `AskUserQuestion` ou ferramenta similar; `None` em
+/// outra ferramenta ou sem perguntas válidas (aí vale o pedido de permissão comum).
 fn ask_questions(name: &str, input: &Value) -> Option<Vec<Question>> {
-    if name != "AskUserQuestion" {
+    let lower = name.to_ascii_lowercase();
+    let is_ask = name == "AskUserQuestion"
+        || lower.contains("question")
+        || lower.contains("ask")
+        || input.get("questions").is_some()
+        || input.get("question").is_some();
+    if !is_ask {
         return None;
     }
-    let questions: Vec<Question> = input["questions"]
-        .as_array()?
-        .iter()
-        .filter_map(|q| {
-            Some(Question {
-                text: q["question"].as_str()?.to_string(),
-                options: q["options"]
-                    .as_array()?
-                    .iter()
-                    .filter_map(|o| {
-                        Some((o["label"].as_str()?.to_string(), text(&o["description"])))
+
+    let parse_options = |raw_opts: &Value| -> Vec<(String, String)> {
+        if let Some(arr) = raw_opts.as_array() {
+            arr.iter()
+                .filter_map(|o| {
+                    if let Some(s) = o.as_str() {
+                        Some((s.to_string(), String::new()))
+                    } else if o.is_object() {
+                        let label = o["label"]
+                            .as_str()
+                            .or_else(|| o["text"].as_str())
+                            .or_else(|| o["value"].as_str())?;
+                        let desc = text(&o["description"]);
+                        Some((label.to_string(), desc))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+
+    if let Some(arr) = input["questions"].as_array() {
+        let questions: Vec<Question> = arr
+            .iter()
+            .filter_map(|q| {
+                if let Some(text) = q["question"].as_str().or_else(|| q["text"].as_str()) {
+                    Some(Question {
+                        text: text.to_string(),
+                        options: parse_options(&q["options"]),
                     })
-                    .collect(),
+                } else if let Some(s) = q.as_str() {
+                    Some(Question {
+                        text: s.to_string(),
+                        options: Vec::new(),
+                    })
+                } else {
+                    None
+                }
             })
-        })
-        .collect();
-    (!questions.is_empty()).then_some(questions)
+            .collect();
+        if !questions.is_empty() {
+            return Some(questions);
+        }
+    }
+
+    if let Some(text) = input["question"]
+        .as_str()
+        .or_else(|| input["prompt"].as_str())
+    {
+        let options = parse_options(&input["options"]);
+        return Some(vec![Question {
+            text: text.to_string(),
+            options,
+        }]);
+    }
+
+    None
 }
 
 /// A resposta a um pedido de permissão: aprovado com a entrada como veio, ou
@@ -978,6 +1042,28 @@ mod tests {
 
         assert_eq!(tool_request(r#"{"type":"assistant"}"#), None);
         assert_eq!(unsupported_response(r#"{"type":"assistant"}"#), None);
+    }
+
+    #[test]
+    fn questions_are_parsed_from_ask_questions_and_followups() {
+        let input = serde_json::json!({
+            "questions": [{
+                "question": "Qual banco?",
+                "options": [{"label": "Postgres", "description": "SQL"}, {"label": "Mongo", "description": "NoSQL"}]
+            }]
+        });
+        let q = ask_questions("AskUserQuestion", &input).unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].text, "Qual banco?");
+        assert_eq!(q[0].options[0], ("Postgres".into(), "SQL".into()));
+
+        let input2 = serde_json::json!({
+            "question": "Continuar?",
+            "options": ["Sim", "Não"]
+        });
+        let q2 = ask_questions("ask_followup_question", &input2).unwrap();
+        assert_eq!(q2[0].text, "Continuar?");
+        assert_eq!(q2[0].options[0], ("Sim".into(), String::new()));
     }
 
     #[test]

@@ -1,0 +1,51 @@
+# Exemplo de configuração do Orquestrador: Claude como Líder + Antigravity para Serviço Pesado
+# Copie este arquivo ou trechos dele para ~/.terraforme/orchestrator.toml
+
+[global]
+max_execucoes_simultaneas = 3
+max_hops = 5
+limite_palavras_mensagem = 600
+modo_execucao = "aba"          # "aba" para acompanhar cada execução em aba própria ou "segundo_plano"
+pausado = false
+tempo_limite_min = 45          # 45 min para tarefas pesadas; use "infinito" para não encerrar
+aba_em_primeiro_plano = false  # true traz a aba da execução para a frente
+perguntar_permissoes = true    # Smart Yolo: comandos de risco/instalação de pacotes perguntam na tela
+delegacao = true               # ensina o chat principal a delegar para os agentes da pasta
+provedor_subagentes = "antigravity"
+modelo_subagentes = "flash"
+
+[modelos]
+forte = "claude-3-7-sonnet"
+pesado = "gemini-2.5-pro"
+flash = "gemini-2.5-flash"
+
+# Subagente para busca e varredura ampla (rápido e econômico com Gemini Flash)
+[agents.pesquisador]
+descricao = "Varreduras de código, busca semântica, levantamento de dependências e exploração em massa"
+cwd = "."
+provedor = "antigravity"
+modelo = "flash"
+ambiente = "minimo"
+perguntar_permissoes = true    # Comandos seguros (grep, find, read) passam sem perguntar
+
+# Subagente para execução pesada, refatorações multi-arquivo e testes exaustivos
+[agents.executor]
+descricao = "Execução de testes do projeto, compilação pesada e refatoração em múltiplos arquivos"
+cwd = "."
+provedor = "antigravity"
+modelo = "pesado"
+ambiente = "minimo"
+perguntar_permissoes = true    # Comandos como npm test / cargo test rodam direto; npm i pergunta
+max_turnos = 50
+orcamento_diario = 60
+
+[roteamento]
+ativo = true
+padrao = "flash"
+escalonar_falhas = true
+[[roteamento.regra]]
+tag = "pesado"
+modelo = "pesado"
+[[roteamento.regra]]
+tag = "testes"
+modelo = "flash"

@@ -371,10 +371,14 @@ fn result(value: &Value) -> AgentEvent {
 
 /// O dado mais útil da chamada: o comando, o arquivo, o padrão...
 pub fn tool_detail(input: &Value) -> String {
-    const KEYS: [&str; 8] = [
+    const KEYS: [&str; 12] = [
         "command",
+        "CommandLine",
         "file_path",
         "path",
+        "Path",
+        "AbsolutePath",
+        "TargetFile",
         "pattern",
         "url",
         "query",
@@ -382,7 +386,7 @@ pub fn tool_detail(input: &Value) -> String {
         "prompt",
     ];
     KEYS.iter()
-        .find_map(|key| input[key].as_str())
+        .find_map(|key| input[*key].as_str())
         .map(first_line)
         .unwrap_or_default()
 }
