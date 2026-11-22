@@ -6,6 +6,7 @@
 
 pub mod antigravity;
 pub mod claude;
+pub mod opencode;
 
 use super::ChatAdapter;
 
@@ -14,6 +15,7 @@ pub fn all() -> Vec<Box<dyn ChatAdapter>> {
     vec![
         Box::new(claude::ClaudeAdapter::detect()),
         Box::new(antigravity::AntigravityAdapter::detect()),
+        Box::new(opencode::OpenCodeAdapter::detect()),
     ]
 }
 

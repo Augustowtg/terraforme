@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.16] - 2026-11-22
+
+### Adicionado
+
+- O OpenCode como provedor do chat: modelos do `opencode models`, sessão mantida entre mensagens, `--auto` no Yolo e uso de tokens por dia. Fora desta versão: sub agentes (`terra send`) no OpenCode (#79).
+
 ## [0.14.15] - 2026-11-21
 
 ### Alterado
