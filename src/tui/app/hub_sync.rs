@@ -77,6 +77,11 @@ impl App {
                     detail,
                 } => self.chat.remote_request(run, id, agent, name, detail),
                 Event::RunFinished { run } => self.chat.run_finished(&run),
+                Event::Input { tab, text } => {
+                    if let Some(chat) = self.chat_by_id_mut(&tab) {
+                        chat.remote_input(&text);
+                    }
+                }
             }
         }
     }

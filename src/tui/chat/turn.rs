@@ -66,6 +66,14 @@ impl Chat {
         }
     }
 
+    /// Texto digitado de fora (o app remoto): entra no input e vai como um
+    /// Enter. Com o agente respondendo, fica no input, como no teclado.
+    // shortcut: junta com o rascunho do input, se houver; separar se incomodar.
+    pub fn remote_input(&mut self, text: &str) {
+        self.input.paste(text);
+        self.send();
+    }
+
     /// Guarda a mensagem enviada para o ↑, nesta execução e no workspace.
     fn remember_sent(&mut self, prompt: &str) {
         self.input.remember();

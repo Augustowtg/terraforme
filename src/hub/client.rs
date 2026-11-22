@@ -148,6 +148,8 @@ pub enum Event {
     },
     /// A execução `run` terminou: os pedidos dela sem resposta saem.
     RunFinished { run: String },
+    /// Texto digitado na aba `tab` de fora (o app remoto), como no teclado.
+    Input { tab: String, text: String },
 }
 
 impl Event {
@@ -175,6 +177,10 @@ impl Event {
                 detail: text("detail").unwrap_or_default(),
             }),
             "run_finished" => Some(Event::RunFinished { run: text("run")? }),
+            "input" => Some(Event::Input {
+                tab: text("tab")?,
+                text: text("text")?,
+            }),
             _ => None,
         }
     }
@@ -567,6 +573,16 @@ pub fn send_message(endpoint: &Endpoint, autostart: bool, message: &Value) -> io
         endpoint,
         autostart,
         &json!({"t": "send", "message": message}),
+    )
+}
+
+/// Digita `text` na aba `tab` de um terra aberto (o app remoto). A resposta
+/// é `ok` ou `rejected`.
+pub fn send_input(endpoint: &Endpoint, tab: &str, text: &str) -> io::Result<Value> {
+    request(
+        endpoint,
+        true,
+        &json!({"t": "input", "tab": tab, "text": text}),
     )
 }
 
