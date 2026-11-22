@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.18] - 2026-11-22
+
+### Corrigido
+
+- O OpenCode gasta menos tokens no terra: roda sem as skills do Claude Code (`~/.claude/skills`), que iam no prompt de cada chamada ao modelo (~3k tokens, 10.8k → 7.7k numa mensagem simples), e a conversa nova não faz mais a chamada extra ao modelo para gerar o título. Isso também poupa a cota dos modelos grátis, cujo fim ("Free usage limit reached") era o que fazia o OpenCode às vezes não responder (#84).
+
 ## [0.14.16] - 2026-11-22
 
 ### Adicionado
