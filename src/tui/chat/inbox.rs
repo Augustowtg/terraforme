@@ -114,16 +114,20 @@ impl Chat {
         self.unread = 0;
     }
 
-    /// O que vai ao processo do agente: as extensões e, com nome, o
-    /// [`AGENT_ENV`] (o `terra send` de dentro dele manda com esse nome).
+    /// O que vai ao processo do agente: as extensões, com nome o
+    /// [`AGENT_ENV`] (o `terra send` de dentro dele manda com esse nome) e o
+    /// `sudo` que pede a senha no chat.
     pub(super) fn agent_extensions(&self) -> Cow<'_, Contribution> {
-        match &self.agent_name {
-            None => Cow::Borrowed(&self.extensions),
-            Some(name) => {
-                let mut extensions = self.extensions.clone();
-                extensions.env.push((AGENT_ENV.to_string(), name.clone()));
-                Cow::Owned(extensions)
-            }
+        if self.agent_name.is_none() && self.sudo.is_none() {
+            return Cow::Borrowed(&self.extensions);
         }
+        let mut extensions = self.extensions.clone();
+        if let Some(name) = &self.agent_name {
+            extensions.env.push((AGENT_ENV.to_string(), name.clone()));
+        }
+        if let Some(sudo) = &self.sudo {
+            extensions.env.extend(sudo.env());
+        }
+        Cow::Owned(extensions)
     }
 }

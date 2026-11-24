@@ -65,6 +65,14 @@ enum Command {
     /// cada ferramenta e ele leva o pedido ao usuário (uso interno)
     #[command(hide = true)]
     AgyPermissionHook(AgyHookArgs),
+
+    /// O programa de senha do `sudo` dos agentes: pede a senha no chat do
+    /// terra (uso interno)
+    #[command(hide = true)]
+    SudoAskpass {
+        /// O arquivo do canal do chat
+        channel: PathBuf,
+    },
 }
 
 #[derive(Args)]
@@ -196,6 +204,7 @@ pub fn run() -> Result<()> {
             use crate::agent::adapters::antigravity::permission;
             permission::hook(&args.channel, args.accept_edits);
         }
+        Command::SudoAskpass { channel } => std::process::exit(crate::sudo::askpass(&channel)),
     }
     Ok(())
 }

@@ -1894,3 +1894,32 @@ fn an_interrupted_turn_keeps_what_it_spent() {
     });
     assert_eq!(chat.tokens_used, 14);
 }
+
+#[cfg(unix)]
+#[test]
+fn the_sudo_of_the_agent_asks_the_password_in_the_chat() {
+    let (mut chat, _, _) = fake_chat_responses(
+        true,
+        vec![init(PermissionMode::Agente)],
+        &AgentSettings::default(),
+    );
+    chat.submit("instala");
+    let askpass = chat.sudo.as_ref().unwrap().env();
+    let askpass = askpass.iter().find(|(k, _)| k == "SUDO_ASKPASS").unwrap();
+    let channel = std::path::Path::new(&askpass.1).with_file_name("channel");
+    let asked = std::thread::spawn(move || crate::sudo::ask(&channel, "apt install x"));
+    for _ in 0..500 {
+        chat.tick();
+        if chat.prompts.is_password() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(chat.prompts.is_password());
+    for c in "s3nha".chars() {
+        press(&mut chat, KeyCode::Char(c));
+    }
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(asked.join().unwrap().as_deref(), Some("s3nha"));
+    assert!(!format!("{:?}", chat.history.entries()).contains("s3nha"));
+}

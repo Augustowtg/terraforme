@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.20] - 2026-11-24
+
+### Adicionado
+
+- O `sudo` funciona nos agentes do chat (Linux). Antes ele falhava, sem terminal para pedir a senha; agora o chat mostra o comando que vai rodar como root e um campo de senha oculto (Enter manda, Esc nega). A senha não fica guardada: cada `sudo` pede de novo. O Administrador no Windows fica para depois (#88).
+
 ## [0.14.19] - 2026-11-24
 
 ### Corrigido

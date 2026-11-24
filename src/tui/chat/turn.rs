@@ -87,6 +87,9 @@ impl Chat {
     /// Manda `prompt` ao agente na sessão atual e, se ele começou, põe
     /// `entry` no histórico. Retorna se a resposta começou.
     pub(super) fn start(&mut self, prompt: &str, entry: Entry) -> bool {
+        if self.sudo.is_none() {
+            self.sudo = crate::sudo::Askpass::open().ok();
+        }
         let Some(adapter) = self.available_adapter() else {
             self.history.push(Entry::Error(self.unavailable_hint()));
             return false;
@@ -161,6 +164,12 @@ impl Chat {
             Kind::Blocked { allow: rule, .. } => {
                 if allow {
                     self.allowed.push(rule.clone());
+                }
+            }
+            Kind::Password { id } => {
+                let password = self.prompts.take_secret();
+                if let Some(sudo) = &self.sudo {
+                    sudo.answer(id, allow.then_some(password));
                 }
             }
             // O chat não fala com o hub: a tela principal leva a resposta.
