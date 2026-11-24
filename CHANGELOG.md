@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.19] - 2026-11-24
+
+### Corrigido
+
+- O terra não diz mais que o login do Claude expirou depois de algumas horas. O token de acesso dura 8 h e quem o renova é o `claude`; a aba de consumo lia o token direto e, vencido, recebia 401 e pedia `/login`. Agora, com o token vencido, o terra roda `claude auth status` na pasta da conta, que o renova, e o login dura o mesmo que no Claude Code (#86).
+
 ## [0.14.18] - 2026-11-22
 
 ### Corrigido

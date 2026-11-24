@@ -256,11 +256,17 @@ impl ChatAdapter for ClaudeAdapter {
 
     /// O consumo da conta, do endpoint de uso do Claude (sem gastar tokens).
     fn load_usage(&self, account: Option<&str>) -> Option<Receiver<Result<Usage, String>>> {
-        let dir = match self.account_dir(account).ok()? {
+        let account_dir = self.account_dir(account).ok()?;
+        let mut refresh = command(self.bin.as_ref()?);
+        refresh.args(["auth", "status"]);
+        if let Some(dir) = &account_dir {
+            refresh.env("CLAUDE_CONFIG_DIR", dir);
+        }
+        let dir = match account_dir {
             Some(dir) => dir,
             None => default_config_dir()?,
         };
-        Some(usage::load(dir))
+        Some(usage::load(dir, refresh))
     }
 
     /// Os tokens por dia, dos transcripts do Claude Code na pasta da conta.
