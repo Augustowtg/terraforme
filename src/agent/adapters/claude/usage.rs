@@ -4,6 +4,9 @@
 //! API (`/api/oauth/usage`), com o token OAuth da conta (o
 //! `.credentials.json` da pasta dela). Não chama o modelo nem gasta tokens.
 //!
+//! O token dura poucas horas e quem o renova é o `claude`: vencido, o terra
+//! roda `claude auth status` na pasta da conta, que o renova, antes de usar.
+//!
 //! A chamada é feita pelo `curl`, com os headers pelo stdin para o token não
 //! aparecer na linha de comando (`ps`).
 
@@ -15,7 +18,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -40,11 +43,12 @@ const EXTRA: &str = "extra_usage";
 const LIMITS: &str = "limits";
 
 /// Começa a carregar numa thread; o resultado chega pelo canal. `config_dir`
-/// é a pasta da conta (ex.: `~/.claude`).
-pub fn load(config_dir: PathBuf) -> Receiver<Result<Usage, String>> {
+/// é a pasta da conta (ex.: `~/.claude`); `refresh` é o `claude auth status`
+/// dela, que renova o token vencido.
+pub fn load(config_dir: PathBuf, refresh: Command) -> Receiver<Result<Usage, String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(fetch_cached(&config_dir));
+        let _ = tx.send(fetch_cached(&config_dir, refresh));
     });
     rx
 }
@@ -69,7 +73,7 @@ static CACHE: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
 
 /// Uma chamada por vez e por conta: quem pede logo depois recebe a mesma
 /// resposta, e depois de um 429 ninguém chama até passar a espera.
-fn fetch_cached(config_dir: &Path) -> Result<Usage, String> {
+fn fetch_cached(config_dir: &Path, refresh: Command) -> Result<Usage, String> {
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let entry = guard
         .get_or_insert_with(HashMap::new)
@@ -86,7 +90,7 @@ fn fetch_cached(config_dir: &Path) -> Result<Usage, String> {
     {
         return Err(rate_limited(until - now));
     }
-    match fetch(config_dir) {
+    match fetch(config_dir, refresh) {
         Ok(usage) => {
             entry.usage = Some((Instant::now(), usage.clone()));
             entry.blocked_until = None;
@@ -126,8 +130,8 @@ impl From<String> for Fetch {
     }
 }
 
-fn fetch(config_dir: &Path) -> Result<Usage, Fetch> {
-    let credentials = read_credentials(config_dir)?;
+fn fetch(config_dir: &Path, refresh: Command) -> Result<Usage, Fetch> {
+    let credentials = fresh_credentials(config_dir, refresh)?;
     let mut child = Command::new("curl")
         .args([
             "-sS",
@@ -177,6 +181,33 @@ fn fetch(config_dir: &Path) -> Result<Usage, Fetch> {
 struct Credentials {
     token: String,
     plan: Option<String>,
+    /// Quando o token vence, em ms desde 1970; `None` se não vence.
+    expires_at: Option<u64>,
+}
+
+impl Credentials {
+    /// Vencido ou vencendo no próximo minuto.
+    fn expired(&self) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        self.expires_at.is_some_and(|at| at <= now + 60_000)
+    }
+}
+
+/// As credenciais, renovadas pelo `refresh` se o token venceu. Se a
+/// renovação falhar, fica o token velho, e o 401 explica.
+fn fresh_credentials(config_dir: &Path, mut refresh: Command) -> Result<Credentials, String> {
+    let credentials = read_credentials(config_dir)?;
+    if !credentials.expired() {
+        return Ok(credentials);
+    }
+    let _ = refresh
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    read_credentials(config_dir)
 }
 
 fn read_credentials(config_dir: &Path) -> Result<Credentials, String> {
@@ -198,6 +229,7 @@ fn read_credentials(config_dir: &Path) -> Result<Credentials, String> {
     Ok(Credentials {
         token: token.to_string(),
         plan: oauth["subscriptionType"].as_str().map(capitalize),
+        expires_at: oauth["expiresAt"].as_u64(),
     })
 }
 
@@ -494,5 +526,27 @@ mod tests {
         let credentials = read_credentials(dir.path()).unwrap();
         assert_eq!(credentials.token, "tok");
         assert_eq!(credentials.plan.as_deref(), Some("Max"));
+        assert!(!credentials.expired());
+    }
+
+    #[test]
+    fn renews_an_expired_token_before_the_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CREDENTIALS);
+        fs::write(
+            &path,
+            r#"{"claudeAiOauth":{"accessToken":"velho","expiresAt":1}}"#,
+        )
+        .unwrap();
+        assert!(read_credentials(dir.path()).unwrap().expired());
+        // O `claude auth status` de mentira grava um token que vence em 2286.
+        let mut refresh = Command::new("sh");
+        refresh.arg("-c").arg(format!(
+            r#"echo '{{"claudeAiOauth":{{"accessToken":"novo","expiresAt":9999999999999}}}}' > '{}'"#,
+            path.display()
+        ));
+        let credentials = fresh_credentials(dir.path(), refresh).unwrap();
+        assert_eq!(credentials.token, "novo");
+        assert!(!credentials.expired());
     }
 }
