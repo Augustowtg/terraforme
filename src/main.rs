@@ -7,6 +7,7 @@ mod hub;
 mod orchestrator;
 mod platform;
 mod settings;
+mod sudo;
 mod theme;
 mod tui;
 mod upgrade;

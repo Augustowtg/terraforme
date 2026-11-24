@@ -49,6 +49,9 @@ pub enum Kind {
         id: String,
         agent: String,
     },
+    /// O `sudo` do agente pede a senha: ela é digitada oculta e sai em
+    /// [`Prompts::take_secret`] (Esc nega).
+    Password { id: String },
 }
 
 /// A fila de pedidos e o botão escolhido no da frente.
@@ -61,6 +64,8 @@ pub struct Prompts {
     choice: usize,
     typing: Option<String>,
     answers: Vec<(String, String)>,
+    /// A senha sendo digitada no pedido do `sudo`.
+    secret: String,
 }
 
 const OTHER_LABEL: &str = "Outro…";
@@ -86,13 +91,19 @@ impl Prompts {
     pub fn clear(&mut self) {
         self.queue
             .retain(|request| matches!(request.kind, Kind::Remote { .. }));
+        self.secret.clear();
     }
 
     /// Esquece os pedidos que esperavam a sessão (a resposta acabou); os
     /// bloqueados e os das execuções ficam, porque não dependem dela.
     pub fn clear_asks(&mut self) {
-        self.queue
-            .retain(|request| !matches!(request.kind, Kind::Ask { .. } | Kind::Question { .. }));
+        self.queue.retain(|request| {
+            !matches!(
+                request.kind,
+                Kind::Ask { .. } | Kind::Question { .. } | Kind::Password { .. }
+            )
+        });
+        self.secret.clear();
         self.reset_question();
         self.answers.clear();
     }
@@ -216,12 +227,51 @@ impl Prompts {
         self.typing = None;
     }
 
+    pub fn is_password(&self) -> bool {
+        matches!(
+            self.current(),
+            Some(Request {
+                kind: Kind::Password { .. },
+                ..
+            })
+        )
+    }
+
+    /// A senha digitada no pedido do `sudo` que acabou de ser respondido.
+    pub fn take_secret(&mut self) -> String {
+        std::mem::take(&mut self.secret)
+    }
+
+    /// Teclas da senha: o texto vai oculto, `Enter` manda e `Esc` nega.
+    fn password_key(&mut self, key: KeyEvent) -> Option<(Request, bool)> {
+        let allow = match key.code {
+            KeyCode::Char(c) => {
+                self.secret.push(c);
+                return None;
+            }
+            KeyCode::Backspace => {
+                self.secret.pop();
+                return None;
+            }
+            KeyCode::Enter if !self.secret.is_empty() => true,
+            KeyCode::Esc => {
+                self.secret.clear();
+                false
+            }
+            _ => return None,
+        };
+        Some((self.queue.pop_front()?, allow))
+    }
+
     /// Trata uma tecla com um pedido aberto: `←`/`→` trocam o botão, `Enter`
     /// confirma, `s`/`y` permitem e `n`/`Esc` negam. Retorna o pedido
     /// respondido e se foi permitido; as outras teclas não fazem nada.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<(Request, bool)> {
         if self.is_question() {
             return self.question_key(key);
+        }
+        if self.is_password() {
+            return self.password_key(key);
         }
         let allow = match key.code {
             KeyCode::Left | KeyCode::Right => {
@@ -251,6 +301,10 @@ impl Prompts {
             ),
             Kind::Remote { agent, .. } => (format!("Permissão · ▶ {agent}"), "O agente quer usar "),
             Kind::Question { .. } => ("Pergunta do agente".to_string(), ""),
+            Kind::Password { .. } => (
+                "Senha do sudo".to_string(),
+                "O agente quer rodar como root com ",
+            ),
         };
         let mut lines = vec![
             Line::styled(
@@ -309,6 +363,11 @@ impl Prompts {
                     if on { theme::text() } else { theme::muted() },
                 ));
             }
+        } else if self.is_password() {
+            lines.push(Line::styled(
+                format!("Senha: {}▌", "•".repeat(self.secret.chars().count())),
+                theme::text(),
+            ));
         } else {
             lines.push(Line::from(vec![
                 Span::styled(ALLOW_LABEL, theme::confirm_yes(self.allow)),

@@ -91,6 +91,8 @@ pub struct Chat {
     session_id: Option<String>,
     /// Resposta em andamento.
     run: Option<Box<dyn Session>>,
+    /// Onde o `sudo` do agente pede a senha (aberto na primeira mensagem).
+    sudo: Option<crate::sudo::Askpass>,
     /// Pedidos de permissão do agente esperando o usuário.
     prompts: Prompts,
     /// As respostas aos pedidos das execuções despachadas (a execução, o id
@@ -184,6 +186,7 @@ impl Default for Chat {
             extensions: Contribution::default(),
             session_id: None,
             run: None,
+            sudo: None,
             prompts: Prompts::default(),
             remote_answers: Vec::new(),
             allowed: Vec::new(),
@@ -697,6 +700,14 @@ impl Chat {
             .unwrap_or_default();
         for event in events {
             self.apply(event);
+        }
+        for request in self.sudo.as_ref().map(|s| s.poll()).unwrap_or_default() {
+            self.agent_activity = Some("Aguardando a senha do sudo...".to_string());
+            self.prompts.push(permission::Request {
+                name: "sudo".to_string(),
+                detail: request.command,
+                kind: permission::Kind::Password { id: request.id },
+            });
         }
         // A resposta que ainda está chegando é gravada quando terminar.
         let entries = self.history.entries();

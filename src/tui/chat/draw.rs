@@ -28,6 +28,7 @@ pub(super) const HELP_MODEL: &str =
 const HELP_QUESTION: &str = "↑/↓ escolher · Enter confirmar · Esc recusar";
 pub(super) const HELP_PERMISSION: &str =
     "←/→ escolher · Enter confirmar · s permitir · n/Esc negar";
+const HELP_PASSWORD: &str = "digite a senha (oculta) · Enter enviar · Esc negar";
 const HELP_COMMANDS: &str = "↑/↓ escolher · Tab/Enter executar · Esc fechar · digite para filtrar";
 /// Largura da barra de contexto, com as bordas.
 const CONTEXT_WIDTH: u16 = 26;
@@ -46,6 +47,7 @@ impl Chat {
             _ if self.confirm_interrupt => HELP_INTERRUPT,
             _ if self.model_menu.is_some() => HELP_MODEL,
             _ if self.prompts.is_question() => HELP_QUESTION,
+            _ if self.prompts.is_password() => HELP_PASSWORD,
             _ if self.prompts.is_open() => HELP_PERMISSION,
             _ if self.input.command_picker_open() => HELP_COMMANDS,
             _ if self.input.picker_open() => HELP_PICKER,
