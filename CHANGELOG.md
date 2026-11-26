@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.22] - 2026-11-25
+
+### Corrigido
+
+- O app do celular lembra os endereços do terra que já conectaram (o da rede de casa e o do Tailscale): abre no último e, se ele não responde, tenta os outros antes de varrer a rede. Assim o IP do Tailscale, digitado uma vez nas configurações, conecta sozinho fora de casa (#92).
+
 ## [0.14.21] - 2026-11-25
 
 ### Corrigido
