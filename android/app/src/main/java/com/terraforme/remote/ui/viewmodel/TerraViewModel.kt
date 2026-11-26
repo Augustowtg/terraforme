@@ -1,6 +1,8 @@
 package com.terraforme.remote.ui.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.content.Context
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.terraforme.remote.data.AgentInfo
 import com.terraforme.remote.data.Instance
@@ -37,10 +39,17 @@ data class TerraUiState(
     val openInstanceId: String? = null
 )
 
-class TerraViewModel : ViewModel() {
+class TerraViewModel(app: Application) : AndroidViewModel(app) {
 
     private val api = TerraApi()
-    private val _uiState = MutableStateFlow(TerraUiState())
+
+    // Os endereços que já conectaram (o da rede de casa, o do Tailscale): o app
+    // abre no último e tenta os outros antes de varrer a rede.
+    private val prefs = app.getSharedPreferences("terra", Context.MODE_PRIVATE)
+    private var known: Set<String> = prefs.getStringSet("urls", null) ?: emptySet()
+    private val _uiState = MutableStateFlow(
+        TerraUiState().let { s -> prefs.getString("url", null)?.let { s.copy(serverUrl = it) } ?: s }
+    )
     val uiState: StateFlow<TerraUiState> = _uiState.asStateFlow()
 
     private var pollJob: Job? = null
@@ -62,7 +71,7 @@ class TerraViewModel : ViewModel() {
         if (_uiState.value.isDiscovering) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isDiscovering = true)
-            val found = api.discover()
+            val found = known.firstOrNull { api.checkHealth(it) } ?: api.discover()
             _uiState.value = _uiState.value.copy(isDiscovering = false)
             if (found != null) {
                 updateServerUrl(found)
@@ -80,6 +89,12 @@ class TerraViewModel : ViewModel() {
         val clean = url.trim().trimEnd('/')
         _uiState.value = _uiState.value.copy(serverUrl = clean, isConnected = false)
         refreshAll()
+    }
+
+    private fun remember(url: String) {
+        if (prefs.getString("url", null) == url && url in known) return
+        known = known + url
+        prefs.edit().putString("url", url).putStringSet("urls", known).apply()
     }
 
     fun startPolling() {
@@ -112,6 +127,7 @@ class TerraViewModel : ViewModel() {
             val instances = api.getStatus(url)
             val usage = runCatching { api.getUsage(url) }.getOrNull()
             val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            remember(url)
             _uiState.value = _uiState.value.copy(
                 isConnected = true,
                 instances = instances,
