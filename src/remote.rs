@@ -495,11 +495,15 @@ fn history(endpoint: &Endpoint, tab: &str) -> Result<Vec<Value>> {
             Some((i["workspace"].as_str()?, t["conversation"].as_i64()))
         })
         .context("aba não encontrada")?;
-    let Some(conversation) = conversation else {
+    let file = crate::settings::history_file(&endpoint.home, workspace);
+    if !file.is_file() {
+        return Ok(Vec::new());
+    }
+    let store = crate::db::history::ChatHistory::open(&file)?;
+    // Um terra ou hub mais antigo não informa a conversa da aba: fica a mais recente do workspace.
+    let Some(conversation) = conversation.map_or_else(|| store.latest(), |c| Ok(Some(c)))? else {
         return Ok(Vec::new());
     };
-    let file = crate::settings::history_file(&endpoint.home, workspace);
-    let store = crate::db::history::ChatHistory::open(&file)?;
     Ok(store
         .messages(conversation)?
         .into_iter()

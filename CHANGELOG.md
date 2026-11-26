@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.33] - 2026-11-26
+
+### Corrigido
+
+- App remoto: o histórico do chat aparece mesmo com um terra ou hub que não informa a conversa da aba; o servidor usa a conversa mais recente do workspace (#114).
+
+### Alterado
+
+- App remoto: o chat é desenhado como o do terra no PC, com a caixa vinho do usuário, a caixa da resposta, a árvore dos passos, os ícones das ferramentas, o `⎿` dos resultados e as cores Catppuccin Mocha (#114).
+
 ## [0.14.32] - 2026-11-26
 
 ### Adicionado

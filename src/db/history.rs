@@ -196,6 +196,15 @@ impl ChatHistory {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// A conversa atualizada por último, se houver alguma.
+    pub fn latest(&self) -> Result<Option<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM conversations ORDER BY updated_at DESC, id DESC LIMIT 1")?;
+        let mut rows = stmt.query([])?;
+        Ok(rows.next()?.map(|row| row.get(0)).transpose()?)
+    }
+
     /// As mensagens enviadas guardadas, a mais antiga primeiro.
     pub fn sent(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
