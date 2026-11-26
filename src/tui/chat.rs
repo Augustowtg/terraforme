@@ -402,6 +402,12 @@ impl Chat {
         self.agent_activity.as_deref()
     }
 
+    /// O pedido que espera o usuário neste chat, numa linha (ver
+    /// [`permission::Prompts::summary`]).
+    pub fn pending_request(&self) -> Option<String> {
+        self.prompts.summary()
+    }
+
     pub fn tokens_used(&self) -> u64 {
         self.tokens_used
     }

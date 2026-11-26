@@ -286,6 +286,7 @@ mod messages {
                     title: "Principal".into(),
                     name: Some(name.into()),
                     task: None,
+                    ask: None,
                 }],
                 ..Status::default()
             };

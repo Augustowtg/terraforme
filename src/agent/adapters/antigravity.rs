@@ -301,14 +301,14 @@ impl AntigravityAdapter {
     }
 }
 
-/// O gancho de permissão da mensagem: leva os pedidos ao usuário, no Manual
-/// e no Accept Edits (o `agy` não tem um `--permission-prompt-tool`). `None`:
-/// o `agy` decide sozinho.
+/// O gancho da mensagem: leva os pedidos ao usuário, no Manual e no Accept
+/// Edits (o `agy` não tem um `--permission-prompt-tool`); nos outros modos,
+/// só as perguntas (`ask_question`), e o `agy` decide o resto sozinho.
 fn permission_gate(request: &Request<'_>) -> Result<Option<Gate>, String> {
     if permission::asks_user(request.mode) {
         Gate::create_for_user(request.mode).map(Some)
     } else {
-        Ok(None)
+        Gate::create_for_questions().map(Some)
     }
 }
 
@@ -469,11 +469,12 @@ impl Run {
             cmd.arg("--add-dir").arg(overlay.dir());
         }
         if let Some(gate) = &gate {
+            cmd.arg("--add-dir").arg(gate.dir());
             // O gancho decide por cada ferramenta: sem isto, o `agy` negaria
             // sozinho o que pede permissão.
-            cmd.arg("--dangerously-skip-permissions")
-                .arg("--add-dir")
-                .arg(gate.dir());
+            if permission::asks_user(request.mode) {
+                cmd.arg("--dangerously-skip-permissions");
+            }
         }
         cmd.envs(request.extensions.env.iter().map(|(k, v)| (k, v)));
         // Num grupo próprio, para o fim do turno levar junto o que os
@@ -562,6 +563,12 @@ impl Session for Run {
     fn respond(&mut self, id: &str, allow: bool) {
         if let Some(gate) = &self.gate {
             gate.respond(id, allow);
+        }
+    }
+
+    fn answer(&mut self, id: &str, answers: &[(String, String)]) {
+        if let Some(gate) = &self.gate {
+            gate.answer(id, answers);
         }
     }
 }
@@ -799,19 +806,32 @@ mod tests {
     }
 
     #[test]
-    fn only_manual_and_accept_edits_get_the_user_gate_in_a_normal_chat() {
+    fn manual_and_accept_edits_ask_about_every_tool_and_the_rest_only_the_questions() {
         let extensions = Contribution::default();
-        let gate = |mode| permission_gate(&request(mode, &extensions)).unwrap();
+        let matcher = |mode| {
+            let gate = permission_gate(&request(mode, &extensions))
+                .unwrap()
+                .expect("o gancho");
+            let hooks = fs::read_to_string(
+                gate.dir()
+                    .join(".agents/plugins/terraforme-permission/hooks.json"),
+            )
+            .unwrap();
+            let hooks: serde_json::Value = serde_json::from_str(&hooks).unwrap();
+            hooks["terraforme-permission"]["PreToolUse"][0]["matcher"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
         for mode in [PermissionMode::Manual, PermissionMode::AcceptEdits] {
-            let gate = gate(mode).expect("o gancho do usuário");
-            assert!(gate.dir().join("channel").exists());
+            assert_eq!(matcher(mode), "", "{mode:?} pergunta por tudo");
         }
         for mode in [
             PermissionMode::Agente,
             PermissionMode::Yolo,
             PermissionMode::Plan,
         ] {
-            assert!(gate(mode).is_none(), "{mode:?} decide sem o gancho");
+            assert_eq!(matcher(mode), "ask_question", "{mode:?} só as perguntas");
         }
     }
 }

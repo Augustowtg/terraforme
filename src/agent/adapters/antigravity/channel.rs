@@ -28,7 +28,10 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::plugin::write_private;
-use crate::agent::AgentEvent;
+use crate::agent::{AgentEvent, Question};
+
+/// A ferramenta de perguntas do `agy`.
+pub const QUESTION_TOOL: &str = "ask_question";
 
 /// O arquivo do canal (porta e token) dentro da pasta do plugin.
 pub const FILE: &str = "channel";
@@ -43,8 +46,9 @@ struct Shared {
     token: String,
     closed: AtomicBool,
     next: AtomicU64,
-    /// Os pedidos esperando o usuário, pelo id do [`AgentEvent`].
-    pending: Mutex<HashMap<String, Sender<bool>>>,
+    /// Os pedidos esperando o usuário, pelo id do [`AgentEvent`]: aprovado,
+    /// ou negado com o motivo.
+    pending: Mutex<HashMap<String, Sender<Result<(), String>>>>,
     events: Sender<AgentEvent>,
 }
 
@@ -98,8 +102,28 @@ impl Channel {
     /// A decisão do usuário a um pedido; o gancho a recebe na hora. Um id
     /// que não está esperando é ignorado.
     pub fn respond(&self, id: &str, allow: bool) {
+        let reply = if allow {
+            Ok(())
+        } else {
+            Err(DENIED.to_string())
+        };
+        self.reply(id, reply);
+    }
+
+    /// As respostas do usuário a uma `ask_question`. O gancho só sabe
+    /// aprovar ou negar, então a pergunta é negada com as respostas no
+    /// motivo, que o modelo lê.
+    pub fn answer(&self, id: &str, answers: &[(String, String)]) {
+        let text: Vec<String> = answers.iter().map(|(q, a)| format!("{q} → {a}")).collect();
+        self.reply(
+            id,
+            Err(format!("O usuário respondeu no terra: {}", text.join("; "))),
+        );
+    }
+
+    fn reply(&self, id: &str, reply: Result<(), String>) {
         if let Some(waiting) = self.shared.pending.lock().unwrap().remove(id) {
-            let _ = waiting.send(allow);
+            let _ = waiting.send(reply);
         }
     }
 }
@@ -141,26 +165,64 @@ fn parse(line: &str, token: &str) -> Option<(String, Value)> {
     ))
 }
 
-/// Põe o pedido na tela do chat e espera o usuário.
+/// Põe o pedido na tela do chat e espera o usuário. A `ask_question` vira
+/// uma pergunta, como a `AskUserQuestion` do Claude; o resto, um pedido de
+/// permissão.
 fn ask_user(shared: &Shared, tool: &str, input: &Value) -> Value {
     let id = format!("agy-{}", shared.next.fetch_add(1, Ordering::Relaxed) + 1);
     let (tx, waiting) = mpsc::channel();
     shared.pending.lock().unwrap().insert(id.clone(), tx);
-    let event = AgentEvent::PermissionRequest {
-        id: id.clone(),
-        name: tool.to_string(),
-        detail: detail(input),
+    let event = match questions(tool, input) {
+        Some(questions) => AgentEvent::Question {
+            id: id.clone(),
+            questions,
+        },
+        None => AgentEvent::PermissionRequest {
+            id: id.clone(),
+            name: tool.to_string(),
+            detail: detail(input),
+        },
     };
     let sent = shared.events.send(event).is_ok();
-    let allow = sent && !shared.closed.load(Ordering::Relaxed) && {
-        waiting.recv_timeout(WAIT).unwrap_or(false)
+    let reply = if sent && !shared.closed.load(Ordering::Relaxed) {
+        waiting
+            .recv_timeout(WAIT)
+            .unwrap_or_else(|_| Err(DENIED.to_string()))
+    } else {
+        Err(DENIED.to_string())
     };
     shared.pending.lock().unwrap().remove(&id);
-    if allow {
-        json!({ "allow": true })
-    } else {
-        json!({ "allow": false, "reason": "negado pelo usuário no terra" })
+    match reply {
+        Ok(()) => json!({ "allow": true }),
+        Err(reason) => json!({ "allow": false, "reason": reason }),
     }
+}
+
+/// O motivo de um pedido negado (ou sem resposta).
+const DENIED: &str = "negado pelo usuário no terra";
+
+/// As perguntas de uma `ask_question` (`questions[].question` e as
+/// `options`, só os textos); `None` em outra ferramenta ou sem perguntas.
+// shortcut: a de múltipla escolha (`is_multi_select`) vira de escolha única, como no Claude.
+fn questions(tool: &str, input: &Value) -> Option<Vec<Question>> {
+    if tool != QUESTION_TOOL {
+        return None;
+    }
+    let questions: Vec<Question> = input["questions"]
+        .as_array()?
+        .iter()
+        .filter_map(|q| {
+            Some(Question {
+                text: q["question"].as_str()?.to_string(),
+                options: q["options"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|o| Some((o.as_str()?.to_string(), String::new())))
+                    .collect(),
+            })
+        })
+        .collect();
+    (!questions.is_empty()).then_some(questions)
 }
 
 /// O parâmetro principal do pedido para a tela: o comando, o caminho, a
@@ -278,6 +340,27 @@ mod tests {
             panic!("esperava negado");
         };
         assert!(reason.contains("negado pelo usuário"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_ask_question_is_shown_as_a_question_and_the_answer_goes_back() {
+        let (channel, dir) = open();
+        let file = dir.join(FILE);
+        let input = json!({ "questions": [
+            { "question": "Qual cor?", "options": ["Azul", "Verde"], "is_multi_select": false }
+        ] });
+        let asked = thread::spawn(move || ask(&file, QUESTION_TOOL, &input));
+        let AgentEvent::Question { id, questions } = next_request(&channel) else {
+            panic!("esperava Question");
+        };
+        assert_eq!(questions[0].text, "Qual cor?");
+        assert_eq!(questions[0].options[1].0, "Verde");
+        channel.answer(&id, &[("Qual cor?".into(), "Verde".into())]);
+        let Ok(Err(reason)) = asked.join().unwrap() else {
+            panic!("esperava a resposta no motivo");
+        };
+        assert!(reason.contains("Qual cor? → Verde"), "{reason}");
         let _ = fs::remove_dir_all(dir);
     }
 

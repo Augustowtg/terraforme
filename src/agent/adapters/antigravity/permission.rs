@@ -24,6 +24,11 @@
 //!
 //! No Yolo, o `agy` aprova tudo sem o gancho; no Plan, fica como está (o
 //! `agy` nega o que mudaria algo); no Agente, o `agy` decide sozinho.
+//!
+//! As perguntas (`ask_question`) passam pelo gancho em todos os modos: no
+//! `-p` o `agy` as pula sozinho. O chat as mostra como a `AskUserQuestion`
+//! do Claude, e o gancho nega a ferramenta com as respostas no motivo, que
+//! o modelo lê (o gancho só sabe aprovar ou negar).
 
 use std::fs;
 use std::io::Read;
@@ -84,6 +89,18 @@ impl Gate {
     /// Monta o plugin do chat, em que o usuário decide: abre o
     /// [`Channel`] e o gancho fala com ele.
     pub fn create_for_user(mode: PermissionMode) -> Result<Gate, String> {
+        Self::create("", mode == PermissionMode::AcceptEdits)
+    }
+
+    /// O gancho só da `ask_question`, para os modos em que o `agy` decide o
+    /// resto sozinho: sem ele, no `-p`, a pergunta é pulada e o usuário
+    /// nunca a vê.
+    pub fn create_for_questions() -> Result<Gate, String> {
+        Self::create(channel::QUESTION_TOOL, false)
+    }
+
+    /// `matcher`: as ferramentas que passam pelo gancho (vazio, todas).
+    fn create(matcher: &str, accept_edits: bool) -> Result<Gate, String> {
         let exe = std::env::current_exe()
             .map_err(|err| format!("o caminho do terra para o gancho do agy: {err}"))?;
         let dir = make_dir().map_err(|err| format!("pasta temporária do gancho do agy: {err}"))?;
@@ -93,7 +110,7 @@ impl Gate {
             Channel::open(&gate.dir).map_err(|err| format!("canal de permissão do agy: {err}"))?,
         );
         let file = gate.dir.join(channel::FILE);
-        let hooks = hooks_json(&exe, &file, mode == PermissionMode::AcceptEdits);
+        let hooks = hooks_json(&exe, &file, matcher, accept_edits);
         gate.write(&hooks)
             .map_err(|err| format!("gancho de permissão do agy: {err}"))?;
         Ok(gate)
@@ -108,6 +125,13 @@ impl Gate {
     pub fn respond(&self, id: &str, allow: bool) {
         if let Some(channel) = &self.channel {
             channel.respond(id, allow);
+        }
+    }
+
+    /// As respostas do usuário a uma pergunta.
+    pub fn answer(&self, id: &str, answers: &[(String, String)]) {
+        if let Some(channel) = &self.channel {
+            channel.answer(id, answers);
         }
     }
 
@@ -133,8 +157,9 @@ impl Drop for Gate {
     }
 }
 
-/// O `hooks.json` do plugin: antes de qualquer ferramenta, o terra decide.
-fn hooks_json(exe: &Path, channel: &Path, accept_edits: bool) -> Value {
+/// O `hooks.json` do plugin: antes das ferramentas do `matcher` (vazio, todas), o
+/// terra decide.
+fn hooks_json(exe: &Path, channel: &Path, matcher: &str, accept_edits: bool) -> Value {
     let accept = if accept_edits { " --accept-edits" } else { "" };
     let command = format!(
         "{} agy-permission-hook --channel {}{accept}",
@@ -144,7 +169,7 @@ fn hooks_json(exe: &Path, channel: &Path, accept_edits: bool) -> Value {
     json!({
         PLUGIN: {
             "PreToolUse": [{
-                "matcher": "",
+                "matcher": matcher,
                 "hooks": [{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT }],
             }],
         },

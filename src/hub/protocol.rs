@@ -63,6 +63,9 @@ pub struct Tab {
     /// A execução despachada que a aba mostra (`kind: execucao`); `None`
     /// numa aba manual.
     pub run: Option<String>,
+    /// A pergunta ou o pedido de permissão que espera o usuário nesta aba,
+    /// numa linha; as outras janelas o mostram na aba Terraforme.
+    pub ask: Option<String>,
 }
 
 impl Tab {
@@ -74,6 +77,7 @@ impl Tab {
             "kind": if self.run.is_some() { "execucao" } else { "manual" },
             "run": self.run,
             "task": self.task,
+            "ask": self.ask,
         })
     }
 
@@ -84,6 +88,7 @@ impl Tab {
             name: value["name"].as_str().map(str::to_string),
             run: value["run"].as_str().map(str::to_string),
             task: value["task"].as_str().map(str::to_string),
+            ask: value["ask"].as_str().map(str::to_string),
         })
     }
 }
@@ -292,6 +297,7 @@ mod tests {
                 title: "Principal".into(),
                 name: Some("backend".into()),
                 task: Some("Pensando...".into()),
+                ask: Some("Pergunta: Qual cor?".into()),
             }],
         };
         assert_eq!(Status::from_json(&status.to_json()), status);
