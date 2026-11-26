@@ -66,6 +66,9 @@ pub struct Tab {
     /// A pergunta ou o pedido de permissão que espera o usuário nesta aba,
     /// numa linha; as outras janelas o mostram na aba Terraforme.
     pub ask: Option<String>,
+    /// A conversa desta aba no histórico do workspace; `None` antes da
+    /// primeira mensagem.
+    pub conversation: Option<i64>,
 }
 
 impl Tab {
@@ -78,6 +81,7 @@ impl Tab {
             "run": self.run,
             "task": self.task,
             "ask": self.ask,
+            "conversation": self.conversation,
         })
     }
 
@@ -89,6 +93,7 @@ impl Tab {
             run: value["run"].as_str().map(str::to_string),
             task: value["task"].as_str().map(str::to_string),
             ask: value["ask"].as_str().map(str::to_string),
+            conversation: value["conversation"].as_i64(),
         })
     }
 }
@@ -298,6 +303,7 @@ mod tests {
                 name: Some("backend".into()),
                 task: Some("Pensando...".into()),
                 ask: Some("Pergunta: Qual cor?".into()),
+                conversation: Some(7),
             }],
         };
         assert_eq!(Status::from_json(&status.to_json()), status);

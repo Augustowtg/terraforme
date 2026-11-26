@@ -98,3 +98,9 @@ data class Usage(
     val totalCostUsd: Double,
     val running: Int
 )
+
+data class ChatMessage(
+    val role: String, // "user", "assistant", "tool", "tool_result", "tool_error", "error", "info"
+    val tool: String?,
+    val content: String
+)

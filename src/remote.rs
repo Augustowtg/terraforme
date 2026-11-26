@@ -122,9 +122,18 @@ fn handle_client(mut stream: TcpStream, endpoint: Arc<Endpoint>) -> Result<()> {
             json!({
                 "status": "ok",
                 "app": "terraforme",
-                "version": env!("CARGO_PKG_VERSION")
+                "version": env!("CARGO_PKG_VERSION"),
+                "tailscale": tailscale_ip()
             }),
         ),
+
+        // O histórico do chat da aba `id`, gravado no SQLite do workspace.
+        ("GET", p) if p.starts_with("/api/history/") => {
+            match history(&endpoint, &p["/api/history/".len()..]) {
+                Ok(messages) => (200, "OK", json!({ "messages": messages })),
+                Err(e) => (404, "Not Found", json!({ "error": format!("{e:#}") })),
+            }
+        }
 
         ("GET", "/api/status") => match hub::client::snapshot_with(&endpoint, true) {
             Ok(instances) => (
@@ -470,6 +479,46 @@ fn handle_client(mut stream: TcpStream, endpoint: Arc<Endpoint>) -> Result<()> {
     };
 
     send_response(&mut stream, status_code, status_text, &response_json)
+}
+
+/// As mensagens da conversa da aba `tab`: a aba diz o workspace e a
+/// conversa, e o histórico está no banco do workspace.
+fn history(endpoint: &Endpoint, tab: &str) -> Result<Vec<Value>> {
+    let instances = hub::client::snapshot_with(endpoint, true)?;
+    let (workspace, conversation) = instances
+        .iter()
+        .find_map(|i| {
+            let t = i["status"]["tabs"]
+                .as_array()?
+                .iter()
+                .find(|t| t["id"] == tab)?;
+            Some((i["workspace"].as_str()?, t["conversation"].as_i64()))
+        })
+        .context("aba não encontrada")?;
+    let Some(conversation) = conversation else {
+        return Ok(Vec::new());
+    };
+    let file = crate::settings::history_file(&endpoint.home, workspace);
+    let store = crate::db::history::ChatHistory::open(&file)?;
+    Ok(store
+        .messages(conversation)?
+        .into_iter()
+        .map(|(role, tool, content)| json!({ "role": role, "tool": tool, "content": content }))
+        .collect())
+}
+
+/// O IP desta máquina no Tailscale, que o app prefere ao da rede local. A rota
+/// para o DNS do Tailscale (100.100.100.100) sai pela interface dele; um UDP
+/// `connect` não manda nada.
+fn tailscale_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("100.100.100.100:53").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if ip.octets()[0] == 100 && ip.octets()[1] & 0xC0 == 64 => {
+            Some(ip.to_string())
+        }
+        _ => None,
+    }
 }
 
 fn send_response(

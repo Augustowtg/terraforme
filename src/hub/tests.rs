@@ -287,6 +287,7 @@ mod messages {
                     name: Some(name.into()),
                     task: None,
                     ask: None,
+                    conversation: None,
                 }],
                 ..Status::default()
             };

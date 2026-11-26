@@ -54,6 +54,11 @@ impl Recorder {
         Ok(())
     }
 
+    /// A conversa em andamento no banco.
+    pub(super) fn conversation(&self) -> Option<i64> {
+        self.conversation
+    }
+
     /// As últimas mensagens enviadas no workspace, a mais antiga primeiro. Sem
     /// o banco ainda não há nenhuma, e ele continua sem ser criado.
     pub(super) fn sent(&mut self) -> Result<Vec<String>> {

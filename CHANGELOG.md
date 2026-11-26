@@ -4,6 +4,18 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.32] - 2026-11-26
+
+### Adicionado
+
+- App remoto: ao abrir uma instância, o histórico do chat da aba aparece e acompanha a conversa; o servidor ganha `GET /api/history/<aba>` e o `/api/health` informa o IP do Tailscale da máquina (#112).
+- App remoto: aba Custo ao lado de Instâncias, com o consumo que antes ficava na tela das instâncias (#112).
+
+### Alterado
+
+- App remoto: a conexão é automática; as máquinas achadas (o IP do Tailscale primeiro) e a última lista de instâncias de cada uma ficam num SQLite no celular. Saem a conexão por USB, o botão "Procurar na rede", o card "Consumo de hoje" e a linha "ONLINE / Atualizado às" (#112).
+- App remoto: tocar em "Desconectado" recarrega, e desconectado o app procura o terra a cada 5s (#112).
+
 ## [0.14.31] - 2026-11-26
 
 ### Alterado

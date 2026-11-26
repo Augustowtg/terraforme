@@ -186,6 +186,16 @@ impl ChatHistory {
         Ok(())
     }
 
+    /// As mensagens da conversa `id`, a mais antiga primeiro: papel,
+    /// ferramenta e conteúdo.
+    pub fn messages(&self, id: i64) -> Result<Vec<(String, Option<String>, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT role, tool, content FROM messages WHERE conversation_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// As mensagens enviadas guardadas, a mais antiga primeiro.
     pub fn sent(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
@@ -280,6 +290,38 @@ mod tests {
                     Some("Read".to_string()),
                     "a.rs".to_string()
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn messages_are_those_of_the_conversation_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = ChatHistory::open(&dir.path().join("x.sql")).unwrap();
+        let first = history.start_conversation().unwrap();
+        let other = history.start_conversation().unwrap();
+        let none = Conversation::default();
+        history
+            .append(first, none, &[message("user", "oi")])
+            .unwrap();
+        history
+            .append(other, none, &[message("user", "outra")])
+            .unwrap();
+        history
+            .append(first, none, &[message("assistant", "olá")])
+            .unwrap();
+
+        let roles: Vec<_> = history
+            .messages(first)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.0, m.2))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                ("user".into(), "oi".into()),
+                ("assistant".into(), "olá".into())
             ]
         );
     }

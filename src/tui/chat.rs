@@ -640,6 +640,11 @@ impl Chat {
         self.recorder = Some(recorder);
     }
 
+    /// A conversa deste chat no histórico do workspace.
+    pub fn conversation(&self) -> Option<i64> {
+        self.recorder.as_ref()?.conversation()
+    }
+
     /// Grava o que falta da conversa, mesmo uma resposta pela metade.
     pub fn save_history(&mut self) {
         self.record(self.history.entries().len());
