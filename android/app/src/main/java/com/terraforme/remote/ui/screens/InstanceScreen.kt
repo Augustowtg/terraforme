@@ -10,9 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -30,7 +27,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,7 +39,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.terraforme.remote.data.ChatMessage
 import com.terraforme.remote.data.Instance
-import com.terraforme.remote.ui.theme.ErrorRed
 import com.terraforme.remote.ui.theme.RunningBlue
 import com.terraforme.remote.ui.theme.DarkBackground
 import com.terraforme.remote.ui.theme.DarkCardBorder
@@ -120,16 +115,7 @@ fun InstanceScreen(
                 Spacer(Modifier.height(12.dp))
             }
 
-            // O chat da aba, rolando para a última mensagem quando chega outra.
-            val list = rememberLazyListState()
-            LaunchedEffect(history.size) { if (history.isNotEmpty()) list.scrollToItem(history.lastIndex) }
-            LazyColumn(
-                state = list,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(history) { MessageLine(it) }
-            }
+            ChatView(history, Modifier.weight(1f).fillMaxWidth())
 
             Text(
                 text = tab?.task ?: "Aguardando próxima instrução...",
@@ -175,14 +161,3 @@ fun InstanceScreen(
     }
 }
 
-/** Uma mensagem do chat, como no terra: o usuário em negrito, as ferramentas em monoespaçado. */
-@Composable
-private fun MessageLine(m: ChatMessage) {
-    when (m.role) {
-        "user" -> Text("› ${m.content}", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-        "assistant" -> Text(m.content, color = TextSecondary, fontSize = 14.sp)
-        "tool" -> Text("● ${m.tool.orEmpty()} ${m.content}", color = Primary, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-        "error", "tool_error" -> Text(m.content, color = ErrorRed, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-        else -> Text(m.content, color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, maxLines = 4)
-    }
-}
