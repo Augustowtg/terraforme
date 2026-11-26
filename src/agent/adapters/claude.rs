@@ -649,6 +649,9 @@ impl Run {
         if let Some(model) = request.subagent_model {
             cmd.env(SUBAGENT_MODEL_ENV, model);
         }
+        if request.fork && request.session_id.is_some() {
+            cmd.arg("--fork-session");
+        }
         if let Some(prompt) = request.system_prompt {
             cmd.args(["--append-system-prompt", prompt]);
         }
@@ -1066,6 +1069,7 @@ mod tests {
             prompt: "oi",
             mode: PermissionMode::Agente,
             session_id: None,
+            fork: false,
             model: None,
             account: None,
             effort: None,

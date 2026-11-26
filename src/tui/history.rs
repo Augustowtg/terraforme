@@ -53,8 +53,8 @@ pub enum Entry {
     /// Um aviso do terra (não do agente).
     Info(String),
     /// Um passo do agente (pensando, subagente, nova tentativa...). Os
-    /// passos e as ferramentas de uma vez ficam numa árvore embaixo do
-    /// pensamento.
+    /// passos e as ferramentas entre uma resposta e outra ficam numa árvore
+    /// só.
     Step(String),
 }
 
@@ -63,13 +63,22 @@ pub enum Entry {
 const THINKING: &str = "Pensando...";
 /// O começo de um passo com o texto do pensamento.
 const THOUGHT_PREFIX: &str = "Pensamento: ";
+/// O começo de um passo com o texto de um subagente.
+const SUBAGENT_PREFIX: &str = "Subagente: ";
+/// O começo do passo de uma ferramenta cuja entrada ainda está chegando.
+const PREPARING_PREFIX: &str = "Preparando ";
 
-/// O passo é um pensamento: abre uma árvore.
+/// O passo é um pensamento.
 fn is_thought(entry: &Entry) -> bool {
     matches!(entry, Entry::Step(text) if text == THINKING || text.starts_with(THOUGHT_PREFIX))
 }
 
-/// Entra na árvore de um pensamento: os passos e as ferramentas.
+/// O "Preparando Bash..." de uma ferramenta que ainda vai chegar.
+fn is_preparing(entry: &Entry) -> bool {
+    matches!(entry, Entry::Step(text) if text.starts_with(PREPARING_PREFIX))
+}
+
+/// Entra na árvore dos passos: os passos e as ferramentas.
 fn is_step(entry: &Entry) -> bool {
     matches!(
         entry,
@@ -77,10 +86,36 @@ fn is_step(entry: &Entry) -> bool {
     )
 }
 
-/// Onde a entrada fica na árvore do pensamento.
+/// O ícone de uma ferramenta pelo nome (os nomes mudam de provedor para
+/// provedor: `Bash`, `bash`, `run_command`...).
+fn tool_icon(name: &str) -> &'static str {
+    let name = name.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
+    if name.starts_with("mcp__") {
+        "🔌"
+    } else if has(&["bash", "shell", "command", "terminal"]) {
+        "💻"
+    } else if has(&["agent", "task"]) {
+        "🤖"
+    } else if has(&["web", "fetch", "url"]) {
+        "🌐"
+    } else if has(&["edit", "write", "patch", "replace"]) {
+        "📝"
+    } else if has(&["grep", "glob", "search", "find", "list"]) {
+        "🔍"
+    } else if has(&["read", "view"]) {
+        "📄"
+    } else if has(&["todo"]) {
+        "📋"
+    } else {
+        "🔧"
+    }
+}
+
+/// Onde a entrada fica na árvore dos passos.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Place {
-    /// Fora da árvore (ou o próprio pensamento).
+    /// Fora da árvore (ou a cabeça dela, o primeiro passo).
     Root,
     /// Um galho (`├─`, ou `└─` no último).
     Branch { last: bool },
@@ -149,25 +184,28 @@ pub struct History {
 
 impl History {
     pub fn push(&mut self, entry: Entry) {
-        let placeholder =
-            |e: Option<&Entry>| matches!(e, Some(Entry::Step(text)) if text == THINKING);
-        if placeholder(self.entries.last()) && is_thought(&entry) {
-            // O texto do pensamento chega depois do "Pensando...": fica no
-            // lugar dele.
-            let last = self.entries.len() - 1;
-            self.entries[last] = entry;
-            self.invalidate(last);
+        // O texto do pensamento chega depois do "Pensando..." (às vezes com o
+        // "Preparando Bash..." no meio): fica no lugar dele.
+        if is_thought(&entry)
+            && self.replace_back(
+                &entry,
+                is_preparing,
+                |e| matches!(e, Entry::Step(text) if text == THINKING),
+            )
+        {
             return;
         }
-        if let (Entry::Tool { name, .. }, Some(Entry::Step(text))) = (&entry, self.entries.last())
-            && *text == format!("Preparando {name}...")
-        {
-            // O "Preparando Bash..." (enquanto a entrada da ferramenta chega)
-            // vira a própria ferramenta: um galho só.
-            let last = self.entries.len() - 1;
-            self.entries[last] = entry;
-            self.invalidate(last);
-            return;
+        // O "Preparando Bash..." (enquanto a entrada da ferramenta chega)
+        // vira a própria ferramenta: um galho só.
+        if let Entry::Tool { name, .. } = &entry {
+            let preparing = format!("{PREPARING_PREFIX}{name}...");
+            if self.replace_back(
+                &entry,
+                is_thought,
+                |e| matches!(e, Entry::Step(text) if *text == preparing),
+            ) {
+                return;
+            }
         }
         if is_step(&entry) && !is_thought(&entry) && !self.entries.last().is_some_and(is_step) {
             // Os passos sem pensamento antes (ex.: o Antigravity) ganham um.
@@ -175,36 +213,63 @@ impl History {
         }
         self.entries.push(entry);
         // O galho de cima vira `├─` com este embaixo: a árvore é refeita.
-        if let Some(head) = self.thought_of(self.entries.len() - 1) {
+        if let Some(head) = self.head_of(self.entries.len() - 1) {
             self.invalidate(head + 1);
         }
     }
 
-    /// O pensamento em cuja árvore fica a entrada `index`; `None` fora de
-    /// uma árvore (e no próprio pensamento).
-    fn thought_of(&self, index: usize) -> Option<usize> {
-        if !is_step(&self.entries[index]) || is_thought(&self.entries[index]) {
+    /// Troca por `entry` a última entrada `target`, pulando as `skip` do fim;
+    /// retorna se trocou.
+    fn replace_back(
+        &mut self,
+        entry: &Entry,
+        skip: fn(&Entry) -> bool,
+        target: impl Fn(&Entry) -> bool,
+    ) -> bool {
+        let found = self.entries.iter().rposition(|e| !skip(e));
+        match found {
+            Some(i) if target(&self.entries[i]) => {
+                self.entries[i] = entry.clone();
+                self.invalidate(i);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A cabeça (o primeiro passo) da árvore em que fica a entrada `index`;
+    /// `None` fora de uma árvore (e na própria cabeça). A árvore vai do
+    /// primeiro passo até a próxima resposta.
+    fn head_of(&self, index: usize) -> Option<usize> {
+        if !is_step(&self.entries[index]) {
             return None;
         }
-        (0..index)
+        let head = (0..index)
             .rev()
             .take_while(|&i| is_step(&self.entries[i]))
-            .find(|&i| is_thought(&self.entries[i]))
+            .last()?;
+        Some(head)
     }
 
     fn place(&self, index: usize) -> Place {
-        if self.thought_of(index).is_none() {
+        if self.head_of(index).is_none() {
             return Place::Root;
         }
         // O último galho: depois dele (e dos resultados dele) a árvore acaba.
         let last = !self.entries[index + 1..]
             .iter()
             .find(|e| !matches!(e, Entry::ToolResult { .. }))
-            .is_some_and(|e| is_step(e) && !is_thought(e));
+            .is_some_and(is_step);
         match self.entries[index] {
             Entry::ToolResult { .. } => Place::Under { last },
             _ => Place::Branch { last },
         }
+    }
+
+    /// Põe `entry` na posição `index` (ex.: antes do texto que ainda chega).
+    pub fn insert(&mut self, index: usize, entry: Entry) {
+        self.entries.insert(index, entry);
+        self.invalidate(index);
     }
 
     /// Começa um novo bloco de texto do agente.
@@ -642,7 +707,8 @@ fn logical_lines(entry: &Entry) -> Vec<(Vec<Glyph>, Vec<Glyph>)> {
             if !detail.is_empty() {
                 body.extend(glyphs(&format!("({detail})"), theme::path(), true));
             }
-            vec![(glyphs("⏺ ", theme::variant(Variant::Success), false), body)]
+            let icon = format!("{} ", tool_icon(name));
+            vec![(glyphs(&icon, theme::variant(Variant::Success), false), body)]
         }
         Entry::ToolResult { is_error, summary } => {
             let style = if *is_error {
@@ -668,7 +734,16 @@ fn logical_lines(entry: &Entry) -> Vec<(Vec<Glyph>, Vec<Glyph>)> {
             theme::variant(Variant::Accent),
             theme::muted().add_modifier(Modifier::ITALIC),
         ),
-        Entry::Step(text) => prefixed(text, "· ", theme::muted(), theme::muted()),
+        Entry::Step(text) if text.starts_with(SUBAGENT_PREFIX) => prefixed(
+            &text[SUBAGENT_PREFIX.len()..],
+            "🤖 ",
+            theme::variant(Variant::Accent),
+            theme::muted().add_modifier(Modifier::ITALIC),
+        ),
+        Entry::Step(text) if is_preparing(entry) => {
+            prefixed(text, "⏳ ", theme::muted(), theme::muted())
+        }
+        Entry::Step(text) => prefixed(text, "📌 ", theme::muted(), theme::muted()),
     }
 }
 
@@ -820,28 +895,37 @@ mod tests {
     }
 
     #[test]
-    fn the_steps_of_a_thought_are_a_tree_under_it() {
+    fn the_steps_up_to_the_answer_are_one_tree() {
         let mut history = History::default();
-        history.push(Entry::Step("Pensamento: vou ler".into()));
-        history.push(Entry::Tool {
+        let bash = |detail: &str| Entry::Tool {
             name: "Bash".into(),
-            detail: "ls".into(),
-        });
+            detail: detail.into(),
+        };
+        // Como o Claude manda: o "Pensando..." e o "Preparando..." antes do
+        // texto do pensamento e da ferramenta.
+        history.push(Entry::Step("Pensando...".into()));
+        history.push(Entry::Step("Preparando Bash...".into()));
+        history.push(Entry::Step("Pensamento: vou ver".into()));
+        history.push(bash("ls"));
         history.push(Entry::ToolResult {
             is_error: false,
             summary: "a.txt".into(),
         });
+        history.push(Entry::Step("Pensando...".into()));
+        history.push(Entry::Step("Pensamento: e ler".into()));
         history.push(Entry::Tool {
-            name: "Read".into(),
-            detail: "a.txt".into(),
+            name: "Agent".into(),
+            detail: "ler".into(),
         });
+        history.push(Entry::Assistant("pronto".into()));
         assert_eq!(
-            screen(&history, 30, 6)[1..5],
+            screen(&history, 30, 10)[1..6],
             [
-                "  💡  vou ler",
-                "  ├─ ⏺ Bash(ls)",
+                "  💡  vou ver",
+                "  ├─ 💻  Bash(ls)",
                 "  │    ⎿ a.txt",
-                "  └─ ⏺ Read(a.txt)",
+                "  ├─ 💡  e ler",
+                "  └─ 🤖  Agent(ler)",
             ]
         );
     }
@@ -875,7 +959,7 @@ mod tests {
                 "  ╰────────────────────────╯",
                 "",
                 "  💡  Pensando...",
-                "  └─ ⏺ Bash(ls)",
+                "  └─ 💻  Bash(ls)",
                 "       ⎿ a.txt",
                 "",
                 "  ✘ falhou",

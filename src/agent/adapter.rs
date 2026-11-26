@@ -30,6 +30,10 @@ pub struct Request<'a> {
     pub mode: PermissionMode,
     /// Sessão a continuar (o `session_id` do último [`AgentEvent::Init`]).
     pub session_id: Option<&'a str>,
+    /// Continua de uma cópia da sessão, sem gravar nela (o `/btw`, com o
+    /// agente ainda respondendo na sessão). Só o Claude usa: o terra só
+    /// manda nele.
+    pub fork: bool,
     /// Modelo escolhido na Config (um [`ModelOption::id`]); `None` usa o
     /// padrão do provedor.
     pub model: Option<&'a str>,

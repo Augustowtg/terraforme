@@ -4,6 +4,14 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.29] - 2026-11-26
+
+### Alterado
+
+- Os passos do agente entre uma resposta e outra (pensamentos, ferramentas, subagentes) ficam numa árvore só; antes, cada pensamento abria uma árvore nova (#106).
+- Cada passo tem um ícone: 💡 pensamento, 💻 terminal, 🤖 subagente, 📄 leitura, 📝 edição, 🔍 busca, 🌐 web, 🔌 MCP, 📋 tarefas, 🔧 outras ferramentas, ⏳ preparando e 📌 outros passos (#106).
+- O `/btw <pergunta>` responde no próprio chat do terra, mesmo com o agente respondendo, numa cópia da sessão no modo Plano; antes ele abria o Claude original (#106).
+
 ## [0.14.28] - 2026-11-26
 
 ### Adicionado

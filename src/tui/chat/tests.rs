@@ -105,7 +105,7 @@ impl ChatAdapter for FakeAdapter {
 
     fn command_route(&self, name: &str) -> agent::CommandRoute {
         match name {
-            "hooks" => agent::CommandRoute::Original,
+            "hooks" | "btw" => agent::CommandRoute::Original,
             "upgrade" => agent::CommandRoute::Blocked,
             _ => agent::CommandRoute::Agent,
         }
@@ -1939,4 +1939,26 @@ fn input_bottom_line_is_green_for_the_session_left() {
     assert_eq!(buffer[(0, bottom)].fg, green.unwrap());
     assert_eq!(buffer[(34, bottom)].fg, green.unwrap());
     assert_ne!(buffer[(35, bottom)].fg, green.unwrap());
+}
+
+#[test]
+fn btw_answers_in_the_terra_from_a_copy_of_the_session() {
+    let reply = vec![
+        init(PermissionMode::Agente),
+        AgentEvent::TextStart,
+        AgentEvent::TextDelta("oi!".into()),
+        done(7),
+    ];
+    let (mut chat, sent) = fake_chat(true, reply);
+    chat.submit("primeira");
+    chat.tick();
+    chat.remote_input("/btw e aí?");
+    chat.tick();
+    let (prompt, mode, session, _) = sent.borrow().last().cloned().unwrap();
+    assert_eq!((prompt.as_str(), session.as_deref()), ("e aí?", Some("s1")));
+    assert_eq!(mode, PermissionMode::Plan);
+    assert!(matches!(
+        &chat.history.entries()[chat.history.entries().len() - 2..],
+        [Entry::User(q), Entry::Assistant(a)] if q == "/btw e aí?" && a == "oi!"
+    ));
 }

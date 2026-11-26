@@ -30,11 +30,10 @@ impl Chat {
                 menu.sync(self.catalog.as_ref());
                 self.model_menu = Some(menu);
             }
-            // Sem interface no terra, fica o padrão do router: o comando vai
-            // para o agente, que responde no chat.
-            "btw" if self.run.is_some() => {
-                self.route_to_provider("/btw");
-            }
+            // A pergunta vai junto: `/btw <pergunta>` (veja `send`).
+            "btw" => self
+                .history
+                .push(Entry::Info("Escreva a pergunta: /btw <pergunta>.".into())),
             _ if self.run.is_some() => self.history.push(Entry::Info(format!(
                 "Espere o agente terminar para rodar /{name}."
             ))),
