@@ -905,3 +905,19 @@ fn alt_gr_types_on_windows_and_shortcuts_do_not_type() {
     assert!(!types_text(KeyModifiers::ALT));
     assert!(!types_text(KeyModifiers::SUPER));
 }
+
+#[test]
+fn shift_arrows_select_the_text() {
+    let mut input = InputBox::default();
+    press(&mut input, KeyCode::Char('i'));
+    type_text(&mut input, "ola mundo");
+    for _ in 0..5 {
+        press_with(&mut input, KeyCode::Left, KeyModifiers::SHIFT);
+    }
+    assert_eq!(input.selected_text().as_deref(), Some("mundo"));
+    press_with(&mut input, KeyCode::Home, KeyModifiers::SHIFT);
+    assert_eq!(input.selected_text().as_deref(), Some("ola mundo"));
+    // Sem o Shift, a seta desfaz a seleção.
+    press(&mut input, KeyCode::Right);
+    assert_eq!(input.selected_text(), None);
+}

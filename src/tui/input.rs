@@ -298,6 +298,19 @@ impl InputBox {
             KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
         );
         let mut outcome = Outcome::Handled;
+        // Shift + seta, Home ou End seleciona: a ponta que fica é a de antes
+        // do movimento.
+        let selects = key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(
+                key.code,
+                KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+            );
+        let anchor = selects.then(|| self.anchor.unwrap_or(self.cursor));
         match key.code {
             KeyCode::Esc => {
                 self.anchor = None;
@@ -357,6 +370,10 @@ impl InputBox {
                     self.buffer.remove(at);
                 }
             }
+            // Selecionando, o ↑ e o ↓ não trocam o texto pela mensagem
+            // enviada: na primeira linha vão ao começo, na última, ao fim.
+            KeyCode::Up if selects => self.select_row(-1),
+            KeyCode::Down if selects => self.select_row(1),
             KeyCode::Up => self.up(),
             KeyCode::Down => self.down(),
             KeyCode::Left => self.move_to(self.cursor.saturating_sub(1)),
@@ -374,6 +391,9 @@ impl InputBox {
             }
             KeyCode::Enter => outcome = Outcome::Submit,
             _ => {}
+        }
+        if anchor.is_some() {
+            self.anchor = anchor;
         }
         if before.is_some_and(|before| before != self.buffer) {
             // O texto mudou (também com uma quebra de linha do Shift+Enter):
@@ -416,6 +436,18 @@ impl InputBox {
         let token = mention::token(self.mentions.len());
         self.mentions.push(Mention::Paste { number, text });
         self.insert_char(token);
+    }
+
+    /// Shift+↑ (`step` -1) ou Shift+↓ (1): a linha de cima ou de baixo, como
+    /// na tela; sem ela, o começo ou o fim do texto.
+    fn select_row(&mut self, step: isize) {
+        let rows = self.screen_rows();
+        let (row, column) = self.row_and_column(&rows);
+        match row.checked_add_signed(step).filter(|r| *r < rows.len()) {
+            Some(row) => self.move_to_row(&rows, row, column),
+            None if step < 0 => self.move_to(0),
+            None => self.move_to(self.len()),
+        }
     }
 
     /// ↑: sobe uma linha do texto, como ele está na tela (uma linha longa

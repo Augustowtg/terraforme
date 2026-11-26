@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.27] - 2026-11-26
+
+### Adicionado
+
+- **Shift + seta** seleciona o texto do input: Shift+←/→ um caractere, Shift+Home/End até o começo ou o fim, Shift+↑/↓ uma linha (na primeira ou na última, até o começo ou o fim, sem trocar o texto pela mensagem enviada). O trecho selecionado é substituído ao digitar, apagado com Backspace/Delete e copiado com Ctrl+Shift+C, como a seleção do mouse (#102).
+- O histórico mostra o que o agente fez em cada pensamento numa **árvore**: o pensamento com a 💡 e, embaixo, os passos e as ferramentas dele (`├─ ⏺ Bash(ls)`, com o resultado `⎿` sob a ferramenta e `└─` no último). Os passos que não vêm depois de um pensamento (ex.: as ferramentas do Antigravity) abrem embaixo de um `💡 Pensando...`; o "Pensando..." do Claude dá lugar ao texto do pensamento quando ele chega, e o "Preparando Bash..." vira a própria ferramenta, num galho só (#102).
+
 ## [0.14.26] - 2026-11-26
 
 ### Corrigido
