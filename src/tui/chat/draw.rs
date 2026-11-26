@@ -109,6 +109,12 @@ impl Chat {
                 theme::tokens_variant(self.tokens_used),
             ));
         }
+        if let Some(n) = self.workspace_tokens.filter(|&n| n > 0) {
+            badges.push((
+                format!("Workspace: {} Tokens", compact_count(n)),
+                theme::tokens_variant(n),
+            ));
+        }
         badges
     }
 
