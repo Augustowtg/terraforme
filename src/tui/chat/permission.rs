@@ -69,6 +69,8 @@ pub struct Prompts {
 }
 
 const OTHER_LABEL: &str = "Outro…";
+/// O tamanho máximo do [`Prompts::summary`].
+const SUMMARY_CHARS: usize = 160;
 
 impl Prompts {
     pub fn push(&mut self, request: Request) {
@@ -80,6 +82,24 @@ impl Prompts {
 
     pub fn current(&self) -> Option<&Request> {
         self.queue.front()
+    }
+
+    /// O pedido da frente numa linha, para as outras janelas verem que ele
+    /// espera (ex.: `Pergunta: Qual cor?`, `Permissão: Bash ls`).
+    pub fn summary(&self) -> Option<String> {
+        let request = self.current()?;
+        let what = format!("{} {}", request.name, request.detail);
+        let text = match &request.kind {
+            Kind::Question { questions, .. } => format!(
+                "Pergunta: {}",
+                questions.first().map_or("", |q| q.text.as_str())
+            ),
+            Kind::Ask { .. } | Kind::Remote { .. } => format!("Permissão: {what}"),
+            Kind::Blocked { .. } => format!("Bloqueado: {what}"),
+            Kind::Password { .. } => format!("Senha do sudo: {}", request.detail),
+        };
+        // Curto: vai ao hub em cada status.
+        Some(text.trim().chars().take(SUMMARY_CHARS).collect())
     }
 
     pub fn is_open(&self) -> bool {

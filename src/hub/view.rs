@@ -197,6 +197,7 @@ mod tests {
             title: "Principal".into(),
             name: None,
             task: None,
+            ask: None,
         };
         assert_eq!(tab_line(&tab), "Principal                 parado");
         let busy = Tab {

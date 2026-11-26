@@ -4,6 +4,16 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.26] - 2026-11-26
+
+### Corrigido
+
+- As perguntas do **Antigravity** aparecem no chat. A ferramenta `ask_question` do `agy` era pulada sozinha no `-p` (`User Skipped`) e o terra nunca a mostrava; o agente seguia sem a resposta. Agora, em todos os modos, um gancho `PreToolUse` só dela leva a pergunta ao chat, com as opções e o "Outro…", como a `AskUserQuestion` do Claude, e a resposta volta ao `agy` no motivo da negação do gancho, que o modelo lê (#100).
+
+### Adicionado
+
+- A aba **Terraforme** mostra, embaixo das sessões abertas, as perguntas e os pedidos de permissão que esperam resposta nos **outros terminais** e nas outras abas deste (`? <workspace> · <aba>: Pergunta: ...`), mesmo com o workspace fechado. Cada terra manda ao hub o pedido da frente de cada aba (`ask`, no `status`) (#100).
+
 ## [0.14.25] - 2026-11-25
 
 ### Corrigido

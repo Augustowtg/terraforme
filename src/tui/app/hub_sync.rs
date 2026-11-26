@@ -24,6 +24,7 @@ impl App {
                 title: title.to_string(),
                 name: chat.agent_name().map(str::to_string),
                 task: chat.activity().map(str::to_string),
+                ask: chat.pending_request(),
             })
             .collect();
         let task = tabs.iter().find_map(|tab| tab.task.clone());

@@ -285,6 +285,7 @@ impl TerraformeView {
         let (sessions, workspaces) = session_lines(hub, &self.expanded, self.selected);
         *self.workspaces.borrow_mut() = workspaces;
         lines.extend(sessions);
+        lines.extend(request_lines(hub));
         let shown = with_permissions(&self.boxes, &chat.waiting_runs());
         if !shown.is_empty() {
             lines.push(Line::default());
@@ -359,6 +360,43 @@ fn session_lines(
         }
     }
     (lines, names)
+}
+
+/// Os pedidos (perguntas e permissões) esperando o usuário nas outras
+/// janelas e nas outras abas desta: cada um com o workspace e a aba. O do
+/// chat principal desta janela fica de fora: ele já aparece no chat ao lado.
+/// Vazio sem pedidos.
+fn request_lines(hub: &HubView) -> Vec<Line<'static>> {
+    let Some((_, instances)) = hub.instances else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    for instance in instances.iter().filter(|i| i.health != Health::Gone) {
+        let own = hub.own == Some(instance.id.as_str());
+        // A primeira aba é sempre o chat principal (ver `App::hub_status`).
+        let tabs = instance.status.tabs.iter().skip(usize::from(own));
+        for tab in tabs {
+            let Some(ask) = &tab.ask else { continue };
+            lines.push(Line::from(vec![
+                Span::styled("   ? ", theme::variant(Variant::Warning)),
+                Span::styled(
+                    format!("{} · {}: ", instance.workspace, tab.title),
+                    theme::path(),
+                ),
+                Span::styled(ask.clone(), theme::variant(Variant::Warning)),
+            ]));
+        }
+    }
+    if !lines.is_empty() {
+        lines.splice(
+            0..0,
+            [
+                Line::default(),
+                Line::styled(" Esperando resposta", theme::section_title()),
+            ],
+        );
+    }
+    lines
 }
 
 /// Rodando é verde, parado é neutro, e quem saiu é vermelho; uma tarefa (o
@@ -446,6 +484,31 @@ mod tests {
         let (lines, _) = session_lines(&hub, &["Studio".to_string()], 0);
         assert!(lines.iter().any(|l| l.to_string().contains("▾ Studio")));
         assert!(lines.iter().any(|l| l.to_string().contains("rodando")));
+    }
+
+    #[test]
+    fn as_perguntas_de_outros_terminais_aparecem_embaixo_das_sessoes() {
+        let tab = |title: &str, ask: &str| crate::hub::protocol::Tab {
+            title: title.into(),
+            ask: Some(ask.into()),
+            ..Default::default()
+        };
+        let mut other = instance("cli", 2);
+        other.status.tabs = vec![tab("Principal", "Pergunta: Qual cor?")];
+        let mut own = instance("Studio", 1);
+        own.status.tabs = vec![tab("Principal", "Pergunta: já no chat")];
+        let instances = (true, vec![own, other]);
+        let hub = HubView {
+            instances: Some(&instances),
+            own: Some("id1"),
+        };
+        let lines: Vec<String> = request_lines(&hub).iter().map(|l| l.to_string()).collect();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("cli · Principal: Pergunta: Qual cor?"))
+        );
+        assert!(!lines.iter().any(|l| l.contains("já no chat")));
     }
 
     fn run(id: &str, agent: &str, state: RunState, finished: Option<u64>) -> Run {
