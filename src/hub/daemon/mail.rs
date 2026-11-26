@@ -9,6 +9,9 @@
 //! terra done → hub: {"t":"hello","proto":2,"role":"sender"}
 //!                   {"t":"done","run":"…","summary":"…"}
 //! hub → terra done: {"t":"ok"} ou {"t":"rejected",…}
+//! app remoto → hub:  {"t":"input","tab":"<id da aba>","text":"…"}
+//! hub → app remoto:  {"t":"ok"} ou {"t":"rejected",…}
+//! hub → janela:     {"t":"input","tab":"…","text":"…"} (digitado na aba)
 //! hub → janela:     {"t":"deliver","tab":"<id da aba>","message":{ … }}
 //!                   {"t":"name_rejected","tab":"…","name":"…","reason":"…"}
 //! janela → hub:     {"t":"ack","id":"…"}
@@ -41,6 +44,21 @@ impl State {
                 let tab = tabs.iter().find(|tab| tab["name"] == name)?;
                 Some((&entry.outbox, tab["id"].as_str()?.to_string()))
             })
+    }
+}
+
+impl State {
+    /// A fila de saída da janela viva que tem a aba de id `tab`.
+    fn tab_window(&self, tab: &str) -> Option<&Outbox> {
+        self.instances
+            .iter()
+            .filter(|(_, entry)| entry.health != Health::Gone)
+            .find(|(_, entry)| {
+                entry.info["status"]["tabs"]
+                    .as_array()
+                    .is_some_and(|tabs| tabs.iter().any(|t| t["id"] == tab))
+            })
+            .map(|(_, entry)| &entry.outbox)
     }
 }
 
@@ -128,6 +146,22 @@ impl Hub {
                 Err(reject) => json!({"t": "rejected", "code": reject.code, "text": reject.text}),
             };
             output.push(reply);
+            return;
+        }
+        if msg["t"] == "input" {
+            let tab = msg["tab"].as_str().unwrap_or_default();
+            let text = msg["text"].as_str().unwrap_or_default();
+            let state = self.state();
+            let pushed = state
+                .tab_window(tab)
+                .map(|outbox| outbox.push(json!({"t": "input", "tab": tab, "text": text})));
+            output.push(match pushed {
+                Some(true) => json!({"t": "ok"}),
+                Some(false) => {
+                    json!({"t": "rejected", "code": "aba", "text": "a janela da aba não respondeu"})
+                }
+                None => json!({"t": "rejected", "code": "aba", "text": "aba não encontrada"}),
+            });
             return;
         }
         let reply = match Message::from_json(&msg["message"]).filter(|m| valid_id(&m.id)) {

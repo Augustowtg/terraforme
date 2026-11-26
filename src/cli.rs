@@ -55,6 +55,8 @@ enum Command {
         /// O resumo do que foi feito
         summary: Vec<String>,
     },
+    /// Inicia o servidor HTTP para controle e monitoramento remoto pelo app mobile
+    Remote(RemoteArgs),
 
     /// O daemon orquestrador: um por usuário, iniciado pelo primeiro terra e
     /// fechado com o último (uso interno)
@@ -73,6 +75,17 @@ enum Command {
         /// O arquivo do canal do chat
         channel: PathBuf,
     },
+}
+
+#[derive(Args)]
+pub struct RemoteArgs {
+    /// Porta onde o servidor HTTP vai escutar
+    #[arg(long, default_value_t = crate::remote::PORT)]
+    pub port: u16,
+
+    /// Endereço de bind (0.0.0.0 para conexões da rede local/Wi-Fi)
+    #[arg(long, default_value = "0.0.0.0")]
+    pub bind: String,
 }
 
 #[derive(Args)]
@@ -192,6 +205,7 @@ pub fn run() -> Result<()> {
         Command::Status(args) => status(args.json)?,
         Command::Send(args) => send(args)?,
         Command::Done { summary } => done(&summary.join(" "))?,
+        Command::Remote(args) => crate::remote::serve(&args.bind, args.port)?,
         Command::Handoff(HandoffCommand::New { agent }) => {
             let (from, _) = orchestrator::sender();
             let home = hub::endpoint::Endpoint::current()?.home;

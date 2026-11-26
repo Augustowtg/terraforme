@@ -4,6 +4,17 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.21] - 2026-11-25
+
+### Corrigido
+
+- O app do celular conecta no terra. O servidor do app (porta 8765) só existia na branch da 0.14.17, que não foi lançada; agora ele abre na rede junto com o terra, sem senha por enquanto, e `terra remote` continua para rodá-lo à mão. O app procura o terra na rede ao abrir e de novo a cada 10 s enquanto não achar, então funciona mesmo se o terra do PC abrir depois do app.
+
+### Adicionado
+
+- `POST /api/input`: o app digita na aba do terra aberto no PC, como no teclado.
+- App Android: a aba Instâncias mostra as abas abertas de cada terra e o input que digita nelas (#81, #90).
+
 ## [0.14.20] - 2026-11-24
 
 ### Adicionado

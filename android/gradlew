@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+# Resolve gradle binary
+GRADLE_BIN="/home/augusto/.gradle/wrapper/dists/gradle-8.10.2-bin/a04bxjujx95o3nb99gddekhwo/gradle-8.10.2/bin/gradle"
+
+if [ -f "$GRADLE_BIN" ]; then
+    exec "$GRADLE_BIN" "$@"
+elif command -v gradle >/dev/null 2>&1; then
+    exec gradle "$@"
+else
+    echo "Erro: Gradle não encontrado. Instale o Gradle ou aponte GRADLE_BIN."
+    exit 1
+fi

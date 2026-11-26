@@ -371,6 +371,24 @@ mod messages {
     }
 
     #[test]
+    fn remote_input_reaches_the_window_of_the_tab() {
+        let hub = Hub::start("");
+        let window = hub.window("t1", "frontend");
+        let reply = client::send_input(&hub.endpoint, "t1", "rode os testes").unwrap();
+        assert_eq!(reply["t"], "ok");
+        assert_eq!(
+            next_event(&window),
+            Event::Input {
+                tab: "t1".into(),
+                text: "rode os testes".into()
+            }
+        );
+        let reply = client::send_input(&hub.endpoint, "nenhuma", "oi").unwrap();
+        assert_eq!(reply["t"], "rejected");
+        drop(window);
+    }
+
+    #[test]
     fn a_name_belongs_to_one_tab_and_never_to_a_configured_agent() {
         // Pausado: a mensagem fica na fila (o despacho é testado em `dispatch`).
         let hub = Hub::start("[global]\npausado = true\n[agents.backend]\ncwd = \"/proj/api\"\n");

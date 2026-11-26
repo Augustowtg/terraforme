@@ -52,6 +52,9 @@ mod mail;
 
 /// Roda o hub deste usuário até ele ficar sem conexões.
 pub fn run() -> Result<()> {
+    // O servidor do app mobile, aberto na rede enquanto o hub vive; com a
+    // porta ocupada (outro hub), o hub segue sem ele.
+    thread::spawn(|| crate::remote::listen_default());
     serve(&Endpoint::current()?, super::IDLE_EXIT)
 }
 

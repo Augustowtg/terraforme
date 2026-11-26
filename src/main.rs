@@ -6,6 +6,7 @@ mod files;
 mod hub;
 mod orchestrator;
 mod platform;
+mod remote;
 mod settings;
 mod sudo;
 mod theme;
