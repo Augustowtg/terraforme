@@ -27,6 +27,8 @@ use crate::agent::{Usage, UsageWindow};
 const URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const BETA: &str = "oauth-2025-04-20";
 const CREDENTIALS: &str = ".credentials.json";
+/// A trava da renovação do token, na pasta da conta.
+const REFRESH_LOCK: &str = ".terra-refresh.lock";
 /// Segundos até desistir da chamada.
 const TIMEOUT: &str = "10";
 
@@ -197,17 +199,31 @@ impl Credentials {
 
 /// As credenciais, renovadas pelo `refresh` se o token venceu. Se a
 /// renovação falhar, fica o token velho, e o 401 explica.
-fn fresh_credentials(config_dir: &Path, mut refresh: Command) -> Result<Credentials, String> {
-    let credentials = read_credentials(config_dir)?;
-    if !credentials.expired() {
-        return Ok(credentials);
-    }
-    let _ = refresh
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+fn fresh_credentials(config_dir: &Path, refresh: Command) -> Result<Credentials, String> {
+    refresh_if_expired(config_dir, refresh);
     read_credentials(config_dir)
+}
+
+/// Renova o token vencido da conta com o `refresh` (o `claude auth status`),
+/// um processo por vez. Dois `claude` renovando juntos (ex.: o consumo, o
+/// catálogo e o chat ao abrir o terra depois de reiniciar o PC) gastam o
+/// mesmo refresh token, e o servidor revoga o login. Quem espera a trava
+/// acha o token já renovado e não roda o `refresh`.
+pub fn refresh_if_expired(config_dir: &Path, mut refresh: Command) {
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(config_dir.join(REFRESH_LOCK));
+    // Sem a trava (pasta só de leitura), renova assim mesmo.
+    let _guard = lock.as_ref().map(|file| file.lock());
+    if read_credentials(config_dir).is_ok_and(|c| c.expired()) {
+        let _ = refresh
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 fn read_credentials(config_dir: &Path) -> Result<Credentials, String> {
@@ -548,5 +564,38 @@ mod tests {
         let credentials = fresh_credentials(dir.path(), refresh).unwrap();
         assert_eq!(credentials.token, "novo");
         assert!(!credentials.expired());
+    }
+
+    #[test]
+    fn renews_the_expired_token_once_when_several_ask_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CREDENTIALS);
+        fs::write(
+            &path,
+            r#"{"claudeAiOauth":{"accessToken":"velho","expiresAt":1}}"#,
+        )
+        .unwrap();
+        let runs = dir.path().join("runs");
+        // Cada renovação de mentira conta uma linha e demora, para as outras
+        // chegarem enquanto ela roda.
+        let script = format!(
+            r#"echo x >> '{}'; sleep 0.3; echo '{{"claudeAiOauth":{{"accessToken":"novo","expiresAt":9999999999999}}}}' > '{}'"#,
+            runs.display(),
+            path.display()
+        );
+        let threads: Vec<_> = (0..3)
+            .map(|_| {
+                let (dir, script) = (dir.path().to_path_buf(), script.clone());
+                thread::spawn(move || {
+                    let mut refresh = Command::new("sh");
+                    refresh.arg("-c").arg(script);
+                    refresh_if_expired(&dir, refresh);
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(fs::read_to_string(runs).unwrap().lines().count(), 1);
     }
 }

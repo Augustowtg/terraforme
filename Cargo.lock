@@ -2190,7 +2190,7 @@ dependencies = [
 
 [[package]]
 name = "terraforme"
-version = "0.14.24"
+version = "0.14.25"
 dependencies = [
  "anyhow",
  "arboard",

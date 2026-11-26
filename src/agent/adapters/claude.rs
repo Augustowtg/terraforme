@@ -200,6 +200,7 @@ impl ChatAdapter for ClaudeAdapter {
     fn interactive(&self, cwd: &Path, options: Interactive<'_>) -> Option<Command> {
         let bin = self.bin.as_ref()?;
         let dir = self.account_dir(options.account).ok()?;
+        refresh_login(bin, dir.as_deref());
         let mut cmd = match options.extensions {
             Some(extensions) => launch(
                 bin,
@@ -257,11 +258,7 @@ impl ChatAdapter for ClaudeAdapter {
     /// O consumo da conta, do endpoint de uso do Claude (sem gastar tokens).
     fn load_usage(&self, account: Option<&str>) -> Option<Receiver<Result<Usage, String>>> {
         let account_dir = self.account_dir(account).ok()?;
-        let mut refresh = command(self.bin.as_ref()?);
-        refresh.args(["auth", "status"]);
-        if let Some(dir) = &account_dir {
-            refresh.env("CLAUDE_CONFIG_DIR", dir);
-        }
+        let refresh = refresh_command(self.bin.as_ref()?, account_dir.as_deref());
         let dir = match account_dir {
             Some(dir) => dir,
             None => default_config_dir()?,
@@ -562,6 +559,27 @@ fn default_json(home: &Path) -> PathBuf {
 }
 
 /// A pasta que o `claude` usa sem conta escolhida.
+/// O `claude auth status` da conta, que renova o token vencido.
+fn refresh_command(claude: &Path, account_dir: Option<&Path>) -> Command {
+    let mut cmd = command(claude);
+    cmd.args(["auth", "status"]);
+    if let Some(dir) = account_dir {
+        cmd.env("CLAUDE_CONFIG_DIR", dir);
+    }
+    cmd
+}
+
+/// Renova o token vencido da conta antes de abrir o `claude`, um processo
+/// por vez (veja [`usage::refresh_if_expired`]).
+fn refresh_login(claude: &Path, account_dir: Option<&Path>) {
+    let dir = account_dir
+        .map(Path::to_path_buf)
+        .or_else(default_config_dir);
+    if let Some(dir) = dir {
+        usage::refresh_if_expired(&dir, refresh_command(claude, account_dir));
+    }
+}
+
 fn default_config_dir() -> Option<PathBuf> {
     env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
@@ -609,6 +627,7 @@ impl Run {
         request: Request<'_>,
         config_dir: Option<&Path>,
     ) -> Result<Run, String> {
+        refresh_login(claude, config_dir);
         let auto_allow = request.mode == PermissionMode::Yolo;
         let settings = hook_settings(&request.extensions.hooks);
         let mut cmd = launch(
