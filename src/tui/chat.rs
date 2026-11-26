@@ -120,6 +120,9 @@ pub struct Chat {
     permission_mode: PermissionMode,
     spinner_frame: usize,
     tokens_used: u64,
+    /// O consumo geral da workspace (todos os chats), mostrado ao lado do
+    /// deste chat; o `App` preenche a cada tick (`None` quando oculto).
+    pub(crate) workspace_tokens: Option<u64>,
     /// Os tokens de cache gastos neste chat.
     cache_tokens_used: u64,
     /// O que o turno em andamento já somou nos dois acima (fora e de cache).
@@ -204,6 +207,7 @@ impl Default for Chat {
             permission_mode: PermissionMode::default(),
             spinner_frame: 0,
             tokens_used: 0,
+            workspace_tokens: None,
             cache_tokens_used: 0,
             turn_spent: (0, 0),
             context: None,

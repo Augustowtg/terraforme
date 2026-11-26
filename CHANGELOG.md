@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.31] - 2026-11-26
+
+### Alterado
+
+- O consumo geral da workspace sai do lado do "Sair" e vira um badge (`Workspace: X Tokens`) ao lado do consumo do modelo, embaixo do input (#110).
+
 ## [0.14.30] - 2026-11-26
 
 ### Alterado

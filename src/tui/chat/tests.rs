@@ -1154,6 +1154,13 @@ fn mode_badge_shows_once_agent_is_active() {
 }
 
 #[test]
+fn workspace_badge_shows_the_workspace_total() {
+    let mut chat = Chat::default();
+    chat.workspace_tokens = Some(1234);
+    assert_eq!(chat.badges()[0].0, "Workspace: 1.2K Tokens");
+}
+
+#[test]
 fn badges_appear_only_when_active() {
     let badge_row = |chat: &Chat| {
         let terminal = render(chat);

@@ -395,6 +395,14 @@ impl App {
             tab.chat.tick();
             turn_finished |= tab.chat.take_turn_finished();
         }
+        let total = self.closed_tokens
+            + self.chat.tokens_used()
+            + self.chats.iter().map(|c| c.chat.tokens_used()).sum::<u64>();
+        let total = self.settings.usage.total_visible.then_some(total);
+        self.chat.workspace_tokens = total;
+        for tab in &mut self.chats {
+            tab.chat.workspace_tokens = total;
+        }
         // O consumo só é carregado com a aba aberta.
         if self.tab == Tab::Consumo {
             self.usage

@@ -81,16 +81,11 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let total = self.total_label();
-        let [tabs_area, total_area, quit_area] = Layout::horizontal([
+        let [tabs_area, quit_area] = Layout::horizontal([
             Constraint::Min(0),
-            Constraint::Length(total.as_ref().map_or(0, |t| t.width() as u16)),
             Constraint::Length(QUIT_LABEL.len() as u16),
         ])
         .areas(inner);
-        if let Some(total) = total {
-            frame.render_widget(Paragraph::new(total), total_area);
-        }
 
         let mut spans = Vec::new();
         let tabs = Tab::ALL
@@ -123,23 +118,6 @@ impl App {
             Paragraph::new(Span::styled(QUIT_LABEL, quit_style)).alignment(Alignment::Right),
             quit_area,
         );
-    }
-
-    /// O consumo geral, ao lado do "Sair": os tokens de todos os chats deste
-    /// terra (entrada e saída, sem os de cache, como no consumo do chat).
-    fn total_label(&self) -> Option<Span<'static>> {
-        let tokens = self.closed_tokens
-            + self.chat.tokens_used()
-            + self.chats.iter().map(|c| c.chat.tokens_used()).sum::<u64>();
-        (self.settings.usage.total_visible && tokens > 0).then(|| {
-            Span::styled(
-                format!(
-                    "Consumo geral: {} Tokens  ",
-                    crate::tui::chat::compact_count(tokens)
-                ),
-                theme::variant(theme::tokens_variant(tokens)),
-            )
-        })
     }
 
     /// A barra de chats, embaixo da barra de abas e no mesmo tema: o chat
