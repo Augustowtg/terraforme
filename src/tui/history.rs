@@ -234,6 +234,33 @@ impl History {
         }
     }
 
+    /// A palavra sob a célula da tela (para o Ctrl+clique abrir o link ou o
+    /// arquivo): o texto entre espaços e bordas, na linha da tela.
+    // shortcut: um link quebrado em duas linhas vem cortado; juntar as linhas `wrapped` se incomodar.
+    pub fn word_at(&self, column: u16, row: u16) -> Option<String> {
+        let (r, col) = self.point_at(column, row);
+        let rows = self.rows.borrow();
+        let glyphs = &rows.get(r)?.glyphs;
+        let mut x = 0;
+        let at = glyphs.iter().position(|g| {
+            x += g.ch.width().unwrap_or(0);
+            x > col
+        })?;
+        let part = |g: &Glyph| g.text && !g.ch.is_whitespace() && !matches!(g.ch, '│' | '`');
+        if !part(&glyphs[at]) {
+            return None;
+        }
+        let start = glyphs[..at]
+            .iter()
+            .rposition(|g| !part(g))
+            .map_or(0, |i| i + 1);
+        let end = glyphs[at..]
+            .iter()
+            .position(|g| !part(g))
+            .map_or(glyphs.len(), |i| at + i);
+        Some(glyphs[start..end].iter().map(|g| g.ch).collect())
+    }
+
     /// Ponto do histórico sob a célula da tela (limitado à parte visível).
     fn point_at(&self, column: u16, row: u16) -> Point {
         let view = self.view.get();
@@ -401,7 +428,9 @@ impl History {
                 rows.push(Row::default());
             }
             if let Entry::Assistant(text) = entry {
-                rows.extend(markdown::layout(text.trim(), width, Some(i)));
+                let inner = (width as usize).max(5) - 4;
+                let body = markdown::layout(text.trim(), inner as u16, Some(i));
+                rows.extend(framed(body, width, theme::border(), Some(i)));
                 continue;
             }
             if let Entry::User(text) = entry {
@@ -418,7 +447,24 @@ impl History {
 /// A mensagem do usuário numa caixa de borda arredondada (cor vinho), na
 /// largura toda.
 fn user_box(text: &str, width: u16, entry: Option<usize>) -> Vec<Row> {
-    let border = theme::user_border();
+    let inner = (width as usize).max(5) - 4;
+    let body = text
+        .split('\n')
+        .flat_map(|line| {
+            wrap(
+                Vec::new(),
+                glyphs(line, theme::text(), true),
+                inner as u16,
+                entry,
+            )
+        })
+        .collect();
+    framed(body, width, theme::user_border(), entry)
+}
+
+/// `body`, já quebrado em `width - 4` colunas, numa caixa de borda
+/// arredondada na largura toda.
+fn framed(body: Vec<Row>, width: u16, border: Style, entry: Option<usize>) -> Vec<Row> {
     // Borda + espaço de cada lado.
     let outer = (width as usize).max(5);
     let inner = outer - 4;
@@ -432,28 +478,21 @@ fn user_box(text: &str, width: u16, entry: Option<usize>) -> Vec<Row> {
         entry,
     };
     let mut rows = vec![edge('╭', '╮')];
-    for line in text.split('\n') {
-        for row in wrap(
-            Vec::new(),
-            glyphs(line, theme::text(), true),
-            inner as u16,
+    for row in body {
+        let used = measure(&row.glyphs);
+        let mut gs = glyphs("│ ", border, false);
+        gs.extend(row.glyphs);
+        gs.extend(glyphs(
+            &" ".repeat(inner.saturating_sub(used)),
+            Style::new(),
+            false,
+        ));
+        gs.extend(glyphs(" │", border, false));
+        rows.push(Row {
+            glyphs: gs,
+            wrapped: row.wrapped,
             entry,
-        ) {
-            let used = measure(&row.glyphs);
-            let mut gs = glyphs("│ ", border, false);
-            gs.extend(row.glyphs);
-            gs.extend(glyphs(
-                &" ".repeat(inner.saturating_sub(used)),
-                Style::new(),
-                false,
-            ));
-            gs.extend(glyphs(" │", border, false));
-            rows.push(Row {
-                glyphs: gs,
-                wrapped: row.wrapped,
-                entry,
-            });
-        }
+        });
     }
     rows.push(edge('╰', '╯'));
     rows
@@ -667,16 +706,18 @@ mod tests {
             summary: "a.txt".into(),
         });
         history.push(Entry::Error("falhou".into()));
-        let lines = screen(&history, 30, 12);
+        let lines = screen(&history, 30, 14);
         assert_eq!(
-            &lines[1..12],
+            &lines[1..14],
             [
                 "  ╭────────────────────────╮",
                 "  │ lista                  │",
                 "  │ arquivos               │",
                 "  ╰────────────────────────╯",
                 "",
-                "  ⏺ Vou listar.",
+                "  ╭────────────────────────╮",
+                "  │ ⏺ Vou listar.          │",
+                "  ╰────────────────────────╯",
                 "",
                 "  ⏺ Bash(ls)",
                 "    ⎿ a.txt",
@@ -690,9 +731,12 @@ mod tests {
     fn wraps_by_word_and_aligns_continuation() {
         let mut history = History::default();
         history.push(Entry::Assistant("um dois tres quatro".into()));
-        // Área de texto: 14 - 4 (padding) = 10 colunas.
-        let lines = screen(&history, 14, 6);
-        assert_eq!(&lines[1..4], ["  ⏺ um dois", "    tres", "    quatro"]);
+        // Área de texto: 18 - 4 (padding) = 14 colunas; 10 dentro da caixa.
+        let lines = screen(&history, 18, 7);
+        assert_eq!(
+            &lines[2..5],
+            ["  │ ⏺ um dois  │", "  │   tres     │", "  │   quatro   │"]
+        );
     }
 
     #[test]
@@ -745,13 +789,13 @@ mod tests {
         let mut history = History::default();
         history.push(Entry::User("oi".into()));
         history.push(Entry::Assistant("um dois tres quatro".into()));
-        screen(&history, 14, 8);
-        // Texto começa em x = 2, y = 1; a caixa do "oi" vai de y = 1 a 3.
-        // "⏺ um dois" fica em y = 5, e as continuações "tres" e "quatro" em
-        // y = 6 e 7.
-        assert_eq!(history.mouse_down(4, 5), None);
-        history.mouse_drag(7, 6);
-        assert_eq!(history.mouse_up(7, 6).as_deref(), Some("um dois tres"));
+        screen(&history, 18, 10);
+        // Texto começa em x = 2, y = 1; a caixa do "oi" vai de y = 1 a 3 e a
+        // da resposta começa em y = 5. "⏺ um dois" fica em y = 6, com o texto
+        // a partir de x = 6, e as continuações "tres" e "quatro" em y = 7 e 8.
+        assert_eq!(history.mouse_down(6, 6), None);
+        history.mouse_drag(9, 7);
+        assert_eq!(history.mouse_up(9, 7).as_deref(), Some("um dois tres"));
     }
 
     #[test]
@@ -759,12 +803,22 @@ mod tests {
         let mut history = History::default();
         history.push(Entry::User("pergunta".into()));
         history.push(Entry::Assistant("resposta".into()));
-        screen(&history, 30, 8);
+        screen(&history, 30, 9);
         history.mouse_down(0, 1);
         assert_eq!(
-            history.mouse_up(29, 5).as_deref(),
+            history.mouse_up(29, 6).as_deref(),
             Some("pergunta\n\nresposta")
         );
+    }
+
+    #[test]
+    fn word_at_takes_the_word_under_the_mouse() {
+        let mut history = History::default();
+        history.push(Entry::Assistant("veja https://a.com/x agora".into()));
+        screen(&history, 40, 6);
+        // "⏺ veja https..." na linha 2, texto a partir de x = 6.
+        assert_eq!(history.word_at(13, 2).as_deref(), Some("https://a.com/x"));
+        assert_eq!(history.word_at(3, 2), None, "a borda não");
     }
 
     #[test]
@@ -782,22 +836,22 @@ mod tests {
         let mut history = History::default();
         history.push(Entry::User("oi".into()));
         history.push(Entry::Assistant("um dois tres quatro\nfim".into()));
-        screen(&history, 14, 10);
-        history.mouse_down(6, 6);
-        history.mouse_up(6, 6);
+        screen(&history, 18, 12);
+        history.mouse_down(8, 7);
+        history.mouse_up(8, 7);
         history.tick();
         assert_eq!(
-            history.mouse_down(6, 6).as_deref(),
+            history.mouse_down(8, 7).as_deref(),
             Some("um dois tres quatro\nfim")
         );
         // A seleção aparece destacada.
-        let mut terminal = Terminal::new(TestBackend::new(14, 10)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(18, 12)).unwrap();
         terminal
             .draw(|frame| history.draw(frame, frame.area(), Vec::new()))
             .unwrap();
         let bg = theme::selection().bg.unwrap();
-        assert_eq!(terminal.backend().buffer()[(4, 5)].bg, bg);
-        assert_ne!(terminal.backend().buffer()[(2, 5)].bg, bg, "o prefixo não");
+        assert_eq!(terminal.backend().buffer()[(6, 6)].bg, bg);
+        assert_ne!(terminal.backend().buffer()[(4, 6)].bg, bg, "o prefixo não");
     }
 
     #[test]
@@ -824,9 +878,9 @@ mod tests {
         let mut history = History::default();
         history.push(Entry::User("a\tb\r".into()));
         history.push(Entry::Assistant("```go\n\tx := 1\n```".into()));
-        let lines = screen(&history, 30, 8);
+        let lines = screen(&history, 30, 11);
         assert!(lines[2].starts_with("  │ a   b "), "{:?}", lines[2]);
-        assert!(lines[6].starts_with("    │     x := 1"), "{:?}", lines[6]);
+        assert!(lines[7].starts_with("  │   │     x := 1"), "{:?}", lines[7]);
         // Na cópia, o `\r` não vai.
         history.mouse_down(0, 2);
         assert_eq!(history.mouse_up(29, 2).as_deref(), Some("a   b"));
@@ -858,7 +912,7 @@ mod tests {
         // De volta ao fim, acompanha a resposta.
         history.follow();
         history.append_text("\n\ncinco");
-        assert_eq!(text_of(&screen(&history, 20, 6))[5], "    cinco");
+        assert_eq!(text_of(&screen(&history, 20, 6))[4], "  │   cinco      │");
     }
 
     #[test]
@@ -868,22 +922,24 @@ mod tests {
         history.start_text();
         history.append_text("um dois");
         assert_eq!(
-            &screen(&history, 30, 6)[1..6],
+            &screen(&history, 30, 8)[1..8],
             [
                 "  ╭────────────────────────╮",
                 "  │ oi                     │",
                 "  ╰────────────────────────╯",
                 "",
-                "  ⏺ um dois"
+                "  ╭────────────────────────╮",
+                "  │ ⏺ um dois              │",
+                "  ╰────────────────────────╯",
             ]
         );
         history.append_text(" tres quatro");
-        assert_eq!(screen(&history, 30, 6)[5], "  ⏺ um dois tres quatro");
+        assert_eq!(screen(&history, 30, 8)[6], "  │ ⏺ um dois tres quatro  │");
         assert_eq!(
-            &screen(&history, 14, 8)[5..8],
-            ["  ⏺ um dois", "    tres", "    quatro"]
+            &screen(&history, 18, 10)[6..9],
+            ["  │ ⏺ um dois  │", "  │   tres     │", "  │   quatro   │"]
         );
         history.push(Entry::Info("fim".into()));
-        assert_eq!(screen(&history, 30, 8)[7], "  · fim");
+        assert_eq!(screen(&history, 30, 10)[9], "  · fim");
     }
 }

@@ -35,7 +35,7 @@ use super::widgets::badge;
 use crate::agent::{self, AgentEvent, Catalog, ChatAdapter, PermissionMode, Session, UsageWindow};
 use crate::db::history::Conversation;
 use crate::extension::Contribution;
-use crate::platform::clipboard;
+use crate::platform::{clipboard, opener};
 use crate::settings::{AgentSettings, ContextSettings, StartMode, UsageSettings};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -516,6 +516,12 @@ impl Chat {
         match mouse.kind {
             MouseEventKind::ScrollUp => self.history.scroll_up(WHEEL_LINES),
             MouseEventKind::ScrollDown => self.history.scroll_down(WHEEL_LINES),
+            MouseEventKind::Down(MouseButton::Left)
+                if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.history.contains(column, row) =>
+            {
+                self.open_link(column, row)
+            }
             MouseEventKind::Down(MouseButton::Left) if self.history.contains(column, row) => {
                 self.input.clear_selection();
                 if let Some(text) = self.history.mouse_down(column, row) {
@@ -545,6 +551,22 @@ impl Chat {
                 }
             }
         }
+    }
+
+    /// Ctrl+clique no histórico: abre o link no navegador ou o arquivo no
+    /// VS Code (o terra captura o mouse, então o terminal não abre).
+    fn open_link(&mut self, column: u16, row: u16) {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let target = self
+            .history
+            .word_at(column, row)
+            .and_then(|word| opener::target(&word, &cwd));
+        let message = match target {
+            Some(target) if opener::open(&target) => "Abrindo...".to_string(),
+            Some(_) => "Não foi possível abrir".to_string(),
+            None => "Ctrl+clique abre um link ou arquivo".to_string(),
+        };
+        self.notice = Some((message, NOTICE_TICKS));
     }
 
     /// Ctrl+Shift+C: copia o trecho selecionado no histórico ou no input.

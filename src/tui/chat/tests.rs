@@ -961,10 +961,11 @@ fn selecting_history_copies_and_shows_notice() {
     terminal
         .draw(|frame| chat.draw_history(frame, frame.area()))
         .unwrap();
-    // "⏺ resposta do agente" na linha 1, texto a partir de x = 4.
-    mouse(&mut chat, MouseEventKind::Down(MouseButton::Left), 4, 1);
-    mouse(&mut chat, MouseEventKind::Drag(MouseButton::Left), 11, 1);
-    mouse(&mut chat, MouseEventKind::Up(MouseButton::Left), 11, 1);
+    // "⏺ resposta do agente" na linha 2 (dentro da caixa), texto a partir
+    // de x = 6.
+    mouse(&mut chat, MouseEventKind::Down(MouseButton::Left), 6, 2);
+    mouse(&mut chat, MouseEventKind::Drag(MouseButton::Left), 13, 2);
+    mouse(&mut chat, MouseEventKind::Up(MouseButton::Left), 13, 2);
     assert_eq!(chat.help(), "Copiado (8 caracteres)");
     // O clique no histórico não começa a escrever no input.
     assert_eq!(chat.input.mode(), InputMode::Normal);
@@ -990,9 +991,9 @@ fn ctrl_shift_c_copies_the_history_selection() {
     terminal
         .draw(|frame| chat.draw_history(frame, frame.area()))
         .unwrap();
-    mouse(&mut chat, MouseEventKind::Down(MouseButton::Left), 4, 1);
-    mouse(&mut chat, MouseEventKind::Drag(MouseButton::Left), 11, 1);
-    mouse(&mut chat, MouseEventKind::Up(MouseButton::Left), 11, 1);
+    mouse(&mut chat, MouseEventKind::Down(MouseButton::Left), 6, 2);
+    mouse(&mut chat, MouseEventKind::Drag(MouseButton::Left), 13, 2);
+    mouse(&mut chat, MouseEventKind::Up(MouseButton::Left), 13, 2);
     for _ in 0..NOTICE_TICKS {
         chat.tick();
     }

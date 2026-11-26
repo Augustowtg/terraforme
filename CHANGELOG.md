@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.24] - 2026-11-25
+
+### Adicionado
+
+- A resposta do agente aparece numa caixa de borda arredondada, como a pergunta (a borda da resposta é cinza; a da pergunta, vinho).
+- Ctrl+clique num link do histórico abre o navegador, e num arquivo (`src/main.rs:12`) abre o VS Code na linha (`code -g`); sem o VS Code, abre no app padrão do sistema. Antes não abria nada: o terra captura o mouse, então o terminal não via o clique (#96).
+
 ## [0.14.23] - 2026-11-25
 
 ### Corrigido
