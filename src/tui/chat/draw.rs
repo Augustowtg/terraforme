@@ -163,6 +163,19 @@ impl Chat {
         }
         let status = extensions::status_line(self.agent_status);
         self.input.draw(frame, input, self.model_title(), status);
+        // A borda de baixo do input fica verde no tanto que resta das 5 horas.
+        if let Some(window) = &self.session_usage
+            && input.height > 0
+        {
+            let left = (100.0 - window.percent).clamp(0.0, 100.0) / 100.0;
+            let line = Rect {
+                y: input.bottom() - 1,
+                height: 1,
+                width: (f64::from(input.width) * left).round() as u16,
+                ..input
+            };
+            frame.buffer_mut().set_style(line, theme::alive());
+        }
         if let Some(menu) = &self.model_menu {
             let label = |m: &agent::ModelInfo| self.model_label_of(&m.id);
             menu.draw(frame, input, self.catalog.as_ref(), &label);

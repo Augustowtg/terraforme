@@ -1926,3 +1926,17 @@ fn the_sudo_of_the_agent_asks_the_password_in_the_chat() {
     assert_eq!(asked.join().unwrap().as_deref(), Some("s3nha"));
     assert!(!format!("{:?}", chat.history.entries()).contains("s3nha"));
 }
+
+#[test]
+fn input_bottom_line_is_green_for_the_session_left() {
+    let mut chat = Chat::default();
+    chat.set_session_usage(Some(session(42.0)));
+    let terminal = render(&chat);
+    let buffer = terminal.backend().buffer();
+    let green = theme::alive().fg;
+    // A borda de baixo do input: 58% de 60 colunas = 35.
+    let bottom = input::HEIGHT;
+    assert_eq!(buffer[(0, bottom)].fg, green.unwrap());
+    assert_eq!(buffer[(34, bottom)].fg, green.unwrap());
+    assert_ne!(buffer[(35, bottom)].fg, green.unwrap());
+}
