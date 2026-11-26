@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.28] - 2026-11-26
+
+### Adicionado
+
+- A borda de baixo do input fica verde no tanto que resta do consumo da sessão de 5 horas: cheia com a janela zerada, encolhendo conforme o uso (#104).
+
 ## [0.14.27] - 2026-11-26
 
 ### Adicionado
