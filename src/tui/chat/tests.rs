@@ -727,6 +727,7 @@ fn agent_events_update_history_status_and_consumption() {
         chat.history.entries(),
         [
             Entry::Assistant("oi".into()),
+            Entry::Step("Pensando...".into()),
             Entry::Tool {
                 name: "Bash".into(),
                 detail: "ls".into()
@@ -1696,6 +1697,7 @@ fn conversation_is_recorded_from_the_first_user_message() {
         recorded(&file),
         [
             row(1, "user", "oi"),
+            row(1, "info", "Pensando..."),
             row(1, "tool", "a.rs"),
             row(1, "assistant", "olá"),
         ]

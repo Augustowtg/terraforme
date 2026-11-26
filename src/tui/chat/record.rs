@@ -97,7 +97,8 @@ fn message(entry: &Entry) -> Message<'_> {
             summary,
         } => ("tool_error", None, summary),
         Entry::Error(text) => ("error", None, text),
-        Entry::Info(text) => ("info", None, text),
+        // Gravado como antes, quando os passos eram avisos.
+        Entry::Info(text) | Entry::Step(text) => ("info", None, text),
     };
     Message {
         role,
