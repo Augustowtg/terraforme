@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -694,7 +694,9 @@ fn logical_lines(entry: &Entry) -> Vec<(Vec<Glyph>, Vec<Glyph>)> {
     match entry {
         Entry::User(text) => {
             let prefix = theme::variant(Variant::Active).add_modifier(Modifier::BOLD);
-            prefixed(text, "› ", prefix, theme::text())
+            // O texto do usuário em destaque; o terminal não muda o tamanho da fonte.
+            let body = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
+            prefixed(text, "› ", prefix, body)
         }
         Entry::Assistant(text) => prefixed(
             text.trim(),
@@ -928,6 +930,14 @@ mod tests {
                 "  └─ 🤖  Agent(ler)",
             ]
         );
+    }
+
+    #[test]
+    fn user_text_is_bold_white() {
+        let lines = logical_lines(&Entry::User("oi".into()));
+        let style = lines[0].1[0].style;
+        assert_eq!(style.fg, Some(Color::White));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
