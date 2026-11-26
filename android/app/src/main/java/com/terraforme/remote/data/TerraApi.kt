@@ -33,8 +33,32 @@ class TerraApi {
         }
     }
 
-    suspend fun getStatus(baseUrl: String): List<Instance> = withContext(Dispatchers.IO) {
-        val jsonStr = httpGet("${cleanUrl(baseUrl)}/api/status")
+    /** O JSON cru do /api/status, que o app também guarda no SQLite. */
+    suspend fun getStatusJson(baseUrl: String): String = withContext(Dispatchers.IO) {
+        httpGet("${cleanUrl(baseUrl)}/api/status")
+    }
+
+    /** O IP do Tailscale que o terra em `baseUrl` informa, se ele tiver. */
+    suspend fun tailscaleIp(baseUrl: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            JSONObject(httpGet("${cleanUrl(baseUrl)}/api/health")).optString("tailscale").ifEmpty { null }
+        }.getOrNull()
+    }
+
+    /** As mensagens do chat da aba `tab`, a mais antiga primeiro. */
+    suspend fun getHistory(baseUrl: String, tab: String): List<ChatMessage> = withContext(Dispatchers.IO) {
+        val arr = JSONObject(httpGet("${cleanUrl(baseUrl)}/api/history/$tab")).optJSONArray("messages") ?: JSONArray()
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            ChatMessage(
+                role = o.optString("role"),
+                tool = if (o.isNull("tool")) null else o.optString("tool"),
+                content = o.optString("content")
+            )
+        }
+    }
+
+    fun parseStatus(jsonStr: String): List<Instance> {
         val json = JSONObject(jsonStr)
         val instancesArr = json.optJSONArray("instances") ?: JSONArray()
         val list = mutableListOf<Instance>()
@@ -80,7 +104,7 @@ class TerraApi {
                 )
             )
         }
-        list
+        return list
     }
 
     suspend fun getAgents(baseUrl: String): List<AgentInfo> = withContext(Dispatchers.IO) {
@@ -231,9 +255,8 @@ class TerraApi {
     }
 
     /**
-     * Procura o terra na rede: o localhost (USB com adb reverse) e cada IP da
-     * sub-rede /24 do celular, na porta padrão. Devolve a URL do primeiro que
-     * responde como terraforme.
+     * Procura o terra na rede: cada IP da sub-rede /24 do celular, na porta
+     * padrão. Devolve a URL do primeiro que responde como terraforme.
      */
     // shortcut: varre só /24; redes maiores pedem o IP à mão nas configurações.
     suspend fun discover(port: Int = DEFAULT_PORT): String? = coroutineScope {
@@ -244,8 +267,7 @@ class TerraApi {
             .filter { it.isSiteLocalAddress }
             .mapNotNull { it.hostAddress?.substringBeforeLast('.') }
             .distinct()
-        val candidates = listOf("http://localhost:$port") +
-            prefixes.flatMap { p -> (1..254).map { "http://$p.$it:$port" } }
+        val candidates = prefixes.flatMap { p -> (1..254).map { "http://$p.$it:$port" } }
         candidates
             .map { url -> async(Dispatchers.IO) { url.takeIf { isTerra(it) } } }
             .awaitAll()

@@ -31,12 +31,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -68,7 +66,6 @@ import com.terraforme.remote.ui.viewmodel.TerraUiState
 @Composable
 fun MonitorScreen(
     state: TerraUiState,
-    onRefresh: () -> Unit,
     onOpen: (Instance) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -88,21 +85,18 @@ fun MonitorScreen(
             // Header com Resumo
             item {
                 StatusOverviewHeader(
-                    isConnected = state.isConnected,
                     instanceCount = state.instances.size,
-                    runningCount = state.instances.count { it.status.isRunning },
-                    lastUpdated = state.lastUpdated,
-                    onRefresh = onRefresh
+                    runningCount = state.instances.count { it.status.isRunning }
                 )
             }
 
-            state.usage?.let { u -> item { UsageCard(u) } }
-
+            // Desconectado, a última lista salva da máquina continua embaixo do aviso.
             if (!state.isConnected) {
                 item {
                     DisconnectedCard(serverUrl = state.serverUrl, error = state.errorMessage)
                 }
-            } else if (state.instances.isEmpty()) {
+            }
+            if (state.isConnected && state.instances.isEmpty()) {
                 item {
                     EmptyInstancesCard()
                 }
@@ -117,11 +111,8 @@ fun MonitorScreen(
 
 @Composable
 fun StatusOverviewHeader(
-    isConnected: Boolean,
     instanceCount: Int,
-    runningCount: Int,
-    lastUpdated: String?,
-    onRefresh: () -> Unit
+    runningCount: Int
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -129,60 +120,16 @@ fun StatusOverviewHeader(
         shape = RoundedCornerShape(16.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val dotColor = if (isConnected) SuccessGreen else ErrorRed
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .background(dotColor, CircleShape)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (isConnected) "ONLINE" else "OFFLINE",
-                        color = dotColor,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (lastUpdated != null) {
-                        Text(
-                            text = "Atualizado às $lastUpdated",
-                            color = TextMuted,
-                            fontSize = 11.sp
-                        )
-                    }
-                    IconButton(onClick = onRefresh, modifier = Modifier.size(28.dp)) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Atualizar",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                StatPill(title = "Janelas do Terra", value = "$instanceCount", tint = TextPrimary)
-                StatPill(
-                    title = "Agentes Rodando",
-                    value = "$runningCount",
-                    tint = if (runningCount > 0) RunningBlue else TextSecondary
-                )
-            }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            StatPill(title = "Janelas do Terra", value = "$instanceCount", tint = TextPrimary)
+            StatPill(
+                title = "Agentes Rodando",
+                value = "$runningCount",
+                tint = if (runningCount > 0) RunningBlue else TextSecondary
+            )
         }
     }
 }
@@ -385,7 +332,7 @@ fun DisconnectedCard(serverUrl: String, error: String?) {
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = "Servidor Offline",
+                    text = "Desconectado",
                     color = ErrorRed,
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp
@@ -393,10 +340,9 @@ fun DisconnectedCard(serverUrl: String, error: String?) {
             }
             Spacer(modifier = Modifier.height(10.dp))
             Text(
-                text = "Não foi possível conectar a $serverUrl.\n\n" +
-                        "1. Abra o terra no PC: o servidor abre sozinho na rede (porta 8765).\n\n" +
-                        "2. Deixe o celular no mesmo Wi-Fi e toque em Procurar na rede, nas configurações.\n\n" +
-                        "3. Via cabo USB: adb reverse tcp:8765 tcp:8765 e use localhost.",
+                text = (if (serverUrl.isEmpty()) "Procurando o terra na rede...\n\n" else "Não foi possível conectar a $serverUrl. Procurando de novo a cada 5s.\n\n") +
+                        "Abra o terra no PC: o servidor abre sozinho na rede (porta 8765). " +
+                        "O celular acha o PC no mesmo Wi-Fi ou pelo Tailscale.",
                 color = TextSecondary,
                 fontSize = 13.sp,
                 lineHeight = 18.sp

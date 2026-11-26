@@ -198,6 +198,7 @@ mod tests {
             name: None,
             task: None,
             ask: None,
+            conversation: None,
         };
         assert_eq!(tab_line(&tab), "Principal                 parado");
         let busy = Tab {

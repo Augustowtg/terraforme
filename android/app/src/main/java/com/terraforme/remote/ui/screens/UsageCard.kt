@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +29,15 @@ private fun tokens(n: Long) = when {
 }
 
 private fun usd(v: Double) = String.format(Locale.US, "$%.2f", v)
+
+/** A aba Custo: o consumo de hoje do terra conectado. */
+@Composable
+fun CostScreen(usage: Usage?) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        if (usage != null) UsageCard(usage)
+        else Text("Sem dados de consumo ainda.", color = TextMuted, fontSize = 13.sp)
+    }
+}
 
 @Composable
 fun UsageCard(usage: Usage) {

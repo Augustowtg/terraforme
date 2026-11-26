@@ -1,15 +1,18 @@
 package com.terraforme.remote.ui.viewmodel
 
 import android.app.Application
-import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.terraforme.remote.data.AgentInfo
+import com.terraforme.remote.data.ChatMessage
+import com.terraforme.remote.data.DEFAULT_PORT
+import com.terraforme.remote.data.HostStore
 import com.terraforme.remote.data.Instance
 import com.terraforme.remote.data.RunDetail
 import com.terraforme.remote.data.RunItem
 import com.terraforme.remote.data.Usage
 import com.terraforme.remote.data.TerraApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,12 +20,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import kotlinx.coroutines.withContext
 
 data class TerraUiState(
-    val serverUrl: String = "http://localhost:8765",
+    val serverUrl: String = "",
     val isConnected: Boolean = false,
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
@@ -32,46 +33,52 @@ data class TerraUiState(
     val usage: Usage? = null,
     val selectedRunDetail: RunDetail? = null,
     val isLoadingDetail: Boolean = false,
-    val lastUpdated: String? = null,
     val isSending: Boolean = false,
     val sendResult: String? = null,
     val isDiscovering: Boolean = false,
-    val openInstanceId: String? = null
+    val openInstanceId: String? = null,
+    val history: List<ChatMessage> = emptyList()
 )
 
 class TerraViewModel(app: Application) : AndroidViewModel(app) {
 
     private val api = TerraApi()
 
-    // Os endereços que já conectaram (o da rede de casa, o do Tailscale): o app
-    // abre no último e tenta os outros antes de varrer a rede.
-    private val prefs = app.getSharedPreferences("terra", Context.MODE_PRIVATE)
-    private var known: Set<String> = prefs.getStringSet("urls", null) ?: emptySet()
+    // As máquinas que já conectaram, no SQLite: o app abre na primeira (as do
+    // Tailscale antes) com a última lista de instâncias dela, e tenta as
+    // outras antes de varrer a rede.
+    private val store = HostStore(app)
     private val _uiState = MutableStateFlow(
-        TerraUiState().let { s -> prefs.getString("url", null)?.let { s.copy(serverUrl = it) } ?: s }
+        store.urls().firstOrNull()?.let { url ->
+            TerraUiState(
+                serverUrl = url,
+                instances = store.instances(url)?.let { runCatching { api.parseStatus(it) }.getOrNull() }.orEmpty()
+            )
+        } ?: TerraUiState()
     )
     val uiState: StateFlow<TerraUiState> = _uiState.asStateFlow()
 
     private var pollJob: Job? = null
+    private var historyJob: Job? = null
 
     init {
         startPolling()
-        // Sem servidor no endereço de agora, procura o terra na rede, e de novo
-        // enquanto não achar: o terra do PC pode abrir depois do app ou mudar de IP.
+        // Desconectado, procura o terra a cada 5s: o do PC pode abrir depois
+        // do app ou mudar de IP.
         viewModelScope.launch {
             while (isActive) {
-                val s = _uiState.value
-                if (!s.isDiscovering && !api.checkHealth(s.serverUrl)) discover()
-                delay(10_000)
+                if (!_uiState.value.isConnected) discover()
+                delay(5_000)
             }
         }
     }
 
+    /** Tenta as máquinas salvas (Tailscale primeiro) e, sem nenhuma, varre a rede. */
     fun discover() {
         if (_uiState.value.isDiscovering) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isDiscovering = true)
-            val found = known.firstOrNull { api.checkHealth(it) } ?: api.discover()
+            val found = store.urls().firstOrNull { api.checkHealth(it) } ?: api.discover()
             _uiState.value = _uiState.value.copy(isDiscovering = false)
             if (found != null) {
                 updateServerUrl(found)
@@ -81,20 +88,35 @@ class TerraViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun openInstance(id: String?) {
-        _uiState.value = _uiState.value.copy(openInstanceId = id, sendResult = null)
+    /** O toque em Desconectado: recarrega e, sem resposta, procura na rede. */
+    fun reconnect() {
+        refreshAll()
+        discover()
+    }
+
+    /** Abre a instância `id` e acompanha o histórico do chat da aba `tab`. */
+    fun openInstance(id: String?, tab: String? = null) {
+        _uiState.value = _uiState.value.copy(openInstanceId = id, sendResult = null, history = emptyList())
+        historyJob?.cancel()
+        if (id == null) return
+        val tabId = tab ?: _uiState.value.instances.find { it.id == id }?.status?.tabs?.firstOrNull()?.id ?: return
+        historyJob = viewModelScope.launch {
+            while (isActive) {
+                runCatching { api.getHistory(_uiState.value.serverUrl, tabId) }
+                    .onSuccess { _uiState.value = _uiState.value.copy(history = it) }
+                delay(2000)
+            }
+        }
     }
 
     fun updateServerUrl(url: String) {
         val clean = url.trim().trimEnd('/')
         _uiState.value = _uiState.value.copy(serverUrl = clean, isConnected = false)
         refreshAll()
-    }
-
-    private fun remember(url: String) {
-        if (prefs.getString("url", null) == url && url in known) return
-        known = known + url
-        prefs.edit().putString("url", url).putStringSet("urls", known).apply()
+        // Achou pela rede local: salva também o Tailscale da máquina, que vale fora de casa.
+        viewModelScope.launch {
+            api.tailscaleIp(clean)?.let { withContext(Dispatchers.IO) { store.save("http://$it:$DEFAULT_PORT") } }
+        }
     }
 
     fun startPolling() {
@@ -124,16 +146,15 @@ class TerraViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun pollStatus() {
         val url = _uiState.value.serverUrl
         try {
-            val instances = api.getStatus(url)
+            val json = api.getStatusJson(url)
+            val instances = api.parseStatus(json)
             val usage = runCatching { api.getUsage(url) }.getOrNull()
-            val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            remember(url)
+            withContext(Dispatchers.IO) { store.save(url, json) }
             _uiState.value = _uiState.value.copy(
                 isConnected = true,
                 instances = instances,
                 usage = usage ?: _uiState.value.usage,
-                errorMessage = null,
-                lastUpdated = time
+                errorMessage = null
             )
         } catch (e: Exception) {
             _uiState.value = _uiState.value.copy(

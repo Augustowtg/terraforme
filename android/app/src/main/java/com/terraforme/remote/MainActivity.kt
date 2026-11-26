@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Computer
@@ -56,10 +57,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.terraforme.remote.ui.screens.CostScreen
 import com.terraforme.remote.ui.screens.InstanceScreen
 import com.terraforme.remote.ui.screens.MonitorScreen
 import com.terraforme.remote.ui.screens.RunDetailScreen
@@ -67,7 +68,6 @@ import com.terraforme.remote.ui.screens.RunsScreen
 import com.terraforme.remote.ui.theme.DarkBackground
 import com.terraforme.remote.ui.theme.DarkCardBorder
 import com.terraforme.remote.ui.theme.DarkSurface
-import com.terraforme.remote.ui.theme.DarkSurfaceVariant
 import com.terraforme.remote.ui.theme.ErrorRed
 import com.terraforme.remote.ui.theme.Primary
 import com.terraforme.remote.ui.theme.SuccessGreen
@@ -104,6 +104,7 @@ class MainActivity : ComponentActivity() {
 
 enum class ScreenTab(val title: String, val icon: ImageVector) {
     INSTANCES("Instâncias", Icons.Default.Computer),
+    COST("Custo", Icons.Default.AttachMoney),
     RUNS("Execuções", Icons.Default.History)
 }
 
@@ -130,6 +131,8 @@ fun MainAppScreen(viewModel: TerraViewModel) {
             instance = state.instances.find { it.id == state.openInstanceId },
             isSending = state.isSending,
             sendResult = state.sendResult,
+            history = state.history,
+            onSelectTab = { viewModel.openInstance(state.openInstanceId, it) },
             onSend = { tab, text -> viewModel.sendInput(tab, text) },
             onBack = { viewModel.openInstance(null) }
         )
@@ -152,7 +155,7 @@ fun MainAppScreen(viewModel: TerraViewModel) {
                         Surface(
                             color = if (state.isConnected) SuccessGreen.copy(alpha = 0.2f) else ErrorRed.copy(alpha = 0.2f),
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.clickable { showSettingsDialog = true }
+                            modifier = Modifier.clickable { if (!state.isConnected) viewModel.reconnect() }
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -199,7 +202,7 @@ fun MainAppScreen(viewModel: TerraViewModel) {
                         selected = selectedTab == index,
                         onClick = {
                             selectedTab = index
-                            if (index == 1) viewModel.fetchRuns()
+                            if (tab == ScreenTab.RUNS) viewModel.fetchRuns()
                         },
                         icon = { Icon(imageVector = tab.icon, contentDescription = tab.title) },
                         label = { Text(text = tab.title, fontSize = 12.sp) },
@@ -221,13 +224,13 @@ fun MainAppScreen(viewModel: TerraViewModel) {
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            when (selectedTab) {
-                0 -> MonitorScreen(
+            when (ScreenTab.values()[selectedTab]) {
+                ScreenTab.INSTANCES -> MonitorScreen(
                     state = state,
-                    onRefresh = { viewModel.refreshAll() },
                     onOpen = { viewModel.openInstance(it.id) }
                 )
-                1 -> RunsScreen(
+                ScreenTab.COST -> CostScreen(state.usage)
+                ScreenTab.RUNS -> RunsScreen(
                     runs = state.runs,
                     onSelectRun = { runId -> viewModel.loadRunDetail(runId) },
                     onRefresh = { viewModel.fetchRuns() }
@@ -239,11 +242,6 @@ fun MainAppScreen(viewModel: TerraViewModel) {
     if (showSettingsDialog) {
         ServerSettingsDialog(
             currentUrl = state.serverUrl,
-            isDiscovering = state.isDiscovering,
-            onDiscover = {
-                viewModel.discover()
-                showSettingsDialog = false
-            },
             onDismiss = { showSettingsDialog = false },
             onSave = { newUrl ->
                 viewModel.updateServerUrl(newUrl)
@@ -256,8 +254,6 @@ fun MainAppScreen(viewModel: TerraViewModel) {
 @Composable
 fun ServerSettingsDialog(
     currentUrl: String,
-    isDiscovering: Boolean,
-    onDiscover: () -> Unit,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit
 ) {
@@ -276,7 +272,7 @@ fun ServerSettingsDialog(
         text = {
             Column {
                 Text(
-                    text = "Digite a URL onde o terra remote está rodando:",
+                    text = "O app acha o terra sozinho; para outra máquina, digite a URL:",
                     color = TextSecondary,
                     fontSize = 13.sp
                 )
@@ -295,58 +291,6 @@ fun ServerSettingsDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text(
-                    text = "Opções rápidas:",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Surface(
-                        color = DarkSurfaceVariant,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.clickable { urlText = "http://localhost:8765" }
-                    ) {
-                        Text(
-                            text = "USB (localhost)",
-                            color = TextPrimary,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                        )
-                    }
-
-                    Surface(
-                        color = DarkSurfaceVariant,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.clickable(enabled = !isDiscovering, onClick = onDiscover)
-                    ) {
-                        Text(
-                            text = if (isDiscovering) "Procurando..." else "Procurar na rede",
-                            color = TextPrimary,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text(
-                    text = "Dica USB: com o celular plugado via cabo, rode no PC:\n" +
-                            "adb reverse tcp:8765 tcp:8765",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    lineHeight = 15.sp
-                )
             }
         },
         confirmButton = {
