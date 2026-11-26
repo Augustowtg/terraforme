@@ -20,7 +20,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 tira o código e os ícones não usados (o debug passa de 16 MB).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            // shortcut: assina com a chave de debug para instalar direto; publicar na loja pede uma chave própria.
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

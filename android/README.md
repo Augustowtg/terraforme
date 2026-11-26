@@ -70,11 +70,11 @@ Para compilar o APK e instalá-lo no celular conectado:
 cd android
 chmod +x gradlew
 
-# Compilar o APK de Debug
-./gradlew assembleDebug
+# Compilar o APK (release com R8, ~1 MB; o de debug passa de 16 MB)
+./gradlew assembleRelease
 
 # Instalar diretamente no celular conectado via ADB
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/release/app-release.apk
 
 # Abrir o aplicativo no celular
 adb shell am start -n com.terraforme.remote/.MainActivity

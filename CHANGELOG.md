@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.23] - 2026-11-25
+
+### Corrigido
+
+- O APK do app do celular cai de 16 MB para ~1 MB: o build release passa pelo R8, que tira o código e os ícones não usados, e é assinado com a chave de debug para instalar direto (`./gradlew assembleRelease`) (#94).
+
 ## [0.14.22] - 2026-11-25
 
 ### Corrigido
