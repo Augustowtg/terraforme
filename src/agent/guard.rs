@@ -276,6 +276,7 @@ mod tests {
                 prompt: "oi",
                 mode: PermissionMode::Agente,
                 session_id: None,
+                fork: false,
                 model: None,
                 account: None,
                 effort: None,

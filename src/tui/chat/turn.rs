@@ -3,7 +3,7 @@
 
 use super::permission::{self, Kind};
 use super::{Chat, DEFAULT_CONTEXT_WINDOW};
-use crate::agent::{AgentEvent, PermissionMode, ReportedMode, Request};
+use crate::agent::{AgentEvent, CommandRoute, PermissionMode, ReportedMode, Request};
 use crate::tui::history::Entry;
 use crate::tui::input::commands;
 use crate::tui::input::extensions::AgentStatus;
@@ -24,12 +24,17 @@ impl Chat {
             self.history.follow();
             return;
         }
-        // O /btw é a pergunta lateral: abre a interface original mesmo com o
-        // agente respondendo.
-        let side = prompt.starts_with("/btw") && self.run.is_some();
-        if side && self.route_to_provider(&prompt) {
+        // O /btw é a pergunta lateral: responde aqui mesmo com o agente
+        // respondendo, numa cópia da sessão.
+        if let Some(question) = prompt.strip_prefix("/btw ").map(str::trim)
+            && !question.is_empty()
+            && self
+                .available_adapter()
+                .is_some_and(|a| a.command_route("btw") == CommandRoute::Original)
+        {
             self.remember_sent(&prompt);
             self.input.clear();
+            self.ask_side(question);
             self.history.follow();
             return;
         }
@@ -108,6 +113,7 @@ impl Chat {
             prompt,
             mode: self.permission_mode,
             session_id: self.session_id.as_deref(),
+            fork: false,
             model: self
                 .session_model
                 .as_deref()
@@ -140,6 +146,74 @@ impl Chat {
         }
         self.history.follow();
         ok
+    }
+
+    /// A pergunta lateral do `/btw`: roda ao lado da resposta em andamento,
+    /// numa cópia da sessão (que não ganha a pergunta), no modo Plano.
+    fn ask_side(&mut self, question: &str) {
+        let Some(adapter) = self.available_adapter() else {
+            return;
+        };
+        let extensions = self.agent_extensions();
+        let started = adapter.start(Request {
+            prompt: question,
+            mode: PermissionMode::Plan,
+            session_id: self.session_id.as_deref(),
+            fork: true,
+            model: self
+                .session_model
+                .as_deref()
+                .or(self.chosen_model.as_deref()),
+            account: self.account.as_deref(),
+            effort: self
+                .session_effort
+                .as_deref()
+                .or(self.default_effort.as_deref()),
+            subagent_model: self.subagent_model.as_deref(),
+            extensions: &extensions,
+            allowed_tools: &[],
+            system_prompt: None,
+        });
+        drop(extensions);
+        self.history.push(Entry::User(format!("/btw {question}")));
+        match started {
+            Ok(run) => self.side = Some((run, String::new())),
+            Err(err) => self.history.push(Entry::Error(err)),
+        }
+    }
+
+    /// Os eventos da pergunta lateral: só o texto conta (as ferramentas que
+    /// pedem permissão são negadas); ao fim, a resposta entra no histórico,
+    /// antes do texto que a resposta principal ainda está mandando.
+    pub(super) fn poll_side(&mut self) {
+        let Some((run, answer)) = &mut self.side else {
+            return;
+        };
+        let mut end = None;
+        for event in run.poll() {
+            match event {
+                AgentEvent::TextStart if !answer.is_empty() => answer.push_str("\n\n"),
+                AgentEvent::TextDelta(text) | AgentEvent::Text(text) => answer.push_str(&text),
+                AgentEvent::PermissionRequest { id, .. } => run.respond(&id, false),
+                AgentEvent::Done { message, .. } => end = Some(message),
+                AgentEvent::Failed(err) => end = Some(Some(err)),
+                _ => {}
+            }
+        }
+        let Some(error) = end else {
+            return;
+        };
+        let answer = std::mem::take(answer);
+        self.side = None;
+        let entry = match error {
+            Some(err) if answer.trim().is_empty() => Entry::Error(err),
+            _ => Entry::Assistant(answer),
+        };
+        let streaming = self.run.is_some()
+            && matches!(self.history.entries().last(), Some(Entry::Assistant(_)));
+        let at = self.history.entries().len() - usize::from(streaming);
+        self.history.insert(at, entry);
+        self.history.follow();
     }
 
     /// Manda a resposta do usuário a um pedido de permissão e a registra no

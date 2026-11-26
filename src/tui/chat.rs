@@ -91,6 +91,8 @@ pub struct Chat {
     session_id: Option<String>,
     /// Resposta em andamento.
     run: Option<Box<dyn Session>>,
+    /// A pergunta lateral do `/btw` em andamento e a resposta até aqui.
+    side: Option<(Box<dyn Session>, String)>,
     /// Onde o `sudo` do agente pede a senha (aberto na primeira mensagem).
     sudo: Option<crate::sudo::Askpass>,
     /// Pedidos de permissão do agente esperando o usuário.
@@ -186,6 +188,7 @@ impl Default for Chat {
             extensions: Contribution::default(),
             session_id: None,
             run: None,
+            side: None,
             sudo: None,
             prompts: Prompts::default(),
             remote_answers: Vec::new(),
@@ -721,6 +724,7 @@ impl Chat {
 
     pub fn tick(&mut self) {
         self.poll_catalog();
+        self.poll_side();
         let events = self
             .run
             .as_mut()

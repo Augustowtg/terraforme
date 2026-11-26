@@ -754,6 +754,7 @@ mod tests {
             prompt: "oi",
             mode,
             session_id: None,
+            fork: false,
             model: None,
             account: None,
             effort: None,
