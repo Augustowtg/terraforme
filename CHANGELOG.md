@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.30] - 2026-11-26
+
+### Alterado
+
+- A mensagem do usuário no histórico do chat aparece em negrito e branca, para se destacar do resto (#108).
+
 ## [0.14.29] - 2026-11-26
 
 ### Alterado
