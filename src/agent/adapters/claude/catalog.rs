@@ -33,6 +33,7 @@ pub fn load(bin: PathBuf, config_dir: Option<PathBuf>) -> Receiver<Result<Catalo
 }
 
 fn fetch(bin: PathBuf, config_dir: Option<PathBuf>) -> Result<Catalog, String> {
+    super::refresh_login(&bin, config_dir.as_deref());
     let mut cmd = command(&bin);
     cmd.args([
         "-p",

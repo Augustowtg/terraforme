@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.25] - 2026-11-25
+
+### Corrigido
+
+- O login do Claude não é mais revogado ao abrir o terra depois de reiniciar o PC. Com o PC desligado mais de 8 h, o token está vencido quando o terra abre, e o consumo, o catálogo e o chat abriam um `claude` cada, ao mesmo tempo, todos renovando o token com o mesmo refresh token. O servidor via o refresh token usado duas vezes e revogava o login ("OAuth token revoked. Please log in again"). Agora o token vencido é renovado uma vez só por conta, sob uma trava na pasta da conta (`.terra-refresh.lock`), que vale também entre janelas do terra; quem chega depois acha o token já renovado (#98).
+
 ## [0.14.24] - 2026-11-25
 
 ### Adicionado
