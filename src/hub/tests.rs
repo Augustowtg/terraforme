@@ -477,6 +477,16 @@ case "$(cat mode 2>/dev/null)" in
     IFS= read -r line; printf '%s\n' "$line" > unsupported.txt
     echo '{"type":"control_request","request_id":"p1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"npm publish"}}}'
     IFS= read -r line; printf '%s\n' "$line" > answer.txt ;;
+  background)
+    # Como o `claude` real: responde de novo quando a tarefa termina, e o
+    # fim da entrada antes disso mata a tarefa.
+    echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+    echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{"input_tokens":1,"output_tokens":1}}'
+    ( sleep 0.3
+      echo '{"type":"system","subtype":"background_tasks_changed","tasks":[]}'
+      echo '{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"PRONTO"}]}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{"input_tokens":3,"output_tokens":4}}' ) &
+    cat > /dev/null; kill $! 2>/dev/null; exit 0 ;;
 esac
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":4}}'
 "#;
@@ -624,6 +634,15 @@ echo '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total
         assert!(env.contains("TERRA_AGENT=api"));
         assert!(env.contains("TERRA_HOPS=1"));
         assert!(env.contains(&format!("TERRA_RUN={}", run.id)));
+    }
+
+    #[test]
+    fn a_run_with_a_background_task_finishes_with_the_answer_after_it() {
+        let hub = Hub::start(&[("api", "background")], "");
+        let (message, _) = hub.send("usuario", "api");
+        let run = hub.wait_state(&message.id, RunState::Done);
+        let output = fs::read_to_string(run.dir(hub.home()).join(run::OUTPUT)).unwrap();
+        assert!(output.contains("PRONTO"), "{output}");
     }
 
     #[test]
