@@ -1969,3 +1969,32 @@ fn btw_answers_in_the_terra_from_a_copy_of_the_session() {
         [Entry::User(q), Entry::Assistant(a)] if q == "/btw e aí?" && a == "oi!"
     ));
 }
+
+#[test]
+fn the_limit_schedules_continue_for_five_minutes_after_the_reset() {
+    let reset = crate::agent::limit::now() + 3600;
+    let reply = vec![
+        AgentEvent::Done {
+            is_error: true,
+            message: Some("You've hit your limit · resets 3pm".into()),
+            tokens: 0,
+            cache_tokens: 0,
+            denied: 0,
+        },
+        AgentEvent::LimitReached {
+            resets_at: Some(reset),
+        },
+    ];
+    let (mut chat, sent) = fake_chat(true, reply);
+    chat.submit("faz a tarefa");
+    chat.tick();
+    assert!(matches!(
+        chat.history.entries().last(),
+        Some(Entry::Info(text)) if text.contains("digite `continue`")
+    ));
+
+    chat.resume_after_limit(reset + 299);
+    assert_eq!(sent.borrow().len(), 1, "antes da hora, nada vai");
+    chat.resume_after_limit(reset + 300);
+    assert_eq!(sent.borrow().last().unwrap().0, "continue");
+}

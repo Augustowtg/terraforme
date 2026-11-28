@@ -163,6 +163,9 @@ pub struct Chat {
     /// Na aba de uma execução: o modo informado pelo agente, mesmo sem
     /// equivalente no terra (ex.: `dontAsk`).
     viewer_mode: Option<String>,
+    /// A resposta acabou no limite de uso: quando mandar o `continue`
+    /// (segundos Unix). Uma mensagem do usuário antes disso cancela.
+    resume_at: Option<i64>,
 }
 
 /// O provedor de uma aba de execução: o nome e como ele mostra os modelos.
@@ -225,6 +228,7 @@ impl Default for Chat {
             read_only: false,
             viewer_provider: None,
             viewer_mode: None,
+            resume_at: None,
         }
     }
 }
@@ -692,6 +696,12 @@ impl Chat {
         self.history.push(Entry::Error(message));
     }
 
+    /// Uma informação de fora do chat (ex.: o `continue` mandado a um terra
+    /// antigo).
+    pub fn note(&mut self, message: String) {
+        self.history.push(Entry::Info(message));
+    }
+
     /// O agente `agent` da execução despachada `run` pede para usar a
     /// ferramenta `name`: o pedido entra na fila com os do agente deste
     /// chat, e a resposta sai em [`Chat::take_remote_answers`]. Um pedido
@@ -742,6 +752,7 @@ impl Chat {
         for event in events {
             self.apply(event);
         }
+        self.resume_after_limit(crate::agent::limit::now());
         for request in self.sudo.as_ref().map(|s| s.poll()).unwrap_or_default() {
             self.agent_activity = Some("Aguardando a senha do sudo...".to_string());
             self.prompts.push(permission::Request {

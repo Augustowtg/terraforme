@@ -4,6 +4,19 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.39] - 2026-11-28
+
+### Adicionado
+
+- Chat: quando a resposta acaba no limite de uso do Claude, o terra agenda o `continue` para 5 minutos depois do reset (o horário vem do `rate_limit_event` ou da mensagem de erro) e o manda sozinho. Até lá, o chat mostra a hora e diz que, com o terminal aberto, dá para digitar `continue` (ou `retome a tarefa anterior`); mandar outra mensagem antes cancela o agendamento (#126).
+- Terminais com uma versão anterior do terra: a cada minuto, um terra desta versão vasculha as abas deles pelo hub e digita o `continue`, como o app remoto, na aba parada cuja última mensagem no histórico é o erro do limite, 5 minutos depois do reset. Com vários terras novos abertos, só um vasculha (#126).
+
+## [0.14.38] - 2026-11-28
+
+### Corrigido
+
+- Chat: sem o `claude` no `PATH`, o terra procura em `~/.local/bin`, onde o instalador nativo do Claude Code o põe (no Windows, sem adicionar a pasta ao `PATH`). Antes, um terra aberto com o `PATH` de antes da instalação, ou o hub que seguia rodando com ele, mostrava "Claude CLI não encontrado no PATH" (#124).
+
 ## [0.14.36] - 2026-11-28
 
 ### Corrigido

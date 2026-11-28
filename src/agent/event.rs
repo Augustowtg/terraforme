@@ -93,4 +93,8 @@ pub enum AgentEvent {
     },
     /// O processo falhou sem chegar ao fim da resposta.
     Failed(String),
+    /// A resposta acabou no limite de uso do provedor (vem depois do
+    /// [`AgentEvent::Done`]): quando ele reseta, em segundos Unix, se o
+    /// provedor informou.
+    LimitReached { resets_at: Option<i64> },
 }

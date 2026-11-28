@@ -13,6 +13,7 @@
 mod draw;
 mod hub_sync;
 mod keys;
+mod limit_sweep;
 mod provider;
 mod settings;
 #[cfg(test)]
@@ -220,6 +221,9 @@ pub struct App {
     hub: Option<Reporter>,
     /// A lista do orquestrador, assinada ao abrir a aba Orquestrador.
     hub_monitor: Option<Monitor>,
+    /// O que a vasculha dos terras de versão anterior parados no limite de
+    /// uso fez (ver [`limit_sweep`]), para o chat principal mostrar.
+    limit_sweep: Option<std::sync::mpsc::Receiver<String>>,
 }
 
 impl App {
@@ -238,6 +242,9 @@ impl App {
                 ..Default::default()
             },
         );
+        let limit_sweep = hub
+            .as_ref()
+            .and_then(|hub| limit_sweep::start(hub.id().to_string()));
         let adapter = crate::agent::adapters::select(settings.provider.as_deref());
         // Uma conta salva que é a Default com outro nome passa a ser a Default.
         settings.account = adapter.normalize_account(settings.account.take());
@@ -258,6 +265,7 @@ impl App {
             workspace: Some(Workspace { dir, saved }),
             db: Some(db),
             hub,
+            limit_sweep,
             ..Self::default()
         };
         app.load_extensions();
@@ -436,6 +444,11 @@ impl App {
         self.update_view.tick();
         self.report_to_hub();
         self.receive_from_hub();
+        if let Some(sweep) = &self.limit_sweep {
+            for note in sweep.try_iter() {
+                self.chat.note(note);
+            }
+        }
         // No Orquestrador e no Terraforme, a aba assina a lista do hub (só
         // com o hub ligado: não nos testes); no Orquestrador ela também relê
         // o arquivo e as execuções.
