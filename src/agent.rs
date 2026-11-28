@@ -10,6 +10,7 @@ pub mod adapters;
 mod event;
 mod follow;
 pub mod guard;
+pub mod limit;
 mod mode;
 
 pub use adapter::{

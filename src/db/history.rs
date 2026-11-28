@@ -196,6 +196,21 @@ impl ChatHistory {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// A última mensagem da conversa `id`: papel, conteúdo e quando foi
+    /// gravada (milissegundos Unix).
+    pub fn last_message(&self, id: i64) -> Result<Option<(String, String, i64)>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT role, content, created_at FROM messages
+                 WHERE conversation_id = ?1 ORDER BY id DESC LIMIT 1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?)
+    }
+
     /// A conversa atualizada por último, se houver alguma.
     pub fn latest(&self) -> Result<Option<i64>> {
         let mut stmt = self

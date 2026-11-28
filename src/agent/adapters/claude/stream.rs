@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::parse_mode;
-use crate::agent::{AgentEvent, CHARS_PER_TOKEN, ReportedMode};
+use crate::agent::{AgentEvent, CHARS_PER_TOKEN, ReportedMode, limit};
 
 /// Tamanho máximo do detalhe de uma ferramenta ou resultado na tela.
 const DETAIL_MAX: usize = 80;
@@ -50,6 +50,9 @@ pub struct StreamParser {
     /// Há tarefas em segundo plano rodando (`background_tasks_changed`): ao
     /// terminarem, o `claude` responde de novo na mesma execução.
     pub background: bool,
+    /// Quando o limite de uso reseta, do `rate_limit_event` que recusou a
+    /// chamada (segundos Unix).
+    limit_reset: Option<i64>,
 }
 
 impl StreamParser {
@@ -184,6 +187,13 @@ impl StreamParser {
             Some("assistant") => self.assistant(&value["message"], false),
             Some("user") => tool_results(&value["message"]),
             Some("result") => self.result(value),
+            Some("rate_limit_event") => {
+                let info = &value["rate_limit_info"];
+                if info["status"] == "rejected" {
+                    self.limit_reset = info["resetsAt"].as_i64();
+                }
+                Vec::new()
+            }
             _ => Vec::new(),
         }
     }
@@ -307,7 +317,24 @@ impl StreamParser {
                 tokens,
                 window: context_window(&value["modelUsage"], &self.model),
             });
-        context.into_iter().chain([result(value)]).collect()
+        let done = result(value);
+        // A resposta que acabou no limite de uso: o chat continua depois do
+        // reset.
+        let limit = match &done {
+            AgentEvent::Done {
+                is_error: true,
+                message: Some(message),
+                ..
+            } if self.limit_reset.is_some() || limit::is_limit_message(message) => {
+                Some(AgentEvent::LimitReached {
+                    resets_at: self
+                        .limit_reset
+                        .or_else(|| limit::reset_from_message(message, limit::now())),
+                })
+            }
+            _ => None,
+        };
+        context.into_iter().chain([done]).chain(limit).collect()
     }
 }
 
@@ -635,6 +662,21 @@ mod tests {
                 cache_tokens: 0,
                 denied: 1
             }]
+        );
+    }
+
+    #[test]
+    fn a_response_that_ends_in_the_usage_limit_says_when_it_resets() {
+        let events = parse_all(&[
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1795888800,"rateLimitType":"five_hour"}}"#,
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"You've hit your limit · resets 3pm (America/Sao_Paulo)","usage":{}}"#,
+        ]);
+        assert!(matches!(events[0], AgentEvent::Done { is_error: true, .. }));
+        assert_eq!(
+            events[1],
+            AgentEvent::LimitReached {
+                resets_at: Some(1_795_888_800)
+            }
         );
     }
 

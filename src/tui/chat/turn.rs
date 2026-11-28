@@ -3,7 +3,7 @@
 
 use super::permission::{self, Kind};
 use super::{Chat, DEFAULT_CONTEXT_WINDOW};
-use crate::agent::{AgentEvent, CommandRoute, PermissionMode, ReportedMode, Request};
+use crate::agent::{AgentEvent, CommandRoute, PermissionMode, ReportedMode, Request, limit};
 use crate::tui::history::Entry;
 use crate::tui::input::commands;
 use crate::tui::input::extensions::AgentStatus;
@@ -41,6 +41,8 @@ impl Chat {
         if prompt.is_empty() || self.run.is_some() {
             return;
         }
+        // O usuário seguiu a conversa: o `continue` marcado não vai mais.
+        self.resume_at = None;
         // O `/agente <nome>` é o único comando do terra com argumento.
         if let Some(arg) = prompt.strip_prefix("/agente ") {
             self.remember_sent(&prompt);
@@ -428,7 +430,24 @@ impl Chat {
                 self.hint_login(&message);
                 self.finish(true);
             }
+            AgentEvent::LimitReached { resets_at } if !self.read_only => {
+                let at = limit::resume_at(resets_at, limit::now());
+                self.resume_at = Some(at);
+                self.history.push(Entry::Info(limit::notice(at)));
+            }
+            AgentEvent::LimitReached { .. } => {}
         }
+    }
+
+    /// Chegou a hora marcada depois do limite de uso: manda o `continue`, se
+    /// o agente não está respondendo.
+    pub(super) fn resume_after_limit(&mut self, now: i64) {
+        if self.run.is_some() || self.resume_at.is_none_or(|at| now < at) {
+            return;
+        }
+        self.resume_at = None;
+        let prompt = limit::RESUME_PROMPT;
+        self.start(prompt, Entry::User(prompt.to_string()));
     }
 
     /// Sincroniza com o modo em que o agente disse estar. Se ele não for o
