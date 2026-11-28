@@ -753,6 +753,9 @@ fn window<'a>(state: &'a State, cwd: &str) -> Option<(&'a str, &'a super::Entry)
 /// permissão ao laço do hub, recusa os outros pedidos de controle e fecha a
 /// entrada no `result`, o que encerra o `claude`.
 fn read_output(stdout: ChildStdout, mut file: File, stdin: &claude::Stdin, requests: &Sender<Ask>) {
+    // Com tarefa em segundo plano, o `claude` responde de novo quando ela
+    // termina: o stdin só fecha num `result` sem nenhuma rodando (#116).
+    let mut background = false;
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
         if let Some((id, name, input)) = claude::tool_request(&line) {
             let _ = requests.send(Ask { id, name, input });
@@ -763,8 +766,11 @@ fn read_output(stdout: ChildStdout, mut file: File, stdin: &claude::Stdin, reque
             continue;
         }
         let _ = writeln!(file, "{line}");
-        let result = serde_json::from_str::<Value>(&line).is_ok_and(|v| v["type"] == "result");
-        if result {
+        let value = serde_json::from_str::<Value>(&line).unwrap_or_default();
+        if value["subtype"] == "background_tasks_changed" {
+            background = value["tasks"].as_array().is_some_and(|t| !t.is_empty());
+        }
+        if value["type"] == "result" && (!background || value["is_error"] == true) {
             *stdin.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }

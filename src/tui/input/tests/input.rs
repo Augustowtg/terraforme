@@ -921,3 +921,14 @@ fn shift_arrows_select_the_text() {
     press(&mut input, KeyCode::Right);
     assert_eq!(input.selected_text(), None);
 }
+
+#[test]
+fn slash_opens_commands_anywhere_except_stuck_to_a_word() {
+    let mut input = input_with("");
+    press(&mut input, KeyCode::Char('i'));
+    type_text(&mut input, "rode /");
+    assert!(input.command_picker_open());
+    press(&mut input, KeyCode::Esc);
+    type_text(&mut input, " a/");
+    assert!(!input.command_picker_open());
+}

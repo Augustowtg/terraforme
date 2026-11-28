@@ -340,8 +340,10 @@ impl InputBox {
                 // (ex.: um e-mail).
                 let opens =
                     c == '@' && !self.char_before_cursor().is_some_and(char::is_alphanumeric);
-                // `/` abre a lista de comandos, só no começo do texto.
-                let command = c == '/' && self.cursor == 0;
+                // `/` abre a lista de comandos, menos colado a uma palavra
+                // (ex.: `a/`).
+                let command =
+                    c == '/' && !self.char_before_cursor().is_some_and(char::is_alphanumeric);
                 // `&` abre a lista de padrões, no começo de uma palavra.
                 let pattern =
                     c == '&' && !self.char_before_cursor().is_some_and(char::is_alphanumeric);
@@ -353,7 +355,7 @@ impl InputBox {
                     self.pattern_picker = Some(Picker::new(self.cursor - 1));
                 }
                 if command {
-                    self.command_picker = Some(Picker::new(0));
+                    self.command_picker = Some(Picker::new(self.cursor - 1));
                 }
             }
             KeyCode::Backspace => {

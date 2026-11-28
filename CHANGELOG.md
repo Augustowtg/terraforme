@@ -4,6 +4,13 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.36] - 2026-11-28
+
+### Corrigido
+
+- Input: o `/` abre a lista de comandos em qualquer lugar do texto, menos colado a uma palavra (ex.: `a/`), como o `@` e o `&` (#120).
+- Sub agentes: com uma tarefa em segundo plano, a execução segue até a resposta seguinte do agente; antes o hub fechava a entrada do `claude` no primeiro fim de resposta, a tarefa morria e a execução às vezes não era reconhecida como terminada (#120).
+
 ## [0.14.35] - 2026-11-28
 
 ### Adicionado
