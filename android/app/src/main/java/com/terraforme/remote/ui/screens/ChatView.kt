@@ -84,9 +84,9 @@ private fun Entry(m: ChatMessage) {
             m.content, color = Color.White, fontWeight = FontWeight.Bold, fontFamily = Mono, fontSize = Size,
             modifier = Modifier.fillMaxWidth().border(1.dp, UserBorder, RoundedCornerShape(6.dp)).padding(10.dp)
         )
-        "assistant" -> Text(
-            m.content.trim(), color = Text, fontFamily = Mono, fontSize = Size,
-            modifier = Modifier.fillMaxWidth().border(1.dp, Overlay0, RoundedCornerShape(6.dp)).padding(10.dp)
+        "assistant" -> Markdown(
+            m.content.trim(),
+            Modifier.fillMaxWidth().border(1.dp, Overlay0, RoundedCornerShape(6.dp)).padding(10.dp)
         )
         "tool" -> Text(
             buildAnnotatedString {
