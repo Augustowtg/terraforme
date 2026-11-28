@@ -37,6 +37,7 @@ use crate::agent::{
     AgentEvent, Catalog, ChatAdapter, Interactive, PermissionMode, Request, Session, TokenReport,
     kill_tree, launch, own_group,
 };
+use crate::extension::Contribution;
 
 const NOT_FOUND: &str = "OpenCode CLI não encontrado no PATH. Instale em https://opencode.ai";
 
@@ -100,7 +101,7 @@ impl ChatAdapter for OpenCodeAdapter {
             Some(extensions) => launch(
                 bin,
                 HARNESS,
-                extensions,
+                &without_headroom(extensions),
                 options.session_id.is_none(),
                 command,
             ),
@@ -176,6 +177,16 @@ fn cli_args<'a>(
     args
 }
 
+/// As extensões sem o lançador do Headroom. O `headroom wrap opencode` troca o
+/// provider do OpenCode pelo proxy dele, o que desliga o cache de prompt
+/// (7.7k -> 11k tokens numa mensagem simples), registra um MCP a mais e
+/// imprime um banner na saída do `--format json`.
+fn without_headroom(extensions: &Contribution) -> Contribution {
+    let mut extensions = extensions.clone();
+    extensions.launchers.retain(|l| l.program != "headroom");
+    extensions
+}
+
 /// Põe `system` na frente do prompt só na primeira mensagem da conversa
 /// (`first`); nas seguintes o OpenCode já o tem no histórico.
 fn with_system_prompt(prompt: &str, system: Option<&str>, first: bool) -> String {
@@ -226,7 +237,7 @@ impl Run {
         let mut cmd = launch(
             bin,
             HARNESS,
-            request.extensions,
+            &without_headroom(request.extensions),
             request.session_id.is_none(),
             command,
         );
@@ -322,7 +333,22 @@ fn display_model(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extension::Contribution;
+    use crate::extension::Launcher;
+
+    #[test]
+    fn opencode_does_not_run_behind_headroom() {
+        let launcher = |program: &str| Launcher {
+            program: program.to_string(),
+            args: Vec::new(),
+            fresh: Vec::new(),
+        };
+        let extensions = Contribution {
+            launchers: vec![launcher("rtk"), launcher("headroom")],
+            ..Contribution::default()
+        };
+        let kept = without_headroom(&extensions).launchers;
+        assert_eq!(kept, [launcher("rtk")]);
+    }
 
     #[test]
     fn cli_args_run_json_and_resume_the_session() {

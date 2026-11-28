@@ -4,6 +4,17 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.34] - 2026-11-28
+
+### Corrigido
+
+- Claude: com uma tarefa em segundo plano (Bash com `run_in_background`, Monitor), o turno continua até ela terminar e a resposta seguinte do agente aparece no chat; antes o terra encerrava o `claude` no primeiro fim de resposta e a tarefa morria (#116).
+
+### Alterado
+
+- OpenCode: roda sem o lançador do Headroom, que trocava o provider pelo proxy dele e desligava o cache de prompt (#116).
+- Claude: com a delegação do terra ligada, o sub agente nativo (`Agent`/`Task`) fica desligado; os sub agentes são os do `terra send` (#116).
+
 ## [0.14.33] - 2026-11-26
 
 ### Corrigido
