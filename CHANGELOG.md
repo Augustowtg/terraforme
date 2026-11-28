@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.37] - 2026-11-28
+
+### Corrigido
+
+- Chat: a falha de um comando Bash mostra o `Exit code N` junto da última linha da saída, que diz o porquê; antes aparecia só o código (#122).
+
 ## [0.14.36] - 2026-11-28
 
 ### Corrigido
