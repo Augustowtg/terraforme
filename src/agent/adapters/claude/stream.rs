@@ -346,9 +346,14 @@ fn tool_results(message: &Value) -> Vec<AgentEvent> {
                     .join("\n"),
                 _ => String::new(),
             };
+            let is_error = block["is_error"].as_bool().unwrap_or(false);
             AgentEvent::ToolResult {
-                is_error: block["is_error"].as_bool().unwrap_or(false),
-                summary: first_line(&content),
+                is_error,
+                summary: if is_error {
+                    error_summary(&content)
+                } else {
+                    first_line(&content)
+                },
             }
         })
         .collect()
@@ -437,6 +442,18 @@ pub(super) fn text(value: &Value) -> String {
 }
 
 /// Primeira linha não vazia, cortada em [`DETAIL_MAX`] caracteres.
+/// A falha de um Bash começa com `Exit code N` e a saída vem embaixo: o
+/// resumo junta o código com a última linha da saída, que costuma dizer o
+/// porquê.
+fn error_summary(text: &str) -> String {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or("");
+    match lines.last() {
+        Some(last) if first.starts_with("Exit code ") => first_line(&format!("{first} · {last}")),
+        _ => first_line(first),
+    }
+}
+
 fn first_line(text: &str) -> String {
     let line = text
         .lines()
@@ -754,6 +771,15 @@ mod tests {
             "WebFetch(domain:docs.rs)"
         );
         assert_eq!(rule("Task", r#"{"prompt":"x"}"#), "Task");
+    }
+
+    #[test]
+    fn bash_failure_shows_the_exit_code_with_the_last_output_line() {
+        assert_eq!(
+            error_summary("Exit code 1\nv22.1.0\nbash: chromium: not found\n"),
+            "Exit code 1 · bash: chromium: not found"
+        );
+        assert_eq!(error_summary("Exit code 1"), "Exit code 1");
     }
 
     #[test]
