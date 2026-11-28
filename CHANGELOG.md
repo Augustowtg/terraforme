@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.35] - 2026-11-28
+
+### Adicionado
+
+- App remoto: os blocos de código das respostas aparecem numa caixa de borda arredondada, como a do input, com a linguagem em cima e as cores de uma IDE (palavras-chave, funções, tipos, strings, números e comentários), como no terra do PC; títulos, listas, citações, **negrito**, *itálico* e `código` saem estilizados, sem os marcadores (#118).
+
 ## [0.14.34] - 2026-11-28
 
 ### Corrigido
