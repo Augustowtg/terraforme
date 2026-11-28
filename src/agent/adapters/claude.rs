@@ -341,6 +341,10 @@ fn find_claude() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// As ferramentas de sub agente do próprio Claude (`Task` é o nome antigo do
+/// `Agent`).
+const NATIVE_SUBAGENT_TOOLS: &str = "Agent,Task";
+
 /// Argumentos do `claude` para uma mensagem.
 ///
 /// Com o ambiente do Claude Code do usuário: os servidores MCP dele (do
@@ -654,6 +658,9 @@ impl Run {
         }
         if let Some(prompt) = request.system_prompt {
             cmd.args(["--append-system-prompt", prompt]);
+            // Com a delegação do terra ligada, os sub agentes são os do
+            // `terra send`: o Agent nativo do Claude fica de fora.
+            cmd.args(["--disallowedTools", NATIVE_SUBAGENT_TOOLS]);
         }
         // As ferramentas que o usuário liberou depois de o modo bloquear: uma
         // regra por argumento, porque a do Bash tem espaços.
@@ -695,6 +702,9 @@ impl Run {
             send_line(&stdin, &message);
             let mut parser = StreamParser::default();
             let mut done = false;
+            // O gasto das respostas que ficaram esperando tarefas em segundo
+            // plano: o `result` seguinte traz só o da resposta dele.
+            let mut carried = (0, 0);
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Some((id, name, input)) = tool_request(&line) {
                     // A pergunta do agente precisa do usuário até no Yolo.
@@ -723,7 +733,28 @@ impl Run {
                     send_line(&stdin, &response);
                     continue;
                 }
-                for event in parser.parse(&line) {
+                for mut event in parser.parse(&line) {
+                    if let AgentEvent::Done {
+                        is_error,
+                        tokens,
+                        cache_tokens,
+                        ..
+                    } = &mut event
+                    {
+                        // Com tarefa em segundo plano, a resposta continua
+                        // quando ela terminar: o stdin fica aberto e o turno
+                        // segue até o próximo `result`.
+                        if parser.background && !*is_error {
+                            carried = (carried.0 + *tokens, carried.1 + *cache_tokens);
+                            let wait = "Aguardando tarefa em segundo plano...".to_string();
+                            if tx.send(AgentEvent::Step(wait)).is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        *tokens += carried.0;
+                        *cache_tokens += carried.1;
+                    }
                     if matches!(event, AgentEvent::Done { .. }) {
                         done = true;
                         *stdin.lock().unwrap() = None;
@@ -1083,6 +1114,61 @@ mod tests {
         let models: Vec<_> = adapter.models().into_iter().map(|m| m.id).collect();
         assert_eq!(models, ["opus", "sonnet", "haiku"]);
         assert_eq!(adapter.model_label("claude-opus-5-5"), "Opus - 5.5");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn response_after_background_task_reaches_the_chat() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("claude");
+        // Como o `claude` real: termina a resposta com a tarefa rodando e
+        // responde de novo quando ela acaba.
+        fs::write(
+            &bin,
+            r#"#!/bin/sh
+read _
+echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1"}]}'
+echo '{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1,"output_tokens":2}}'
+echo '{"type":"system","subtype":"background_tasks_changed","tasks":[]}'
+echo '{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"PRONTO"}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":3,"output_tokens":4}}'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let request = Request {
+            prompt: "oi",
+            mode: PermissionMode::Yolo,
+            session_id: None,
+            fork: false,
+            model: None,
+            account: None,
+            effort: None,
+            subagent_model: None,
+            extensions: &Contribution::default(),
+            allowed_tools: &[],
+            system_prompt: None,
+        };
+        let mut run = Run::start(&bin, request, Some(dir.path())).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut events = Vec::new();
+        while !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done { .. } | AgentEvent::Failed(_)))
+        {
+            assert!(std::time::Instant::now() < deadline, "{events:?}");
+            events.extend(run.poll());
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            events.contains(&AgentEvent::Text("PRONTO".into())),
+            "{events:?}"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { tokens: 10, .. })
+        ));
     }
 
     #[test]

@@ -47,6 +47,9 @@ pub struct StreamParser {
     /// As ferramentas chamadas nesta resposta (pelo id do `tool_use`), para
     /// saber a entrada de uma que o modo bloqueou.
     tools: HashMap<String, (String, Value)>,
+    /// Há tarefas em segundo plano rodando (`background_tasks_changed`): ao
+    /// terminarem, o `claude` responde de novo na mesma execução.
+    pub background: bool,
 }
 
 impl StreamParser {
@@ -149,6 +152,10 @@ impl StreamParser {
             }
             Some("system") if value["subtype"] == "permission_denied" => {
                 self.blocked(value).into_iter().collect()
+            }
+            Some("system") if value["subtype"] == "background_tasks_changed" => {
+                self.background = value["tasks"].as_array().is_some_and(|t| !t.is_empty());
+                Vec::new()
             }
             Some("system") if value["subtype"] == "api_retry" => vec![AgentEvent::Step(format!(
                 "Tentando de novo a API (tentativa {})...",
