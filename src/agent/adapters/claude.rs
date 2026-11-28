@@ -331,12 +331,21 @@ fn parse_mode(name: &str) -> Option<PermissionMode> {
 
 /// Procura o executável do Claude CLI no `PATH`.
 fn find_claude() -> Option<PathBuf> {
+    find_claude_in(env::var_os("PATH"), dirs::home_dir().as_deref())
+}
+
+/// O `claude` nas pastas de `path` ou, sem ele lá, na `~/.local/bin`, onde o
+/// instalador nativo o põe (no Windows, sem adicioná-la ao `PATH`). Assim, um
+/// terra aberto com o `PATH` de antes da instalação também o acha.
+fn find_claude_in(path: Option<std::ffi::OsString>, home: Option<&Path>) -> Option<PathBuf> {
     let names: &[&str] = if cfg!(windows) {
         &["claude.exe", "claude.cmd"]
     } else {
         &["claude"]
     };
-    env::split_paths(&env::var_os("PATH")?)
+    let dirs = path.iter().flat_map(env::split_paths);
+    let local_bin = home.map(|home| home.join(".local").join("bin"));
+    dirs.chain(local_bin)
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|path| path.is_file())
 }
@@ -883,6 +892,26 @@ mod tests {
     use super::*;
 
     const NO_HOOKS: &str = r#"{"disableAllHooks":true}"#;
+
+    #[test]
+    fn finds_claude_in_local_bin_without_it_in_path() {
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".local").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let name = if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        };
+        std::fs::write(bin.join(name), "").unwrap();
+
+        let empty = tempfile::tempdir().unwrap();
+        let path = Some(empty.path().as_os_str().to_owned());
+        assert_eq!(
+            find_claude_in(path, Some(home.path())),
+            Some(bin.join(name))
+        );
+    }
 
     #[test]
     fn cli_args_keep_user_environment_and_resume_session() {

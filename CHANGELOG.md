@@ -4,6 +4,12 @@ Todas as mudanças relevantes do terraforme-cli. O formato segue o
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.14.38] - 2026-11-28
+
+### Corrigido
+
+- Chat: sem o `claude` no `PATH`, o terra procura em `~/.local/bin`, onde o instalador nativo do Claude Code o põe (no Windows, sem adicionar a pasta ao `PATH`). Antes, um terra aberto com o `PATH` de antes da instalação, ou o hub que seguia rodando com ele, mostrava "Claude CLI não encontrado no PATH" (#124).
+
 ## [0.14.36] - 2026-11-28
 
 ### Corrigido
